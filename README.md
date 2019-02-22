@@ -39,8 +39,8 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * Transient pre-echo reduction formula (very important at low bitrates or with long blocks, both of which apply)
 * Multiple quantization regions (to improve dynamic range of coded coefficients)
 
-# Authors
+## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
 
-# Acknowledgements
+## Acknowledgements
 * Huge thanks to Dennis K (DekuTree64) for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design
