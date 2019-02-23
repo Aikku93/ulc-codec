@@ -12,11 +12,6 @@ using namespace std;
 using namespace ULC;
 /**************************************/
 
-//! Quantizer bandwidths and bin ranges
-//! TODO: Avoid hardcoding this?
-static const size_t QuantBinBw[MAX_QUANTS] = {16,32,48,96,192,384,768,512};
-static const size_t QuantBinRng[MAX_QUANTS][2] = {{0,15},{16,47},{48,95},{96,191},{192,383},{384,767},{768,1535},{1536,2047}};
-
 //! Transform buffers
 __attribute__((aligned(32))) static float TransformBuffer[BLOCK_SIZE];
 __attribute__((aligned(32))) static float TransformTemp  [BLOCK_SIZE];
