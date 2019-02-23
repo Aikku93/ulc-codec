@@ -11,12 +11,6 @@
 using namespace std;
 using namespace ULC;
 /**************************************/
-//! TODO: THIS FILE NEEDS HEAVY REFACTORING
-/**************************************/
-
-//! Quantizer bandwidths and bin ranges
-//! TODO: Avoid hardcoding this?
-static const size_t QuantBinRng[MAX_QUANTS][2] = {{0,15},{16,47},{48,95},{96,191},{192,383},{384,767},{768,1535},{1536,2047}};
 
 //! Transform buffers
 __attribute__((aligned(32))) static float  TransformBuffer[MAX_CHANS][BLOCK_SIZE];
@@ -128,16 +122,17 @@ static size_t Block_Transform(const float *Data, size_t nChan) {
 	float ChanPow = 1.0f;
 	for(size_t Chan=0;Chan<nChan;Chan++,ChanPow *= float(M_SQRT1_2)) {
 		for(size_t i=0;i<BLOCK_SIZE;i++) {
-			//! Check that value doesn't collapse to 0
+			//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
+			//! Check notes below for explanation of comparison against Quant*0.5
 			float v = pow(TransformBuffer[Chan][i], 2.0f);
-			if(v < 0.5f*0.5f) continue;
+			if(v < pow(1.0f*0.5f, 2.0f)) continue;
 
 			//! Do psy-opts and insert:
 			//!  -Decrease side-chan importance
 			//!  -Increase high-freq importance
 			//! TODO: Accelerator table
 			v *= ChanPow;
-			v *= 0.5f + 0.5f*sin((i+0.5f)*float(M_PI*7/16)/BLOCK_SIZE);
+			v *= 1.0f - 0.5f*pow(1.0f - (i+0.5f)/BLOCK_SIZE, 2.0f);
 			Analysis_KeyInsert(v, nKeys, i, Chan);
 		}
 	}
@@ -148,8 +143,11 @@ static size_t Block_Transform(const float *Data, size_t nChan) {
 //! NOTE:
 //!  -Division by 4.0 to set that as the 'mid' quantized value
 //!  -Fh = Unused quantizer band
-//! PONDER: Shouldn't need to clip to <=14 here:
+//! PONDER: Shouldn't need to clip to <=14 here under normal circumstances:
 //!  round(log2((32768*Pi/4) / 4)) = 13
+//! 32768*Pi/4 comes from:
+//!  32768: Signed 16bit data range
+//!  Pi/4:  Infinity norm of DCT-IV (as N approaches infinity)
 static int32_t BuildQuantizer(double BandPow, size_t n) {
 	size_t s = 0xF;
 	if(n) s = max(0.0, min(14.0, round(log2(sqrt(BandPow / n) / 4.0))));
@@ -158,66 +156,97 @@ static int32_t BuildQuantizer(double BandPow, size_t n) {
 
 //! Build quantizers for quantizer bands
 //! Returns the number of non-zero bands kept
-//! TODO:
-//!  This is /very/ sub-optimal. If we have lots of small values and
-//!  a few large ones at the start, we risk losing all those little
-//!  details, making the quantizer artificially large for no reason
-//!  (somehow still manages to work mostly-okay for now though)
 static size_t Block_GetQuants(int32_t Quants[MAX_CHANS][MAX_QUANTS], size_t nNzBandsMax, size_t nKeys, size_t nChan) {
-	//! Keep all keys that will quantize to non-zero values
-	size_t nNzBands = 0;
+	//! LAMBDA EXPRESSION
+	//! Fetch data associated with key
+	float v;
+	size_t Band, Chan, QBand;
+	auto KeyDataFetch = [&](size_t Key) {
+		Analysis_KeyDecode(Band, Chan, AnalysisKeys[Key]);
+		QBand = GetQuantBand(Band);
+		v = TransformBuffer[Chan][Band];
+	};
+
+	//! Clip to maximum available keys
+	//! This can happen if rate control says we can fit more
+	//! non-zero bands than are actually present for this block
+	nNzBandsMax = min(nNzBandsMax, nKeys);
+
+	//! Put all initial keys into analysis
 	double BandPow[MAX_CHANS][MAX_QUANTS] = {{0.0}};
 	size_t BandCnt[MAX_CHANS][MAX_QUANTS] = {{0}};
-	for(;;) {
-		//! Got to the limit?
-		nNzBandsMax = min(nNzBandsMax, nKeys);
-		if(nNzBands >= nNzBandsMax) break;
+	for(size_t Key=0;Key<nNzBandsMax;Key++) {
+		KeyDataFetch(Key);
 
-		//! Get key data
-		size_t Band, Chan; Analysis_KeyDecode(Band, Chan, AnalysisKeys[nNzBands]);
-		size_t QBand = GetQuantBand(Band);
+		BandPow[Chan][QBand] += pow(v, 2.0);
+		BandCnt[Chan][QBand]++;
+	}
+	for(size_t Chan=0;Chan<nChan;Chan++) for(size_t QBand=0;QBand<MAX_QUANTS;QBand++) {
+		Quants[Chan][QBand] = BuildQuantizer(BandPow[Chan][QBand], BandCnt[Chan][QBand]);
+	}
 
-		//! Insert key to analysis (but don't actually save this out yet)
-		float   v     = TransformBuffer[Chan][Band];
-		double  Pow   = BandPow[Chan][QBand] + pow(v, 2.0);
-		size_t  Cnt   = BandCnt[Chan][QBand] + 1;
-		int32_t Quant = BuildQuantizer(Pow, Cnt);
+	//! Get number of [analyzed] keys we kept, and remove any collapsed keys
+	size_t nNzBands = 0, nNzBandsOrig = nNzBandsMax;
+	while(nNzBands < nNzBandsOrig) {
+		KeyDataFetch(nNzBands);
 
-		//! Does this value /not/ collapse under the quantizer?
+		//! Collapse?
 		//! Compare with 0.5*Quant, because:
 		//!  round(v / Quant) == 0 <-> abs(v) < 0.5*Quant
 		//! eg. Quant == 1:
 		//!  v == 0.5: round(v / Quant) -> 1 (not collapsed)
 		//!  v == 0.4: round(v / Quant) -> 0 (collapsed)
-		if(abs(v) >= 0.5f*Quant) {
-			//! Didn't collapse - save quantizer
+		int32_t &Quant = Quants[Chan][QBand];
+		if(abs(v) < 0.5f*Quant) {
+			//! Remove key from analysis and rebuild quantizer
+			BandPow[Chan][QBand] -= pow(v, 2.0);
+			BandCnt[Chan][QBand]--;
+			Quant = BuildQuantizer(BandPow[Chan][QBand], BandCnt[Chan][QBand]);
+
+			//! Remove key from list
+			Analysis_KeyRemove(nNzBands, nKeys);
+			nNzBandsOrig--;
+		} else nNzBands++;
+	}
+
+	//! Try to add more keys if any collapsed above
+	//! Note clipping again: nKeys might've dropped enough that nNzBandsMax needs to change again
+	nNzBandsMax = min(nNzBandsMax, nKeys);
+	while(nNzBands < nNzBandsMax) {
+		KeyDataFetch(nNzBands);
+
+		//! Does this key collapse if we try to fit it to the analysis?
+		double  Pow = BandPow[Chan][QBand] + pow(v, 2.0);
+		size_t  Cnt = BandCnt[Chan][QBand] + 1;
+		int32_t q   = BuildQuantizer(Pow, Cnt);
+		if(abs(v) < 0.5f*q) {
+			//! Remove key from list
+			Analysis_KeyRemove(nNzBands, nKeys);
+			nNzBandsMax = min(nNzBandsMax, nKeys);
+		} else {
+			//! No collapse - save new quantizer state
 			BandPow[Chan][QBand] = Pow;
 			BandCnt[Chan][QBand] = Cnt;
-			Quants [Chan][QBand] = Quant;
+			Quants [Chan][QBand] = q;
 			nNzBands++;
-		} else {
-			//! Collapsed - remove key
-			Analysis_KeyRemove(nNzBands, nKeys);
 		}
 	}
 
-	//! Double-check that no keys we kept collapsed
+	//! Double-check that no keys we kept collapse
 	//! This is needed due to the psy-opt that amplified high frequency
 	//! data, since now we might have smaller values stuck in the middle
 	for(size_t Key=0;Key<nNzBands;) {
-		size_t  Band, Chan; Analysis_KeyDecode(Band, Chan, AnalysisKeys[Key]);
-		size_t  QBand = GetQuantBand(Band);
-		int32_t Quant = Quants[Chan][QBand];
-		float   v     = TransformBuffer[Chan][Band];
-		if(abs(v) < 0.5f*Quant) {
+		KeyDataFetch(Key);
+
+		if(abs(v) < 0.5f*Quants[Chan][QBand]) {
 			Analysis_KeyRemove(Key, nKeys);
 			nNzBands--;
 		} else Key++;
 	}
 
-	//! If no bands were processed, then we need to clear the quantizers
-	for(size_t Chan=0;Chan<nChan;Chan++) for(size_t i=0;i<MAX_QUANTS;i++) {
-		if(!BandCnt[Chan][i]) Quants[Chan][i] = 1<<15;
+	//! If a quantizer has no keys, it needs to be cleared
+	for(size_t Chan=0;Chan<nChan;Chan++) for(size_t QBand=0;QBand<MAX_QUANTS;QBand++) {
+		if(!BandCnt[Chan][QBand]) Quants[Chan][QBand] = 1<<15;
 	}
 	return nNzBands;
 }
