@@ -7,9 +7,9 @@ ulc-codec (Ultra-Low-Complexity Codec) is intended to be a low-bitrate audio cod
 None (so far). Perhaps a C++11 compiler if building from source.
 
 ### Installing
-Run ```make``` to build the file-based encoding and decoding tools (```ulcencode``` and ```ulcdecode```).
+Run ```make all``` to build the file-based encoding and decoding tools (```ulcencode``` and ```ulcdecode```).
 
-Alternatively, you can use pre-built releases.
+You could also ```make encodetool``` or ```make decodetool```.
 
 ## Usage
 For the time being, both encoding and decoding tools operate on raw 16-bit audio (with interleaved channels).
