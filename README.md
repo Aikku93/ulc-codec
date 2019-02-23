@@ -1,5 +1,5 @@
-# libulc
-libulc (Ultra-Low-Complexity) is intended to be a low-bitrate audio codec, providing ultra-low-complexity decoding.
+# ulc-codec
+ulc-codec (Ultra-Low-Complexity Codec) is intended to be a low-bitrate audio codec, providing ultra-low-complexity decoding.
 
 ## Getting started
 
