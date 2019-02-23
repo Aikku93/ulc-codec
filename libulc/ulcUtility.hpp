@@ -11,6 +11,11 @@
 #include <cstddef>
 /**************************************/
 
+//! Quantizer bin ranges
+static const size_t QuantBinRng[MAX_QUANTS][2] = {{0,15},{16,47},{48,95},{96,191},{192,383},{384,767},{768,1343},{1344,2047}};
+
+/**************************************/
+
 //! Pre-echo reduction formula
 //! Based on the Haar wavelet, just use a sum/difference
 //! This will make low-frequency transients compact into
