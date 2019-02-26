@@ -1,4 +1,8 @@
 /**************************************/
+//! ulc-codec: Ultra-Low-Complexity Audio Codec
+//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Refer to the project README file for license terms.
+/**************************************/
 #if defined(__AVX__)
 # include <immintrin.h>
 #endif
