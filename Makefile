@@ -15,28 +15,28 @@ DECODETOOL_SRCDIR := decodetool
 #----------------------------#
 
 ARCHCROSS :=
-ARCHFLAGS := -msse -msse2 -mavx -mavx2
+ARCHFLAGS := -msse -msse2
 
-CCFLAGS := -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
+CCFLAGS := $(ARCHFLAGS) -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
 LDFLAGS := -static
 
 #----------------------------#
 # Tools
 #----------------------------#
 
-CC := $(ARCHCROSS)g++
-LD := $(ARCHCROSS)g++
+CC := $(ARCHCROSS)gcc
+LD := $(ARCHCROSS)gcc
 
 #----------------------------#
 # Files
 #----------------------------#
 
-COMMON_SRC     := $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/*.cpp))
-ENCODETOOL_SRC := $(foreach dir, $(ENCODETOOL_SRCDIR), $(wildcard $(dir)/*.cpp))
-DECODETOOL_SRC := $(foreach dir, $(DECODETOOL_SRCDIR), $(wildcard $(dir)/*.cpp))
-COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(notdir $(COMMON_SRC:.cpp=.o)))
-ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(ENCODETOOL_SRC:.cpp=.o)))
-DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.cpp=.o)))
+COMMON_SRC     := $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/*.c))
+ENCODETOOL_SRC := $(foreach dir, $(ENCODETOOL_SRCDIR), $(wildcard $(dir)/*.c))
+DECODETOOL_SRC := $(foreach dir, $(DECODETOOL_SRCDIR), $(wildcard $(dir)/*.c))
+COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(notdir $(COMMON_SRC:.c=.o)))
+ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(ENCODETOOL_SRC:.c=.o)))
+DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.c=.o)))
 ENCODETOOL_EXE := ulcencodetool.exe # Change this for other platforms
 DECODETOOL_EXE := ulcdecodetool.exe # Change this for other platforms
 
@@ -46,7 +46,7 @@ VPATH := $(COMMON_SRCDIR) $(ENCODETOOL_SRCDIR) $(DECODETOOL_SRCDIR)
 # General rules
 #----------------------------#
 
-$(OBJDIR)/%.o : %.cpp
+$(OBJDIR)/%.o : %.c
 	@echo $(notdir $<)
 	@$(CC) $(CCFLAGS) -c -o $@ $<
 
