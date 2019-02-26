@@ -10,7 +10,6 @@
 # include <xmmintrin.h>
 #endif
 /**************************************/
-#include <math.h>
 #include <stddef.h>
 /**************************************/
 #include "Fourier.h"
@@ -18,7 +17,7 @@
 
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N) {
 	size_t i;
-	float Ns = M_PI_2 / N;
+	float Ns = 1.0f / N;
 
 	//! Undo transform
 	for(i=0;i<N;i++) BufTmp[i] = BufIn[i];
@@ -27,30 +26,20 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	//! Undo lapping
 #if defined(__AVX__)
 	__m256 c, s;
-	__m256 wc = _mm256_set1_ps(cos(8.0f*Ns));
-	__m256 ws = _mm256_set1_ps(sin(8.0f*Ns));
+	__m256 wc, ws;
+
+	//! Get oscillator parameter
+	{
+		float c, s;
+		Fourier_SinCos(8.0f * Ns, &s, &c);
+		wc = _mm256_set1_ps(c);
+		ws = _mm256_set1_ps(s);
+	}
 
 	//! First quarter
-	c = _mm256_setr_ps(
-		cos((0 + 0.5f)*Ns),
-		cos((1 + 0.5f)*Ns),
-		cos((2 + 0.5f)*Ns),
-		cos((3 + 0.5f)*Ns),
-		cos((4 + 0.5f)*Ns),
-		cos((5 + 0.5f)*Ns),
-		cos((6 + 0.5f)*Ns),
-		cos((7 + 0.5f)*Ns)
-	);
-	s = _mm256_setr_ps(
-		sin((0 + 0.5f)*Ns),
-		sin((1 + 0.5f)*Ns),
-		sin((2 + 0.5f)*Ns),
-		sin((3 + 0.5f)*Ns),
-		sin((4 + 0.5f)*Ns),
-		sin((5 + 0.5f)*Ns),
-		sin((6 + 0.5f)*Ns),
-		sin((7 + 0.5f)*Ns)
-	);
+	c = _mm256_setr_ps(0.5f, 1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f, 7.5f);
+	c = _mm256_mul_ps(c, _mm256_set1_ps(Ns));
+	Fourier_SinCosAVX(c, &s, &c);
 	c = _mm256_xor_ps(c, _mm256_set1_ps(-0.0f));
 	s = _mm256_xor_ps(s, _mm256_set1_ps(-0.0f));
 	for(i=0;i<N/4;i+=8) {
@@ -71,26 +60,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	}
 
 	//! Second quarter
-	c = _mm256_setr_ps(
-		cos((N/2+0 + 0.5f)*Ns),
-		cos((N/2+1 + 0.5f)*Ns),
-		cos((N/2+2 + 0.5f)*Ns),
-		cos((N/2+3 + 0.5f)*Ns),
-		cos((N/2+4 + 0.5f)*Ns),
-		cos((N/2+5 + 0.5f)*Ns),
-		cos((N/2+6 + 0.5f)*Ns),
-		cos((N/2+7 + 0.5f)*Ns)
-	);
-	s = _mm256_setr_ps(
-		sin((N/2+0 + 0.5f)*Ns),
-		sin((N/2+1 + 0.5f)*Ns),
-		sin((N/2+2 + 0.5f)*Ns),
-		sin((N/2+3 + 0.5f)*Ns),
-		sin((N/2+4 + 0.5f)*Ns),
-		sin((N/2+5 + 0.5f)*Ns),
-		sin((N/2+6 + 0.5f)*Ns),
-		sin((N/2+7 + 0.5f)*Ns)
-	);
+	c = _mm256_setr_ps(0.5f, 1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f, 7.5f);
+	c = _mm256_mul_ps(c, _mm256_set1_ps(Ns));
+	c = _mm256_add_ps(c, _mm256_set1_ps(0.5f));
+	Fourier_SinCosAVX(c, &s, &c);
 	c = _mm256_xor_ps(c, _mm256_set1_ps(-0.0f));
 	s = _mm256_xor_ps(s, _mm256_set1_ps(-0.0f));
 	for(i=0;i<N/4;i+=8) {
@@ -111,22 +84,20 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	}
 #elif defined(__SSE__)
 	__m128 c, s;
-	__m128 wc = _mm_set1_ps(cos(4.0f*Ns));
-	__m128 ws = _mm_set1_ps(sin(4.0f*Ns));
+	__m128 wc, ws;
+
+	//! Get oscillator parameter
+	{
+		float c, s;
+		Fourier_SinCos(4.0f * Ns, &s, &c);
+		wc = _mm_set1_ps(c);
+		ws = _mm_set1_ps(s);
+	}
 
 	//! First quarter
-	c = _mm_setr_ps(
-		cos((0 + 0.5f)*Ns),
-		cos((1 + 0.5f)*Ns),
-		cos((2 + 0.5f)*Ns),
-		cos((3 + 0.5f)*Ns)
-	);
-	s = _mm_setr_ps(
-		sin((0 + 0.5f)*Ns),
-		sin((1 + 0.5f)*Ns),
-		sin((2 + 0.5f)*Ns),
-		sin((3 + 0.5f)*Ns)
-	);
+	c = _mm_setr_ps(0.5f, 1.5f, 2.5f, 3.5f);
+	c = _mm_mul_ps(c, _mm_set1_ps(Ns));
+	Fourier_SinCosSSE(c, &s, &c);
 	c = _mm_xor_ps(c, _mm_set1_ps(-0.0f));
 	s = _mm_xor_ps(s, _mm_set1_ps(-0.0f));
 	for(i=0;i<N/4;i+=4) {
@@ -143,18 +114,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	}
 
 	//! Second quarter
-	c = _mm_setr_ps(
-		cos((N/2+0 + 0.5f)*Ns),
-		cos((N/2+1 + 0.5f)*Ns),
-		cos((N/2+2 + 0.5f)*Ns),
-		cos((N/2+3 + 0.5f)*Ns)
-	);
-	s = _mm_setr_ps(
-		sin((N/2+0 + 0.5f)*Ns),
-		sin((N/2+1 + 0.5f)*Ns),
-		sin((N/2+2 + 0.5f)*Ns),
-		sin((N/2+3 + 0.5f)*Ns)
-	);
+	c = _mm_setr_ps(0.5f, 1.5f, 2.5f, 3.5f);
+	c = _mm_mul_ps(c, _mm_set1_ps(Ns));
+	c = _mm_add_ps(c, _mm_set1_ps(0.5f));
+	Fourier_SinCosSSE(c, &s, &c);
 	c = _mm_xor_ps(c, _mm_set1_ps(-0.0f));
 	s = _mm_xor_ps(s, _mm_set1_ps(-0.0f));
 	for(i=0;i<N/4;i+=4) {
@@ -170,10 +133,14 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		s = t1;
 	}
 #else
-	float c, s, wc = cos(1.0f*Ns), ws = sin(1.0f*Ns);
+	float c, s;
+	float wc, ws;
+	Fourier_SinCos(Ns, &wc, &ws);
 
 	//! First quarter
-	c = -cos((0 + 0.5f)*Ns), s = -sin((0 + 0.5f)*Ns);
+	Fourier_SinCos(0.5f*Ns, &s, &c);
+	c = -c;
+	s = -s;
 	for(i=0;i<N/4;i++) {
 		BufOut[i]       = BufLap[N/2-1-i]*c - BufTmp[N/2+i]*s;
 		BufOut[N-1-i]   = BufLap[N/2-1-i]*s + BufTmp[N/2+i]*c;
@@ -183,7 +150,9 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	}
 
 	//! Second quarter
-	c = -cos((N/2 + 0.5f)*Ns), s = -sin((N/2 + 0.5f)*Ns);
+	Fourier_SinCos(0.5f*Ns + 0.5f, &s, &c);
+	c = -c;
+	s = -s;
 	for(i=0;i<N/4;i++) {
 		BufOut[N/2-1-i] = BufLap[i]*s - BufTmp[N-1-i]*c;
 		BufOut[N/2+i]   = BufLap[i]*c + BufTmp[N-1-i]*s;
