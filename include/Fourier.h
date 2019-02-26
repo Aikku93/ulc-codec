@@ -5,7 +5,26 @@
 /**************************************/
 #pragma once
 /**************************************/
+#if defined(__AVX__)
+# include <immintrin.h>
+#endif
+#if defined(__SSE__)
+# include <xmmintrin.h>
+#endif
+/**************************************/
 #include <stddef.h>
+/**************************************/
+
+//! Sine/Cosine approximations
+//! Approximates {Sin,Cos}[x*Pi/2] (with x in range [0,1])
+#if defined(__AVX__)
+void Fourier_SinCosAVX(__m256 x, __m256 *Sin, __m256 *Cos);
+#endif
+#if defined(__SSE__)
+void Fourier_SinCosSSE(__m128 x, __m128 *Sin, __m128 *Cos);
+#endif
+float Fourier_SinCos(float x, float *Sin, float *Cos);
+
 /**************************************/
 
 //! DCT-II/DCT-IV (scaled)
