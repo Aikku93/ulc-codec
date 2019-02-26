@@ -17,6 +17,16 @@ Estimates Sin[x*Pi/2], x=[0,1]
 RMSE=0.00000128434 (PSNR=117.83dB)
 ------------------------------
 
+a[x_] := Sin[x*Pi/2];
+b[x_] := u*x + v*x^3 + w*x^5 + y*x^7;
+Solve[{
+  a[0] == b[0],
+  a'[0] == b'[0],
+  a[1] == b[1],
+  a'[1] == b'[1],
+  Integrate[a[x], {x, 0, 1}] == Integrate[b[x], {x, 0, 1}]
+  }, {u, v, w, y}]
+
 After a lot of wrangling, we arrive at:
   eq[x_] := (-x/(2*Pi)) * (-Pi^2 + x^2*(-96 + 13*Pi + 6*Pi^2) + x^2*(x^2*((192 - 33*Pi - 9*Pi^2) + x^2*(-96 + 18*Pi + 4*Pi^2))))
 Pulling out constants:
@@ -34,7 +44,6 @@ RMSE=0.0000127222 (PSNR=97.91dB)
 
 a[x_] := Cos[x*Pi/2];
 b[x_] := u + v*x^2 + w*x^4 + y*x^6;
-Expand[b[x]]
 Solve[{
   a[0] == b[0],
   a'[0] == b'[0],
