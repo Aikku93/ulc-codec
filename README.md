@@ -42,5 +42,8 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 ## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
 
+## License
+ulc-codec is released under the GPLv3 license. See the LICENSE file for full terms.
+
 ## Acknowledgements
 * Huge thanks to Dennis K (DekuTree64) for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design
