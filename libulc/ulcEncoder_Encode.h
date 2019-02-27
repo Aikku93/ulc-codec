@@ -33,6 +33,7 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
 	size_t nChan             = State->nChan;
+	size_t BlockSize         = State->BlockSize;
 	size_t nQuants           = State->nQuants;
 	float **TransformBuffer  = State->TransformBuffer;
 	const uint16_t *QuantsBw = State->QuantsBw;
@@ -43,7 +44,10 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 	//! This avoids a search for the next non-zero band
 	//! Also because the channel is coded in the high bits, we can
 	//! code one channel at a time, making things easier as well
-	Analysis_KeysSort(Keys, nNzBands);
+	size_t nChanLog2     = IntLog2(nChan);
+	size_t BlockSizeLog2 = IntLog2(BlockSize);
+	if(nChan > (1u<<nChanLog2)) nChanLog2++; //! Round to next power of two
+	Analysis_KeysSort(Keys, Keys+nNzBands, 1u << (nChanLog2 + BlockSizeLog2 - 1));
 
 	//! Start coding
 	size_t Chan, QBand;
@@ -53,7 +57,7 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Code the quantizer values (in log2 form)
 		for(QBand=0;QBand<nQuants;QBand++) {
-			size_t s = 31 - __builtin_clz(Quants[Chan][QBand]);
+			size_t s = IntLog2(Quants[Chan][QBand]);
 			Block_Encode_WriteNybble(s, &DstBuffer, &Size);
 		}
 
@@ -80,8 +84,8 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 			do {
 				//! Unpack key data
 				//! If we cross to the next [coded] quantizer band or channel, break out
-				size_t tBand = Keys[Key].Band; if(tBand >= LastNz) break;
-				size_t tChan = Keys[Key].Chan; if(tChan != Chan)   break;
+				size_t tBand = Keys[Key].Key & (BlockSize-1);  if(tBand >= LastNz) break;
+				size_t tChan = Keys[Key].Key >> BlockSizeLog2; if(tChan != Chan)   break;
 
 				//! Code the zero runs
 				//! NOTE: Always in multiples of two
