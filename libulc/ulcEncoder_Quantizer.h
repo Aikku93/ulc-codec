@@ -10,6 +10,7 @@
 /**************************************/
 #include "ulcEncoder.h"
 #include "ulcEncoder_Analysis.h"
+#include "ulcEncoder_Helper.h"
 /**************************************/
 
 //! Quantizers are coded in log2 form, and Fh is reserved for 'unused quantizer band'
@@ -39,12 +40,17 @@ static inline int16_t Block_Encode_BuildQuantizer(double QuantsPow, size_t Quant
 //! TODO:
 //!  -Optimization: Don't /actually/ remove keys, just skip them (this saves shifting the array)
 static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys) {
-	size_t Key, Band, Chan, QBand;
+	size_t Key;
+	size_t BlockSize     = State->BlockSize;
+	size_t BlockSizeLog2 = IntLog2(BlockSize);
+
+	//! Key data fetcher
+	size_t Band, Chan, QBand;
 	double Val;
-#define FETCH_KEY_DATA(Key) \
-	Band  = Keys[Key].Band, \
-	Chan  = Keys[Key].Chan, \
-	QBand = GetQuantBand(Band, QuantsBw), \
+#define FETCH_KEY_DATA(KeyIdx) \
+	Band  = Keys[KeyIdx].Key & (BlockSize-1),  \
+	Chan  = Keys[KeyIdx].Key >> BlockSizeLog2, \
+	QBand = GetQuantBand(Band, QuantsBw),   \
 	Val   = CoefBuffer[Chan][Band]
 
 	//! Spill state to local variables to make things easier to read
