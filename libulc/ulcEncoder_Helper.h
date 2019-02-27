@@ -9,6 +9,12 @@
 #include <stdint.h>
 /**************************************/
 
+//! Integer floor(log2(x))
+//! Using unsigned int because that's what the compiler expects
+static inline size_t IntLog2(unsigned int x) {
+	return sizeof(unsigned int)*8-1 - __builtin_clz(x);
+}
+
 //! Get quantizer band from band index
 static size_t GetQuantBand(size_t Band, const uint16_t *QuantBw) {
 	size_t QBand;
