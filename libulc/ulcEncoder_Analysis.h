@@ -7,24 +7,14 @@
 /**************************************/
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 /**************************************/
 
 //! Analysis key structure
-#define MIN_BANDS 8
-#define MAX_BANDS 65536
-#define MIN_CHANS 1
-#define MAX_CHANS 65536
+//! NOTE: ceil(log2(BlockSize * nChan)) <= 32
+#define ANALYSIS_KEY_MAX_BITS 32
 struct AnalysisKey_t {
-	//! Awkward structuring for faster sorting comparisons
-	union {
-		struct {
-			uint16_t Band; //! Band index
-			uint16_t Chan; //! Channel index
-		};
-		uint32_t SortKey;
-	};
-	float Val; //! Analysis value (eg. for biased preferencing)
+	uint32_t Key; //! Band | Chan<<log2(BlockSize)
+	float    Val; //! Analysis value (eg. for biased preferencing)
 };
 
 /**************************************/
@@ -67,15 +57,38 @@ static void Analysis_KeyRemove(size_t Key, struct AnalysisKey_t *Keys, size_t nK
 
 //! Sort keys in increasing Chan>Band order
 //! eg. Ch=0,Band=0..n, Ch=1,Band=0..m, etc.
-//! PONDER:
-//!  If we combine the sort key just right (eg. to compact all bits
-//!  and leave the topmost bits as 0), then a radix sort might be
-//!  better here.
-static int Analysis_KeysSort_Comparator(const void *a, const void *b) {
-	return ((struct AnalysisKey_t*)a)->SortKey - ((struct AnalysisKey_t*)b)->SortKey;
-}
-static void Analysis_KeysSort(struct AnalysisKey_t *Keys, size_t nKeys) {
-	qsort(Keys, nKeys, sizeof(struct AnalysisKey_t), Analysis_KeysSort_Comparator);
+//! NOTE: Due to combining the Band,Chan values as compactly as
+//!       possible (in terms of bits), we can use a radix sort
+static void Analysis_KeysSort(struct AnalysisKey_t *Beg, struct AnalysisKey_t *End, size_t Bit) {
+	//! If size <= 1, then already sorted
+	if(Beg+1 >= End) return;
+
+	//! Swap unsorted keys until L/R meet
+	struct AnalysisKey_t *l = Beg, *r = End-1, TempKey;
+	for(;;) {
+		//! Find swap positions
+		while(l < r && (l->Key & Bit) == 0) l++; //! Find LHS.Bit==1
+		while(l < r && (r->Key & Bit) != 0) r--; //! Find RHS.Bit==0
+
+		//! Found swap point?
+		if(l < r) {
+			TempKey = *l;
+			*l++ = *r;
+			*r-- = TempKey;
+		}
+
+		//! L/R met or crossed over?
+		if(l >= r) break;
+	}
+
+	//! If L/R meet (odd-sized search area), then fix up LHS pointer as needed
+	if((l->Key & Bit) == 0 && l < End) l++;
+
+	//! Sort LHS (Bit==0), RHS (Bit==1)
+	if(Bit >>= 1) {
+		Analysis_KeysSort(Beg, l, Bit);
+		Analysis_KeysSort(l, End, Bit);
+	}
 }
 
 /**************************************/
