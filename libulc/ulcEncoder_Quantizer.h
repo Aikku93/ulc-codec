@@ -3,181 +3,153 @@
 //! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
+#pragma once
+/**************************************/
 #include <stddef.h>
 #include <stdint.h>
-#include <math.h>
 /**************************************/
-#include "Fourier.h"
 #include "ulcEncoder.h"
-#include "ulcUtility.h"
-/**************************************/
 #include "ulcEncoder_Analysis.h"
-#include "ulcEncoder_BlockTransform.h"
-#include "ulcEncoder_Encode.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
-#if defined(__AVX__)
-# define BUFFER_ALIGNMENT 32u //! __mm256
-#elif defined(__SSE__)
-# define BUFFER_ALIGNMENT 16u //! __mm128
-#else
-# define BUFFER_ALIGNMENT 4u //! float
+
+//! Quantizers are coded in log2 form, and Fh is reserved for 'unused quantizer band'
+#define QUANTIZER_UNUSED (-(1 << 0xF))
+
+/**************************************/
+
+//! Build quantizer from RMS of coefficients
+static inline int16_t Block_Encode_BuildQuantizer(double QuantsPow, size_t QuantsCnt) {
+	if(!QuantsCnt) return QUANTIZER_UNUSED;
+#if 0
+	double sd = sqrt(QuantsPow / QuantsCnt); //! RMS
+	       sd = log2(sd / 4.0);              //! Log2 form (division by 4.0 to set that as the 'middle' value for the quantized range 0..7)
+#else //! Possibly faster
+	double sd = log(QuantsPow / QuantsCnt)*0x1.71547652B82FEp-1 - 2.0; //! Log[QuantsPow/QuantsCnt]/Log[4] - 2
 #endif
+	       sd = round(sd);                   //! Rounding
+	if(sd <  0.0) sd =  0.0;
+	if(sd > 14.0) sd = 14.0; //! Fh is reserved
+	return 1 << (size_t)sd;
+}
+
 /**************************************/
 
-#define MIN_CHANS  1
-#define MIN_BANDS 32 //! Mostly relies on the DCT routines
+//! Build quantizers for quantizer bands
+//! Returns the number of non-zero bands kept
+//! TODO:
+//!  -Optimization: Don't /actually/ remove keys, just skip them (this saves shifting the array)
+static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys) {
+	size_t Key;
+	size_t BlockSize     = State->BlockSize;
+	size_t BlockSizeLog2 = IntLog2(BlockSize);
 
-//! Initialize encoder state
-int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
-	//! Clear anything that is needed for EncoderState_Destroy()
-	State->BufferData = NULL;
+	//! Key data fetcher
+	size_t Band, Chan, QBand;
+	double Val;
+#define FETCH_KEY_DATA(KeyIdx) \
+	Band  = Keys[KeyIdx].Key & (BlockSize-1),  \
+	Chan  = Keys[KeyIdx].Key >> BlockSizeLog2, \
+	QBand = GetQuantBand(Band, QuantsBw),   \
+	Val   = CoefBuffer[Chan][Band]
 
-	//! Verify parameters
-	size_t nChan     = State->nChan;
-	size_t BlockSize = State->BlockSize;
-	size_t nQuants   = State->nQuants;
-	if(nChan     < MIN_CHANS) return -1;
-	if(BlockSize < MIN_BANDS) return -1;
-	{
-		size_t nChanLog2     = IntLog2(nChan);
-		size_t BlockSizeLog2 = IntLog2(BlockSize);
-		if(nChan     > (1u<<nChanLog2))     nChanLog2++; //! Round to next power of two
-		if(BlockSize > (1u<<BlockSizeLog2)) return -1;   //! BlockSize must be a power of two
-		if(nChanLog2+BlockSizeLog2 > ANALYSIS_KEY_MAX_BITS) return -1;
-	}
+	//! Spill state to local variables to make things easier to read
+	//! PONDER: Hopefully the compiler realizes that State is const and
+	//!         doesn't just copy the whole thing out to the stack :/
+	size_t nChan             = State->nChan;
+	size_t nQuants           = State->nQuants;
+	float    **CoefBuffer    = State->TransformBuffer;
+	const uint16_t *QuantsBw = State->QuantsBw;
+	int16_t  **Quants        = State->Quants;
+	uint16_t **QuantsCnt     = State->QuantsCnt;
+	double   **QuantsPow     = State->QuantsPow;
+	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
-	//! Get buffer offsets+sizes
-	//! PONDER: This... is probably not ideal
-	size_t TransformBuffer_Size  = sizeof(float)                * (nChan* BlockSize   );
-	size_t TransformTemp_Size    = sizeof(float)                * (2    * BlockSize   );
-	size_t TransformFwdLap_Size  = sizeof(float)                * (nChan*(BlockSize/2));
-	size_t AnalysisKeys_Size     = sizeof(struct AnalysisKey_t) * (nChan* BlockSize   );
-	size_t Quants_Size           = sizeof(int16_t)              * (nChan* nQuants     );
-	size_t QuantsCnt_Size        = sizeof(uint16_t)             * (nChan* nQuants     );
-	size_t QuantsPow_Size        = sizeof(double)               * (nChan* nQuants     );
-	size_t _TransformBuffer_Size = sizeof(float*)               * (nChan              );
-	size_t _TransformFwdLap_Size = sizeof(float*)               * (nChan              );
-	size_t _Quants_Size          = sizeof(int16_t*)             * (nChan              );
-	size_t _QuantsCnt_Size       = sizeof(uint16_t*)            * (nChan              );
-	size_t _QuantsPow_Size       = sizeof(double*)              * (nChan              );
-	size_t TransformBuffer_Offs  = 0;
-	size_t TransformTemp_Offs    = TransformBuffer_Offs  + TransformBuffer_Size;
-	size_t TransformFwdLap_Offs  = TransformTemp_Offs    + TransformTemp_Size;
-	size_t AnalysisKeys_Offs     = TransformFwdLap_Offs  + TransformFwdLap_Size;
-	size_t Quants_Offs           = AnalysisKeys_Offs     + AnalysisKeys_Size;
-	size_t QuantsCnt_Offs        = Quants_Offs           + Quants_Size;
-	size_t QuantsPow_Offs        = QuantsCnt_Offs        + QuantsCnt_Size;
-	size_t _TransformBuffer_Offs = QuantsPow_Offs        + QuantsPow_Size;
-	size_t _TransformFwdLap_Offs = _TransformBuffer_Offs + _TransformBuffer_Size;
-	size_t _Quants_Offs          = _TransformFwdLap_Offs + _TransformFwdLap_Size;
-	size_t _QuantsCnt_Offs       = _Quants_Offs          + _Quants_Size;
-	size_t _QuantsPow_Offs       = _QuantsCnt_Offs       + _QuantsCnt_Size;
-	size_t AllocSize = _QuantsPow_Offs + _QuantsPow_Size;
+	//! Clip to maximum available keys
+	//! This can happen if rate control says we can fit more
+	//! non-zero bands than are actually present for this block
+	if(nNzMax > nKeys) nNzMax = nKeys;
 
-	//! Allocate buffer space
-	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
-	if(!Buf) return -1;
-
-	//! Set initial state
-	State->BitBudget   = 0.0;
-	State->CoefBitRate = 1.0 / 7.5; //! Initial approximation (reciprocal of bits per nZ coefficient)
-
-	//! Initialize pointers
-	size_t i, Chan;
-	Buf += -(uintptr_t)Buf % BUFFER_ALIGNMENT;
-	State->TransformBuffer = (float   **)(Buf + _TransformBuffer_Offs);
-	State->TransformTemp   = (float    *)(Buf + TransformTemp_Offs);
-	State->TransformFwdLap = (float   **)(Buf + _TransformFwdLap_Offs);
-	State->AnalysisKeys    = (void     *)(Buf + AnalysisKeys_Offs);
-	State->Quants          = (int16_t **)(Buf + _Quants_Offs);
-	State->QuantsCnt       = (uint16_t**)(Buf + _QuantsCnt_Offs);
-	State->QuantsPow       = (double  **)(Buf + _QuantsPow_Offs);
+	//! Clear quantizer state
 	for(Chan=0;Chan<nChan;Chan++) {
-		State->TransformBuffer[Chan] = (float   *)(Buf + TransformBuffer_Offs) + Chan*BlockSize;
-		State->TransformFwdLap[Chan] = (float   *)(Buf + TransformFwdLap_Offs) + Chan*(BlockSize/2);
-		State->Quants         [Chan] = (int16_t *)(Buf + Quants_Offs         ) + Chan*nQuants;
-		State->QuantsCnt      [Chan] = (uint16_t*)(Buf + QuantsCnt_Offs      ) + Chan*nQuants;
-		State->QuantsPow      [Chan] = (double  *)(Buf + QuantsPow_Offs      ) + Chan*nQuants;
-
-		//! Everything can remain uninitialized except for the lapping buffer
-		for(i=0;i<BlockSize/2;i++) State->TransformFwdLap[Chan][i] = 0.0f;
+		for(QBand=0;QBand<State->nQuants;QBand++) {
+			QuantsCnt[Chan][QBand] = 0;
+			QuantsPow[Chan][QBand] = 0.0;
+		}
 	}
 
-	//! Success
-	return 1;
-}
-
-/**************************************/
-
-//! Destroy encoder state
-void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
-	//! Free buffer space
-	free(State->BufferData);
-}
-
-/**************************************/
-
-//! Encode block
-size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, double RateKbps) {
-	//! Refill bit budget
-	double AvgBitBudget = RateKbps*1000.0/State->RateHz * State->BlockSize;
-	State->BitBudget += AvgBitBudget;
-
-	//! Transform input, build keys, and get maximum number of non-zero bands
-	size_t nKeys = Block_Transform(State, SrcData);
-	size_t nNzMax; {
-		//! Limit to 1.25x target bitrate to avoid quality spikes,
-		//! as these have a tendency to sound bad in context
-		double MinBudget = AvgBitBudget*0.75;
-		double MaxBudget = AvgBitBudget*1.25;
-
-		//! Clip budget to limit, derive nNzMax from that
-		double Budget = State->BitBudget;
-		if(Budget < MinBudget) Budget = MinBudget;
-		if(Budget > MaxBudget) Budget = MaxBudget;
-		nNzMax = round(Budget * State->CoefBitRate);
-
-		//! Sometimes we may get less non-zero bands than we're
-		//! able to code (eg. during silence), so just clip here
-		if(nNzMax > nKeys) nNzMax = nKeys;
+	//! Build initial quantizers by considering all the keys available
+	for(Key=0;Key<nNzMax;Key++) {
+		FETCH_KEY_DATA(Key);
+		QuantsCnt[Chan][QBand]++;
+		QuantsPow[Chan][QBand] += Val*Val;
+	}
+	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<nQuants;QBand++) {
+		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsCnt[Chan][QBand]);
 	}
 
-	//! Encode block
-	size_t nNzCoded;
-	size_t BlockBits = Block_Encode(State, DstBuffer, nNzMax, nKeys, &nNzCoded);
+	//! Remove any collapsed keys
+	size_t nNzBands = 0, nNzBandsOrig = nNzMax;
+	while(nNzBands < nNzBandsOrig) {
+		FETCH_KEY_DATA(nNzBands);
 
-	//! Update state
-	State->BitBudget -= BlockBits;
-	if(nNzCoded) {
-		//! RateDecayFactor specifies how much of the coefficient
-		//! bit rate of the previous block we should take into
-		//! account for future blocks:
-		//!  0.0: Use old cost exclusively
-		//!  1.0: Use new cost exclusively
-		//! With the following formulation, we use the new cost
-		//! exclusively if we hit our nNzMax target exactly,
-		//! but if we didn't hit this target, then we rely more
-		//! on the last-known 'goal' coefficient rate.
-		//! NOTE:
-		//!  -nNzCoded can be greater than nNzMax, depending on
-		//!   the statistics of the zero runs (since we might
-		//!   decide to code a coefficient that we didn't think
-		//!   to include in our calculations), so we need to
-		//!   clip to 1.0 here (since we met our goal)
-		//!  -Slightly biased towards the new cost regardless of
-		//!   meeting the target; this allows some adaptation to
-		//!   take place, hopefully giving us a more precise cost
-		//!   measurement in future blocks
-		double RateDecayFactor = 0.25 + nNzCoded*0.75/nNzMax;
-		if(RateDecayFactor > 1.0) RateDecayFactor = 1.0;
+		//! Collapse?
+		//! Compare with 0.5*Quant, because:
+		//!  round(v / Quant) == 0 <-> abs(v) < 0.5*Quant
+		//! eg. Quant == 1:
+		//!  v == 0.5: round(v / Quant) -> 1 (not collapsed)
+		//!  v == 0.4: round(v / Quant) -> 0 (collapsed)
+		if(Val < 0.0) Val = -Val;
+		if(Val < 0.5*Quants[Chan][QBand]) {
+			//! Remove key from analysis and rebuild quantizer
+			QuantsCnt[Chan][QBand]--;
+			QuantsPow[Chan][QBand] -= Val*Val;
+			Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsCnt[Chan][QBand]);
 
-		double nZCoefCost = (double)nNzCoded / BlockBits;
-		State->CoefBitRate = State->CoefBitRate*(1.0-RateDecayFactor) + nZCoefCost*RateDecayFactor;
+			//! Remove key from list
+			Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
+			nNzBandsOrig--;
+		} else nNzBands++;
 	}
 
-	//! Return block size
-	return BlockBits;
+	//! Try to add more keys if any collapsed above
+	//! Note clipping again: nKeys might've dropped enough that nNzMax needs to change again
+	if(nNzMax > nKeys) nNzMax = nKeys;
+	while(nNzBands < nNzMax) {
+		FETCH_KEY_DATA(nNzBands);
+
+		//! Does this key collapse if we try to fit it to the analysis?
+		size_t  Cnt = QuantsCnt[Chan][QBand] + 1;
+		double  Pow = QuantsPow[Chan][QBand] + Val*Val;
+		int32_t Qnt = Block_Encode_BuildQuantizer(Pow, Cnt);
+		if(Val < 0.0) Val = -Val;
+		if(Val < 0.5*Qnt) {
+			//! Remove key from list
+			Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
+			if(nNzMax > nKeys) nNzMax = nKeys;
+		} else {
+			//! No collapse - save new quantizer state
+			QuantsCnt[Chan][QBand] = Cnt;
+			QuantsPow[Chan][QBand] = Pow;
+			Quants   [Chan][QBand] = Qnt;
+			nNzBands++;
+		}
+	}
+
+	//! Double-check that no keys we kept collapse
+	//! This is needed due to the psy-opt that amplified high frequency
+	//! data, since now we might have smaller values stuck in the middle
+	for(Key=0;Key<nNzBands;) {
+		FETCH_KEY_DATA(Key);
+
+		if(Val < 0.0) Val = -Val;
+		if(Val < 0.5*Quants[Chan][QBand]) {
+			Analysis_KeyRemove(Key, Keys, nKeys); nKeys--;
+			nNzBands--;
+		} else Key++;
+	}
+	return nNzBands;
+#undef FETCH_KEY_DATA
 }
 
 /**************************************/
