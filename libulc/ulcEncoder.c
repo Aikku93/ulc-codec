@@ -25,6 +25,9 @@
 #endif
 /**************************************/
 
+#define MIN_CHANS  1
+#define MIN_BANDS 32 //! Mostly relies on the DCT routines
+
 //! Initialize encoder state
 int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Clear anything that is needed for EncoderState_Destroy()
@@ -34,8 +37,15 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
 	size_t nQuants   = State->nQuants;
-	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
-	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
+	if(nChan     < MIN_CHANS) return -1;
+	if(BlockSize < MIN_BANDS) return -1;
+	{
+		size_t nChanLog2     = IntLog2(nChan);
+		size_t BlockSizeLog2 = IntLog2(BlockSize);
+		if(nChan     > (1u<<nChanLog2))     nChanLog2++; //! Round to next power of two
+		if(BlockSize > (1u<<BlockSizeLog2)) return -1;   //! BlockSize must be a power of two
+		if(nChanLog2+BlockSizeLog2 > ANALYSIS_KEY_MAX_BITS) return -1;
+	}
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal
