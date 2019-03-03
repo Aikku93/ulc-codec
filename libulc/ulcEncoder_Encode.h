@@ -88,38 +88,41 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 				size_t tChan = Keys[Key].Key >> BlockSizeLog2; if(tChan != Chan)   break;
 
 				//! Code the zero runs
-				//! NOTE: Always in multiples of two
-				size_t zR = (tBand - NextNz) / 2;
-				if(zR) do {
+				//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
+				//!       This is because two zero coefficients can be coded as 0h,0h, so
+				//!       we instead use 8h,0h for the 'stop' code. This also allows coding
+				//!       of some coefficients we may have missed (see below)
+				size_t zR = tBand - NextNz;
+				while(zR >= 4) {
 					//! Small run?
 					size_t n = zR;
-					if(n < 26/2) {
-						//! 8h,0h..Bh: 2..24 zeros
-						n = n-2/2;
+					if(n < 26) {
+						//! 8h,1h..Bh: 4..24 zeros
+						n = (n-2)/2;
 						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
 						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
-						n = n+2/2;
+						n = n*2+2;
 					} else {
 						//! 8h,Ch..Fh,Xh: 26..152 zeros (Ch + n>>4, n&Fh)
-						n = n-26/2; if(n > 0x3F) n = 0x3F;
+						n = (n-26)/2; if(n > 0x3F) n = 0x3F;
 						Block_Encode_WriteNybble(0x8,          &DstBuffer, &Size);
 						Block_Encode_WriteNybble(0xC + (n>>4), &DstBuffer, &Size);
 						Block_Encode_WriteNybble(n&0xF,        &DstBuffer, &Size);
-						n = n+26/2;
+						n = n*2+26;
 					}
 
 					//! Insert zeros
-					NextNz += n*2;
+					NextNz += n;
 					zR     -= n;
-				} while(zR);
+				}
 
 				//! Insert coded coefficients
 				//! NOTE:
-				//!  We might still have one more coefficient marked for skipping
+				//!  We might still have more coefficients marked for skipping,
 				//!  but this didn't take into account the actual statistics of
-				//!  the coded zero runs. This means that the coefficient might
-				//!  actually not collapse to 0, so we may as well code it anyway
-				//!  as it would cost the same either way (though it might quantize
+				//!  the coded zero runs. This means that the coefficients might
+				//!  actually not collapse to 0, so we may as well code them anyway
+				//!  as it would cost the same either way (though they might quantize
 				//!  sub-optimally from not being considered originally)
 				do {
 					//! Crossed to the next quantizer band?
@@ -141,11 +144,14 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 				} while(++NextNz <= tBand);
 			} while(++Key < nNzBands);
 
-			//! Finalize the block (0h,0h: Stop)
-			//! If we're at the edge of the block, we may as well terminate
-			//! normally, though, so just cap to max 2x 0h values
-			size_t n = LastNz - NextNz; if(n > 2) n = 2;
-			while(n--) Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+			//! Finalize the block (8h,0h: Stop)
+			//! If we're at the edge of the block, just end normally
+			size_t n = LastNz - NextNz;
+			     if(n == 1) Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+			else if(n >= 2) {
+				Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
+				Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+			}
 		}
 	}
 
