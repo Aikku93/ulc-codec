@@ -134,19 +134,10 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 			while(++NextQuantBand < nQuants && Quants[NextQuantBand] != 0xF) MaxQuantBandBw += QuantsBw[NextQuantBand];
 
 			//! Read the coefficients
-			int32_t LastV = 1; //! Anything non-zero
 			for(;;) {
+				//! Normal coefficient? (-7h..+7h)
 				int32_t v = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
-
-				//! Normal coefficient? (-7..+7)
 				if(v != -0x8) {
-					//! If we have two zeros in a row, this is the stop code 0h,0h
-					if((v|LastV) == 0) {
-						do *CoefDst++ = 0.0f; while(--MaxQuantBandBw);
-						break;
-					}
-					LastV = v;
-
 					//! Crossed to the next quantizer band?
 					//! NOTE: Can only cross one quantizer band at a time, or
 					//!       that quantizer band would've been disabled; this
@@ -157,17 +148,23 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 					//! Store dequantized
 					*CoefDst++ = (float)(v << Quants[CurQuantBand]);
 					if(--MaxQuantBandBw == 0) break;
-					continue;
 				} else {
 					//! Unpack zero run
 					nZ = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
 					if(nZ < 0xC) {
+						//! Stop code?
+						//! 8h,0h
+						if(nZ == 0) {
+							do *CoefDst++ = 0.0f; while(--MaxQuantBandBw);
+							break;
+						}
+
 						//! Small run
-						//! 0h..Bh: 2..24 zeros
+						//! 8h,0h..Bh: 2..24 zeros
 						nZ = nZ*2 + 2;
 					} else {
 						//! Long run
-						//! Ch..Fh,Xh: 26..152 zeros (Ch + n>>4, n&Fh)
+						//! 8h,Ch..Fh,Xh: 26..152 zeros (Ch + n>>4, n&Fh)
 						nZ = (nZ-0xC)<<4 | (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 						nZ = nZ*2 + 26;
 					}
