@@ -5,6 +5,7 @@
 /**************************************/
 #pragma once
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 /**************************************/
@@ -19,15 +20,9 @@
 /**************************************/
 
 //! Build quantizer from RMS of coefficients
-static inline int16_t Block_Encode_BuildQuantizer(double QuantsPow, size_t QuantsCnt) {
-	if(!QuantsCnt) return QUANTIZER_UNUSED;
-#if 0
-	double sd = sqrt(QuantsPow / QuantsCnt); //! RMS
-	       sd = log2(sd / 4.0);              //! Log2 form (division by 4.0 to set that as the 'middle' value for the quantized range 0..7)
-#else //! Possibly faster
-	double sd = log(QuantsPow / QuantsCnt)*0x1.71547652B82FEp-1 - 2.0; //! Log[QuantsPow/QuantsCnt]/Log[4] - 2
-#endif
-	       sd = round(sd);                   //! Rounding
+static inline int16_t Block_Encode_BuildQuantizer(double QuantsPow, double QuantsAvg) {
+	if(QuantsAvg == 0.0) return QUANTIZER_UNUSED;
+	double sd = round(log(QuantsPow / QuantsAvg) * 0x1.71547652B82FEp0 - 2.0); //! Log2[x]=Log[x]/Log[2]
 	if(sd <  0.0) sd =  0.0;
 	if(sd > 14.0) sd = 14.0; //! Fh is reserved
 	return 1 << (size_t)sd;
@@ -61,8 +56,8 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 	float    **CoefBuffer    = State->TransformBuffer;
 	const uint16_t *QuantsBw = State->QuantsBw;
 	int16_t  **Quants        = State->Quants;
-	uint16_t **QuantsCnt     = State->QuantsCnt;
 	double   **QuantsPow     = State->QuantsPow;
+	double   **QuantsAvg     = State->QuantsAvg;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
 	//! Clip to maximum available keys
@@ -73,25 +68,28 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 	//! Clear quantizer state
 	for(Chan=0;Chan<nChan;Chan++) {
 		for(QBand=0;QBand<State->nQuants;QBand++) {
-			QuantsCnt[Chan][QBand] = 0;
 			QuantsPow[Chan][QBand] = 0.0;
+			QuantsAvg[Chan][QBand] = 0.0;
 		}
 	}
 
 	//! Build initial quantizers by considering all the keys available
 	for(Key=0;Key<nNzMax;Key++) {
 		FETCH_KEY_DATA(Key);
-		QuantsCnt[Chan][QBand]++;
+		if(Val < 0.0) Val = -Val;
+
 		QuantsPow[Chan][QBand] += Val*Val;
+		QuantsAvg[Chan][QBand] += Val;
 	}
 	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<nQuants;QBand++) {
-		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsCnt[Chan][QBand]);
+		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAvg[Chan][QBand]);
 	}
 
 	//! Remove any collapsed keys
 	size_t nNzBands = 0, nNzBandsOrig = nNzMax;
 	while(nNzBands < nNzBandsOrig) {
 		FETCH_KEY_DATA(nNzBands);
+		if(Val < 0.0) Val = -Val;
 
 		//! Collapse?
 		//! Compare with 0.5*Quant, because:
@@ -99,12 +97,11 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		//! eg. Quant == 1:
 		//!  v == 0.5: round(v / Quant) -> 1 (not collapsed)
 		//!  v == 0.4: round(v / Quant) -> 0 (collapsed)
-		if(Val < 0.0) Val = -Val;
 		if(Val < 0.5*Quants[Chan][QBand]) {
 			//! Remove key from analysis and rebuild quantizer
-			QuantsCnt[Chan][QBand]--;
 			QuantsPow[Chan][QBand] -= Val*Val;
-			Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsCnt[Chan][QBand]);
+			QuantsAvg[Chan][QBand] -= Val;
+			Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAvg[Chan][QBand]);
 
 			//! Remove key from list
 			Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
@@ -117,20 +114,20 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 	if(nNzMax > nKeys) nNzMax = nKeys;
 	while(nNzBands < nNzMax) {
 		FETCH_KEY_DATA(nNzBands);
+		if(Val < 0.0) Val = -Val;
 
 		//! Does this key collapse if we try to fit it to the analysis?
-		size_t  Cnt = QuantsCnt[Chan][QBand] + 1;
 		double  Pow = QuantsPow[Chan][QBand] + Val*Val;
-		int32_t Qnt = Block_Encode_BuildQuantizer(Pow, Cnt);
-		if(Val < 0.0) Val = -Val;
+		double  Avg = QuantsAvg[Chan][QBand] + Val;
+		int32_t Qnt = Block_Encode_BuildQuantizer(Pow, Avg);
 		if(Val < 0.5*Qnt) {
 			//! Remove key from list
 			Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
 			if(nNzMax > nKeys) nNzMax = nKeys;
 		} else {
 			//! No collapse - save new quantizer state
-			QuantsCnt[Chan][QBand] = Cnt;
 			QuantsPow[Chan][QBand] = Pow;
+			QuantsAvg[Chan][QBand] = Avg;
 			Quants   [Chan][QBand] = Qnt;
 			nNzBands++;
 		}
@@ -141,8 +138,8 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 	//! data, since now we might have smaller values stuck in the middle
 	for(Key=0;Key<nNzBands;) {
 		FETCH_KEY_DATA(Key);
-
 		if(Val < 0.0) Val = -Val;
+
 		if(Val < 0.5*Quants[Chan][QBand]) {
 			Analysis_KeyRemove(Key, Keys, nKeys); nKeys--;
 			nNzBands--;
