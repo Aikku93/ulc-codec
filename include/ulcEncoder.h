@@ -39,14 +39,14 @@ struct ULC_EncoderState_t {
 	//!   float         TransformFwdLap[nChan][BlockSize/2]
 	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
 	//!   int16_t       Quants         [nChan][nQuants]
-	//!   uint16_t      QuantsCnt      [nChan][nQuants]
 	//!   double        QuantsPow      [nChan][nQuants]
+	//!   double        QuantsAvg      [nChan][nQuants]
 	//!  MD-array pointers:
 	//!   float    *_TransformBuffer[nChan]
 	//!   float    *_TransformFwdLap[nChan]
 	//!   int16_t  *_Quants         [nChan]
-	//!   uint16_t *_QuantsCnt      [nChan]
 	//!   double   *_QuantsPow      [nChan]
+	//!   double   *_QuantsAvg      [nChan]
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
@@ -54,8 +54,8 @@ struct ULC_EncoderState_t {
 	float    **TransformFwdLap;
 	void      *AnalysisKeys;
 	int16_t  **Quants;
-	uint16_t **QuantsCnt;
 	double   **QuantsPow;
+	double   **QuantsAvg;
 };
 
 /**************************************/
