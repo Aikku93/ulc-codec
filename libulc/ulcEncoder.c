@@ -55,26 +55,26 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	size_t TransformFwdLap_Size  = sizeof(float)                * (nChan*(BlockSize/2));
 	size_t AnalysisKeys_Size     = sizeof(struct AnalysisKey_t) * (nChan* BlockSize   );
 	size_t Quants_Size           = sizeof(int16_t)              * (nChan* nQuants     );
-	size_t QuantsCnt_Size        = sizeof(uint16_t)             * (nChan* nQuants     );
 	size_t QuantsPow_Size        = sizeof(double)               * (nChan* nQuants     );
+	size_t QuantsAvg_Size        = sizeof(double)               * (nChan* nQuants     );
 	size_t _TransformBuffer_Size = sizeof(float*)               * (nChan              );
 	size_t _TransformFwdLap_Size = sizeof(float*)               * (nChan              );
 	size_t _Quants_Size          = sizeof(int16_t*)             * (nChan              );
-	size_t _QuantsCnt_Size       = sizeof(uint16_t*)            * (nChan              );
 	size_t _QuantsPow_Size       = sizeof(double*)              * (nChan              );
+	size_t _QuantsAvg_Size       = sizeof(double*)              * (nChan              );
 	size_t TransformBuffer_Offs  = 0;
 	size_t TransformTemp_Offs    = TransformBuffer_Offs  + TransformBuffer_Size;
 	size_t TransformFwdLap_Offs  = TransformTemp_Offs    + TransformTemp_Size;
 	size_t AnalysisKeys_Offs     = TransformFwdLap_Offs  + TransformFwdLap_Size;
 	size_t Quants_Offs           = AnalysisKeys_Offs     + AnalysisKeys_Size;
-	size_t QuantsCnt_Offs        = Quants_Offs           + Quants_Size;
-	size_t QuantsPow_Offs        = QuantsCnt_Offs        + QuantsCnt_Size;
-	size_t _TransformBuffer_Offs = QuantsPow_Offs        + QuantsPow_Size;
+	size_t QuantsPow_Offs        = Quants_Offs           + Quants_Size;
+	size_t QuantsAvg_Offs        = QuantsPow_Offs        + QuantsPow_Size;
+	size_t _TransformBuffer_Offs = QuantsAvg_Offs        + QuantsAvg_Size;
 	size_t _TransformFwdLap_Offs = _TransformBuffer_Offs + _TransformBuffer_Size;
 	size_t _Quants_Offs          = _TransformFwdLap_Offs + _TransformFwdLap_Size;
-	size_t _QuantsCnt_Offs       = _Quants_Offs          + _Quants_Size;
-	size_t _QuantsPow_Offs       = _QuantsCnt_Offs       + _QuantsCnt_Size;
-	size_t AllocSize = _QuantsPow_Offs + _QuantsPow_Size;
+	size_t _QuantsPow_Offs       = _Quants_Offs          + _Quants_Size;
+	size_t _QuantsAvg_Offs       = _QuantsPow_Offs       + _QuantsPow_Size;
+	size_t AllocSize = _QuantsAvg_Offs + _QuantsAvg_Size;
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
@@ -92,14 +92,14 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->TransformFwdLap = (float   **)(Buf + _TransformFwdLap_Offs);
 	State->AnalysisKeys    = (void     *)(Buf + AnalysisKeys_Offs);
 	State->Quants          = (int16_t **)(Buf + _Quants_Offs);
-	State->QuantsCnt       = (uint16_t**)(Buf + _QuantsCnt_Offs);
 	State->QuantsPow       = (double  **)(Buf + _QuantsPow_Offs);
+	State->QuantsAvg       = (double  **)(Buf + _QuantsAvg_Offs);
 	for(Chan=0;Chan<nChan;Chan++) {
 		State->TransformBuffer[Chan] = (float   *)(Buf + TransformBuffer_Offs) + Chan*BlockSize;
 		State->TransformFwdLap[Chan] = (float   *)(Buf + TransformFwdLap_Offs) + Chan*(BlockSize/2);
 		State->Quants         [Chan] = (int16_t *)(Buf + Quants_Offs         ) + Chan*nQuants;
-		State->QuantsCnt      [Chan] = (uint16_t*)(Buf + QuantsCnt_Offs      ) + Chan*nQuants;
 		State->QuantsPow      [Chan] = (double  *)(Buf + QuantsPow_Offs      ) + Chan*nQuants;
+		State->QuantsAvg      [Chan] = (double  *)(Buf + QuantsAvg_Offs      ) + Chan*nQuants;
 
 		//! Everything can remain uninitialized except for the lapping buffer
 		for(i=0;i<BlockSize/2;i++) State->TransformFwdLap[Chan][i] = 0.0f;
