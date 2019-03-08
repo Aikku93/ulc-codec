@@ -3,7 +3,7 @@
 //! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
-#if defined(__AVX__)
+#if defined(__AVX__) || defined(__FMA__)
 # include <immintrin.h>
 #endif
 #if defined(__SSE__)
@@ -40,7 +40,7 @@ so we also need some optimization for that area.
 /**************************************/
 
 #define C1 ( 0x1.DE9E45DE9FBFFp-3)
-#define C2 (-0x1.4716e4380e769p-6)
+#define C2 (-0x1.4716E4380E769p-6)
 #define C3 ( 0x1.C9344264DB172p-11)
 
 /**************************************/
@@ -51,6 +51,14 @@ void Fourier_SinCosAVX(__m256 x, __m256 *Sin, __m256 *Cos) {
 	__m256 s, c;
 	sx = _mm256_mul_ps(sx, sx);
 	cx = _mm256_mul_ps(cx, cx);
+#if defined(__FMA__)
+	s  = _mm256_fmadd_ps(sx, _mm256_set1_ps(C3), _mm256_set1_ps(C2));
+	c  = _mm256_fmadd_ps(cx, _mm256_set1_ps(C3), _mm256_set1_ps(C2));
+	s  = _mm256_fmadd_ps(s,  sx,                 _mm256_set1_ps(C1));
+	c  = _mm256_fmadd_ps(c,  cx,                 _mm256_set1_ps(C1));
+	s  = _mm256_fmadd_ps(s,  sx,                 _mm256_set1_ps(-1.0f));
+	c  = _mm256_fmadd_ps(c,  cx,                 _mm256_set1_ps(-1.0f));
+#else
 	s  = _mm256_mul_ps(sx, _mm256_set1_ps(C3));
 	c  = _mm256_mul_ps(cx, _mm256_set1_ps(C3));
 	s  = _mm256_add_ps(s,  _mm256_set1_ps(C2));
@@ -61,10 +69,11 @@ void Fourier_SinCosAVX(__m256 x, __m256 *Sin, __m256 *Cos) {
 	c  = _mm256_add_ps(c,  _mm256_set1_ps(C1));
 	s  = _mm256_mul_ps(s,  sx);
 	c  = _mm256_mul_ps(c,  cx);
-	s  = _mm256_sub_ps(s,  _mm256_set1_ps(1.0f));
-	c  = _mm256_sub_ps(c,  _mm256_set1_ps(1.0f));
-	sx = _mm256_sub_ps(sx, _mm256_set1_ps(1.0f));
-	cx = _mm256_sub_ps(cx, _mm256_set1_ps(1.0f));
+	s  = _mm256_add_ps(s,  _mm256_set1_ps(-1.0f));
+	c  = _mm256_add_ps(c,  _mm256_set1_ps(-1.0f));
+#endif
+	sx = _mm256_add_ps(sx, _mm256_set1_ps(-1.0f));
+	cx = _mm256_add_ps(cx, _mm256_set1_ps(-1.0f));
 	s  = _mm256_mul_ps(s,  sx);
 	c  = _mm256_mul_ps(c,  cx);
 	*Sin = s;
@@ -79,6 +88,14 @@ void Fourier_SinCosSSE(__m128 x, __m128 *Sin, __m128 *Cos) {
 	__m128 s, c;
 	sx = _mm_mul_ps(sx, sx);
 	cx = _mm_mul_ps(cx, cx);
+#if defined(__FMA__)
+	s  = _mm_fmadd_ps(sx, _mm_set1_ps(C3), _mm_set1_ps(C2));
+	c  = _mm_fmadd_ps(cx, _mm_set1_ps(C3), _mm_set1_ps(C2));
+	s  = _mm_fmadd_ps(s,  sx,              _mm_set1_ps(C1));
+	c  = _mm_fmadd_ps(c,  cx,              _mm_set1_ps(C1));
+	s  = _mm_fmadd_ps(s,  sx,              _mm_set1_ps(-1.0f));
+	c  = _mm_fmadd_ps(c,  cx,              _mm_set1_ps(-1.0f));
+#else
 	s  = _mm_mul_ps(sx, _mm_set1_ps(C3));
 	c  = _mm_mul_ps(cx, _mm_set1_ps(C3));
 	s  = _mm_add_ps(s,  _mm_set1_ps(C2));
@@ -89,10 +106,11 @@ void Fourier_SinCosSSE(__m128 x, __m128 *Sin, __m128 *Cos) {
 	c  = _mm_add_ps(c,  _mm_set1_ps(C1));
 	s  = _mm_mul_ps(s,  sx);
 	c  = _mm_mul_ps(c,  cx);
-	s  = _mm_sub_ps(s,  _mm_set1_ps(1.0f));
-	c  = _mm_sub_ps(c,  _mm_set1_ps(1.0f));
-	sx = _mm_sub_ps(sx, _mm_set1_ps(1.0f));
-	cx = _mm_sub_ps(cx, _mm_set1_ps(1.0f));
+	s  = _mm_add_ps(s,  _mm_set1_ps(-1.0f));
+	c  = _mm_add_ps(c,  _mm_set1_ps(-1.0f));
+#endif
+	sx = _mm_add_ps(sx, _mm_set1_ps(-1.0f));
+	cx = _mm_add_ps(cx, _mm_set1_ps(-1.0f));
 	s  = _mm_mul_ps(s,  sx);
 	c  = _mm_mul_ps(c,  cx);
 	*Sin = s;
@@ -102,9 +120,9 @@ void Fourier_SinCosSSE(__m128 x, __m128 *Sin, __m128 *Cos) {
 /**************************************/
 
 void Fourier_SinCos(float x, float *Sin, float *Cos) {
-	float sx = x - 1.0f, cx = x; //! Phase-change sine to cosine
-	sx *= sx; *Sin = (sx - 1.0f)*((C1 + (C2 + C3*sx)*sx)*sx - 1.0f);
-	cx *= cx; *Cos = (cx - 1.0f)*((C1 + (C2 + C3*cx)*cx)*cx - 1.0f);
+	float sx = x + -1.0f, cx = x; //! Phase-change sine to cosine
+	sx *= sx; *Sin = (sx + -1.0f)*((C1 + (C2 + C3*sx)*sx)*sx + -1.0f);
+	cx *= cx; *Cos = (cx + -1.0f)*((C1 + (C2 + C3*cx)*cx)*cx + -1.0f);
 }
 
 /**************************************/
