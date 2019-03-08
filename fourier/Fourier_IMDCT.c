@@ -50,10 +50,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		b = _mm256_shuffle_ps(b, b, 0x1B);
 		b = _mm256_permute2f128_ps(b, b, 0x01);
 #if defined(__FMA__)
-		t0 = _mm256_mul_ps(s, _mm256_xor_ps(a, _mm256_set1_ps(-0.0f)));
-		t1 = _mm256_mul_ps(c, a);
-		t0 = _mm256_fmadd_ps(c, b, t0);
-		t1 = _mm256_fmadd_ps(s, b, t1);
+		t0 = _mm256_mul_ps(c, b);
+		t1 = _mm256_mul_ps(s, b);
+		t0 = _mm256_fnmadd_ps(s, a, t0);
+		t1 = _mm256_fmadd_ps (c, a, t1);
 #else
 		t0 = _mm256_sub_ps(_mm256_mul_ps(c, b), _mm256_mul_ps(s, a));
 		t1 = _mm256_add_ps(_mm256_mul_ps(s, b), _mm256_mul_ps(c, a));
@@ -63,10 +63,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		_mm256_store_ps(BufOut + i,       t0);
 		_mm256_store_ps(BufOut - i + N-8, t1);
 #if defined(__FMA__)
-		t0 = _mm256_mul_ps(ws, _mm256_xor_ps(s, _mm256_set1_ps(-0.0f)));
-		t1 = _mm256_mul_ps(wc, s);
-		t0 = _mm256_fmadd_ps(wc, c, t0);
-		t1 = _mm256_fmadd_ps(ws, c, t1);
+		t0 = _mm256_mul_ps(wc, c);
+		t1 = _mm256_mul_ps(ws, c);
+		t0 = _mm256_fnmadd_ps(ws, s, t0);
+		t1 = _mm256_fmadd_ps (wc, s, t1);
 #else
 		t0 = _mm256_sub_ps(_mm256_mul_ps(wc, c), _mm256_mul_ps(ws, s));
 		t1 = _mm256_add_ps(_mm256_mul_ps(ws, c), _mm256_mul_ps(wc, s));
@@ -88,10 +88,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		b = _mm256_shuffle_ps(b, b, 0x1B);
 		b = _mm256_permute2f128_ps(b, b, 0x01);
 #if defined(__FMA__)
-		t0 = _mm256_mul_ps(c, _mm256_xor_ps(b, _mm256_set1_ps(-0.0f)));
-		t1 = _mm256_mul_ps(s, b);
-		t0 = _mm256_fmadd_ps(s, a, t0);
-		t1 = _mm256_fmadd_ps(c, a, t1);
+		t0 = _mm256_mul_ps(s, a);
+		t1 = _mm256_mul_ps(c, a);
+		t0 = _mm256_fnmadd_ps(c, b, t0);
+		t1 = _mm256_fmadd_ps (s, b, t1);
 #else
 		t0 = _mm256_sub_ps(_mm256_mul_ps(s, a), _mm256_mul_ps(c, b));
 		t1 = _mm256_add_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
@@ -101,10 +101,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		_mm256_store_ps(BufOut - i + N/2-8, t0);
 		_mm256_store_ps(BufOut + i + N/2,   t1);
 #if defined(__FMA__)
-		t0 = _mm256_mul_ps(ws, _mm256_xor_ps(s, _mm256_set1_ps(-0.0f)));
-		t1 = _mm256_mul_ps(wc, s);
-		t0 = _mm256_fmadd_ps(wc, c, t0);
-		t1 = _mm256_fmadd_ps(ws, c, t1);
+		t0 = _mm256_mul_ps(wc, c);
+		t1 = _mm256_mul_ps(ws, c);
+		t0 = _mm256_fnmadd_ps(ws, s, t0);
+		t1 = _mm256_fmadd_ps (wc, s, t1);
 #else
 		t0 = _mm256_sub_ps(_mm256_mul_ps(wc, c), _mm256_mul_ps(ws, s));
 		t1 = _mm256_add_ps(_mm256_mul_ps(ws, c), _mm256_mul_ps(wc, s));
@@ -136,10 +136,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		b = _mm_loadr_ps(BufLap - i + N/2-4);
 		a = _mm_load_ps (BufTmp + i + N/2);
 #if defined(__FMA__)
-		t0 = _mm_mul_ps(s, _mm_xor_ps(a, _mm_set1_(-0.0f)));
-		t1 = _mm_mul_ps(c, a);
-		t0 = _mm_fmadd_ps(c, b, t0);
-		t1 = _mm_fmadd_ps(s, b, t1);
+		t0 = _mm_mul_ps(c, b);
+		t1 = _mm_mul_ps(s, b);
+		t0 = _mm_fnmadd_ps(s, a, t0);
+		t1 = _mm_fmadd_ps (c, a, t1);
 #else
 		t0 = _mm_sub_ps(_mm_mul_ps(c, b), _mm_mul_ps(s, a));
 		t1 = _mm_add_ps(_mm_mul_ps(s, b), _mm_mul_ps(c, a));
@@ -147,10 +147,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		_mm_store_ps (BufOut + i,       t0);
 		_mm_storer_ps(BufOut - i + N-4, t1);
 #if defined(__FMA__)
-		t0 = _mm_mul_ps(ws, _mm_xor_ps(s, _mm_set1_ps(-0.0f)));
-		t1 = _mm_mul_ps(wc, s);
-		t0 = _mm_fmadd_ps(wc, c, t0);
-		t1 = _mm_fmadd_ps(ws, c, t1);
+		t0 = _mm_mul_ps(wc, c);
+		t1 = _mm_mul_ps(ws, c);
+		t0 = _mm_fnmadd_ps(ws, s, t0);
+		t1 = _mm_fmadd_ps (wc, s, t1);
 #else
 		t0 = _mm_sub_ps(_mm_mul_ps(wc, c), _mm_mul_ps(ws, s));
 		t1 = _mm_add_ps(_mm_mul_ps(ws, c), _mm_mul_ps(wc, s));
@@ -170,10 +170,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		b = _mm_loadr_ps(BufTmp - i + N-4);
 		a = _mm_load_ps (BufLap + i);
 #if defined(__FMA__)
-		t0 = _mm_mul_ps(c, _mm_xor_ps(b, _mm_set1_ps(-0.0f)));
-		t1 = _mm_mul_ps(s, b);
-		t0 = _mm_fmadd_ps(s, a, t0);
-		t1 = _mm_fmadd_ps(c, a, t1);
+		t0 = _mm_mul_ps(s, a);
+		t1 = _mm_mul_ps(c, a);
+		t0 = _mm_fnmadd_ps(c, b, t0);
+		t1 = _mm_fmadd_ps (s, b, t1);
 #else
 		t0 = _mm_sub_ps(_mm_mul_ps(s, a), _mm_mul_ps(c, b));
 		t1 = _mm_add_ps(_mm_mul_ps(c, a), _mm_mul_ps(s, b));
@@ -181,10 +181,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		_mm_storer_ps(BufOut - i + N/2-4, t0);
 		_mm_store_ps (BufOut + i + N/2,   t1);
 #if defined(__FMA__)
-		t0 = _mm_mul_ps(ws, _mm_xor_ps(s, _mm_set1_ps(-0.0f)));
-		t1 = _mm_mul_ps(wc, s);
-		t0 = _mm_fmadd_ps(wc, c, t0);
-		t1 = _mm_fmadd_ps(ws, c, t1);
+		t0 = _mm_mul_ps(wc, c);
+		t1 = _mm_mul_ps(ws, c);
+		t0 = _mm_fnmadd_ps(ws, s, t0);
+		t1 = _mm_fmadd_ps (wc, s, t1);
 #else
 		t0 = _mm_sub_ps(_mm_mul_ps(wc, c), _mm_mul_ps(ws, s));
 		t1 = _mm_add_ps(_mm_mul_ps(ws, c), _mm_mul_ps(wc, s));
