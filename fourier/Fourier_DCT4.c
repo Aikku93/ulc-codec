@@ -3,7 +3,7 @@
 //! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
-#if defined(__AVX__)
+#if defined(__AVX__) || defined(__FMA__)
 # include <immintrin.h>
 #endif
 #if defined(__SSE__)
@@ -85,6 +85,8 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 		      float *DstLo = Tmp;
 		      float *DstHi = Tmp + N;
 #if defined(__AVX__)
+		__m256 a, b;
+		__m256 t0, t1;
 		__m256 wc, ws; {
 			float c, s;
 			Fourier_SinCos(8.0f * Ns, &s, &c);
@@ -99,27 +101,41 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 
 		for(i=0;i<N/16;i++) {
 			SrcHi -= 8;
-			__m256 b = _mm256_load_ps(SrcHi);
-			__m256 a = _mm256_load_ps(SrcLo);
+			b = _mm256_load_ps(SrcHi);
+			a = _mm256_load_ps(SrcLo);
 			SrcLo += 8;
 			b = _mm256_shuffle_ps(b, b, 0x1B);
 			b = _mm256_permute2f128_ps(b, b, 0x01);
-
-			__m256 t1 = _mm256_sub_ps(_mm256_mul_ps(s, a), _mm256_mul_ps(c, b));
-			__m256 t0 = _mm256_add_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
+#if defined(__FMA__)
+			t1 = _mm256_mul_ps(c, _mm256_xor_ps(b, _mm256_set1_ps(-0.0f)));
+			t0 = _mm256_mul_ps(s, b);
+			t1 = _mm256_fmadd_ps(s, a, t1);
+			t0 = _mm256_fmadd_ps(c, a, t0);
+#else
+			t1 = _mm256_sub_ps(_mm256_mul_ps(s, a), _mm256_mul_ps(c, b));
+			t0 = _mm256_add_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
+#endif
 			t1 = _mm256_xor_ps(t1, _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f));
 			t1 = _mm256_shuffle_ps(t1, t1, 0x1B);
 			t1 = _mm256_permute2f128_ps(t1, t1, 0x01);
 
 			_mm256_store_ps(DstLo, t0); DstLo += 8;
 			DstHi -= 8; _mm256_store_ps(DstHi, t1);
-
+#if defined(__FMA__)
+			t0 = _mm256_mul_ps(ws, _mm256_xor_ps(s, _mm256_set1_ps(-0.0f)));
+			t1 = _mm256_mul_ps(wc, s);
+			t0 = _mm256_fmadd_ps(wc, c, t0);
+			t1 = _mm256_fmadd_ps(ws, c, t1);
+#else
 			t0 = _mm256_sub_ps(_mm256_mul_ps(wc, c), _mm256_mul_ps(ws, s));
 			t1 = _mm256_add_ps(_mm256_mul_ps(ws, c), _mm256_mul_ps(wc, s));
+#endif
 			c = t0;
 			s = t1;
 		}
 #elif defined(__SSE__)
+		__m128 a, b;
+		__m128 t0, t1;
 		__m128 wc, ws; {
 			float c, s;
 			Fourier_SinCos(4.0f * Ns, &s, &c);
@@ -134,19 +150,31 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 
 		for(i=0;i<N/8;i++) {
 			SrcHi -= 4;
-			__m128 b = _mm_loadr_ps(SrcHi);
-			__m128 a = _mm_load_ps(SrcLo);
+			b = _mm_loadr_ps(SrcHi);
+			a = _mm_load_ps(SrcLo);
 			SrcLo += 4;
-
-			__m128 t1 = _mm_sub_ps(_mm_mul_ps(s, a), _mm_mul_ps(c, b));
-			__m128 t0 = _mm_add_ps(_mm_mul_ps(c, a), _mm_mul_ps(s, b));
+#if defined(__FMA__)
+			t1 = _mm_mul_ps(c, _mm_xor_ps(b, _mm_set1_ps(-0.0f)));
+			t0 = _mm_mul_ps(s, b);
+			t1 = _mm_fmadd_ps(s, a, t1);
+			t0 = _mm_fmadd_ps(c, a, t0);
+#else
+			t1 = _mm_sub_ps(_mm_mul_ps(s, a), _mm_mul_ps(c, b));
+			t0 = _mm_add_ps(_mm_mul_ps(c, a), _mm_mul_ps(s, b));
+#endif
 			t1 = _mm_xor_ps(t1, _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f));
 
 			_mm_store_ps(DstLo, t0); DstLo += 4;
 			DstHi -= 4; _mm_storer_ps(DstHi, t1);
-
+#if defined(__FMA__)
+			t0 = _mm_mul_ps(ws, _mm_xor_ps(s, _mm_set1_ps(-0.0f)));
+			t1 = _mm_mul_ps(wc, s);
+			t0 = _mm_fmadd_ps(wc, c, t0);
+			t1 = _mm_fmadd_ps(ws, c, t1);
+#else
 			t0 = _mm_sub_ps(_mm_mul_ps(wc, c), _mm_mul_ps(ws, s));
 			t1 = _mm_add_ps(_mm_mul_ps(ws, c), _mm_mul_ps(wc, s));
+#endif
 			c = t0;
 			s = t1;
 		}
