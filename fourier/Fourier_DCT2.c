@@ -17,11 +17,51 @@
 
 //! DCT-II (N=8)
 static void DCT2_8(float *x) {
-	const float sqrt1_2 = 0x1.6A09E667F3BCD0p-1;
-	const float c1_4 = 0x1.F6297CFF75CB00p-1, s1_4 = 0x1.8F8B83C69A60A0p-3;
-	const float c3_4 = 0x1.A9B66290EA1A30p-1, s3_4 = 0x1.1C73B39AE68C80p-1;
-	const float c6_4 = 0x1.87DE2A6AEA9630p-2, s6_4 = 0x1.D906BCF328D460p-1;
-
+	const float sqrt1_2 = 0x1.6A09E667F3BCDp-1;
+	const float c1_4 = 0x1.F6297CFF75CB0p-1, s1_4 = 0x1.8F8B83C69A60Bp-3;
+	const float c3_4 = 0x1.A9B66290EA1A3p-1, s3_4 = 0x1.1C73B39AE68C8p-1;
+	const float c6_4 = 0x1.87DE2A6AEA963p-2, s6_4 = 0x1.D906BCF328D46p-1;
+#if defined(__SSE__)
+	__m128 x0, x1;
+	__m128 a0, a1;
+	x0 = _mm_load_ps (x+0);
+	x1 = _mm_loadr_ps(x+4);
+	a0 = _mm_add_ps(x0, x1);
+	a1 = _mm_sub_ps(x0, x1);
+	x0 = _mm_shuffle_ps(a0, a0, 0x1B);
+	x0 = _mm_xor_ps(x0, _mm_setr_ps(-0.0f, -0.0f, 0.0f, 0.0f));
+	x0 = _mm_add_ps(x0, a0);
+	x1 = _mm_shuffle_ps(a1, a1, 0x1B);
+	a1 = _mm_mul_ps(a1, _mm_setr_ps( c3_4,  c1_4, c1_4, c3_4));
+#if defined(__FMA__)
+	x1 = _mm_fmadd_ps(x1, _mm_setr_ps(-s3_4, -s1_4, s1_4, s3_4), a1);
+#else
+	x1 = _mm_mul_ps(x1, _mm_setr_ps(-s3_4, -s1_4, s1_4, s3_4));
+	x1 = _mm_add_ps(x1, a1);
+#endif
+	a0 = _mm_shuffle_ps(x0, x0, 0xB1);
+	x0 = _mm_mul_ps(x0, _mm_setr_ps(s6_4, -s6_4, -1.0f, 1.0f));
+#if defined(__FMA__)
+	x0 = _mm_fmadd_ps(a0, _mm_setr_ps(c6_4,  c6_4,  1.0f, 1.0f), x0);
+#else
+	a0 = _mm_mul_ps(a0, _mm_setr_ps(c6_4,  c6_4,  1.0f, 1.0f));
+	x0 = _mm_add_ps(x0, a0);
+#endif
+	a1 = _mm_shuffle_ps(x1, x1, 0x4E);
+	a1 = _mm_xor_ps(a1, _mm_setr_ps(-0.0f, -0.0f, 0.0f, 0.0f));
+	x1 = _mm_add_ps(x1, a1);
+	a1 = _mm_shuffle_ps(x1, x1, 0xB4);
+	a1 = _mm_xor_ps(a1, _mm_setr_ps(0.0f, 0.0f, -0.0f, 0.0f));
+	x1 = _mm_add_ps(x1, a1);
+	x1 = _mm_mul_ps(x1, _mm_setr_ps(0.5f, -0.5f, sqrt1_2, sqrt1_2));
+	a0 = _mm_shuffle_ps(x0, x0, 0x63);
+	a1 = _mm_shuffle_ps(x1, x1, 0x93);
+	x0 = _mm_unpacklo_ps(a0, a1);
+	x1 = _mm_unpackhi_ps(a0, a1);
+	x1 = _mm_mul_ss(x1, _mm_set1_ps(sqrt1_2));
+	_mm_store_ps(x+0, x0);
+	_mm_store_ps(x+4, x1);
+#else
 	//! First stage butterflies (DCT2_8)
 	float s07 = x[0]+x[7];
 	float d07 = x[0]-x[7];
@@ -61,6 +101,7 @@ static void DCT2_8(float *x) {
 	x[5] = b1;
 	x[3] = c1;
 	x[7] = (a1 - d1) * sqrt1_2;
+#endif
 }
 
 /**************************************/
