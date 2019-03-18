@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 /**************************************/
 #include "ulcEncoder.h"
 /**************************************/
@@ -15,11 +16,17 @@
 #endif
 /**************************************/
 
-//! Coding mode
-//! This can be changed without rebuilding the decode tool
-static const size_t BlockSize = 2048;
-static const size_t nQuants = 8;
-static const uint16_t QuantsBw[] = {16,32,48,96,192,384,576,704};
+//! Transform block size
+//! Feel free to change this; the decoder doesn't care
+#define BLOCK_SIZE 2048
+
+/**************************************/
+
+//! Cache memory
+//! This avoids too many calls to fwrite(), which
+//! hopefully avoids excessive system calls
+#define CACHE_SIZE (256 * 1024) //! 256KiB
+static uint8_t CacheMem[CACHE_SIZE];
 
 /**************************************/
 
@@ -54,8 +61,8 @@ int main(int argc, const char *argv[]) {
 	}
 
 	//! Allocate buffers
-	int16_t *BlockFetch   = malloc(sizeof(int16_t) * nChan*BlockSize);
-	char    *_BlockBuffer = malloc(sizeof(float)   * nChan*BlockSize + BUFFER_ALIGNMENT-1);
+	int16_t *BlockFetch   = malloc(sizeof(int16_t) * nChan*BLOCK_SIZE);
+	char    *_BlockBuffer = malloc(sizeof(float)   * nChan*BLOCK_SIZE + BUFFER_ALIGNMENT-1);
 	if(!BlockFetch || !_BlockBuffer) {
 		printf("ERROR: Out of memory.\n");
 		free(_BlockBuffer);
@@ -94,38 +101,32 @@ int main(int argc, const char *argv[]) {
 			uint32_t Magic[2];  //! [00h] Magic values
 			uint32_t nSamp;     //! [08h] Number of samples
 			uint32_t RateHz;    //! [0Ch] Playback rate
-			uint16_t BlockSize; //! [10h] Transform block size
-			uint16_t nQuants;   //! [12h] Quantizer bands
+			uint32_t BlockSize; //! [10h] Transform block size
 			uint16_t nChan;     //! [14h] Channels in stream
 			uint16_t RateKbps;  //! [16h] Nominal coding rate
 		} Header = {
-			{(uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'a'<<24), (uint32_t)(0x01 | 0xFF<<8 | 0x02<<16 | 0xFE<<24)},
+			{(uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'b'<<24), (uint32_t)(0x01 | 0xFF<<8 | 0x02<<16 | 0xFE<<24)},
 			nSamp,
 			RateHz,
-			(uint16_t)BlockSize,
-			(uint16_t)nQuants,
+			BLOCK_SIZE,
 			(uint16_t)nChan,
 			(uint16_t)RateKbps,
 		};
 		fwrite(&Header, sizeof(Header), 1, OutFile);
-
-		//! Quantizer bands
-		fwrite(QuantsBw, sizeof(uint16_t), nQuants, OutFile);
 	}
 
 	//! Create encoder
 	struct ULC_EncoderState_t Encoder = {
 		.RateHz    = RateHz,
 		.nChan     = nChan,
-		.BlockSize = BlockSize,
-		.nQuants   = nQuants,
-		.QuantsBw  = QuantsBw,
+		.BlockSize = BLOCK_SIZE,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		//! Process blocks
 		size_t n, Chan;
-		size_t Blk, nBlk = (nSamp + BlockSize-1) / BlockSize;
+		size_t Blk, nBlk = (nSamp + BLOCK_SIZE-1) / BLOCK_SIZE;
 		uint64_t TotalSize = 0;
+		size_t CacheIdx = 0;
 		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
 			//! Show progress
 			printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
@@ -133,15 +134,15 @@ int main(int argc, const char *argv[]) {
 
 			//! Fill buffer data
 			//! BlockFetch[] is free after this
-			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BlockSize, InFile);
-			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-				BlockBuffer[Chan*BlockSize+n] = (n < nMax) ? BlockFetch[n*nChan+Chan] : 0.0f;
+			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BLOCK_SIZE, InFile);
+			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BLOCK_SIZE;n++) {
+				BlockBuffer[Chan*BLOCK_SIZE+n] = (n < nMax) ? BlockFetch[n*nChan+Chan] : 0.0f;
 			}
 
 			//! Apply M/S transform
-			if(nChan == 2) for(n=0;n<BlockSize;n++) {
-				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
-				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
+			if(nChan == 2) for(n=0;n<BLOCK_SIZE;n++) {
+				float *a = &BlockBuffer[0*BLOCK_SIZE+n], va = *a;
+				float *b = &BlockBuffer[1*BLOCK_SIZE+n], vb = *b;
 				*a = (va + vb) * 0.5f;
 				*b = (va - vb) * 0.5f;
 			}
@@ -150,9 +151,29 @@ int main(int argc, const char *argv[]) {
 			//! Reuse BlockFetch[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockFetch;
 			size_t Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps);
-			fwrite(BlockFetch, 1, (Size+7)/8, OutFile);
 			TotalSize += Size;
+
+			//! Copy what we can into the cache
+			Size = (Size+7) / 8;
+			while(Size) {
+				//! Copy up to the limits of the cache area
+				size_t n = CACHE_SIZE - CacheIdx; //! =CacheRem
+				if(Size < n) n = Size;
+				Size -= n;
+
+				memcpy(CacheMem+CacheIdx, EncData, n);
+				EncData += n;
+				CacheIdx += n;
+				if(CacheIdx == CACHE_SIZE) {
+					//! Flush to file
+					fwrite(CacheMem, sizeof(uint8_t), CacheIdx, OutFile);
+					CacheIdx = 0;
+				}
+			}
 		}
+
+		//! Flush cache
+		fwrite(CacheMem, sizeof(uint8_t), CacheIdx, OutFile);
 
 		//! Show statistics
 		printf(
