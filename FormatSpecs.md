@@ -34,9 +34,13 @@ This modifies the current quantizer. Simple enough.
 
 ```Quantizer = 2^[third nybble]```
 
+Each channel begins with a nybble specifying the initial quantizer, akin to a silent ```8h,0h``` at the start.
+
 #### ```8h,0h,Fh```: Stop
 
 This signals that the remaining coefficients for this channel should be zeroed out.
+
+A channel's block may begin with ```[8h,0h,]Fh```; this means that the channel is silent.
 
 #### ```8h,1h..Bh```: Zeros run (short)
 
