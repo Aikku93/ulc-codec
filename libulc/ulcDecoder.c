@@ -36,23 +36,20 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	//! Verify parameters
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
-	size_t nQuants   = State->nQuants;
 	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
 	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
 
 	//! Get buffer offsets+sizes
 	//! PONDER: As with the encoder, this... is probably not ideal
-	size_t TransformBuffer_Size  = sizeof(float)    * (nChan* BlockSize   );
-	size_t TransformTemp_Size    = sizeof(float)    * (       BlockSize   );
-	size_t TransformInvLap_Size  = sizeof(float)    * (nChan*(BlockSize/2));
-	size_t Quants_Size           = sizeof(uint8_t)  * (nQuants            );
-	size_t _TransformInvLap_Size = sizeof(float*)   * (nChan              );
+	size_t TransformBuffer_Size  = sizeof(float)  * (nChan* BlockSize   );
+	size_t TransformTemp_Size    = sizeof(float)  * (       BlockSize   );
+	size_t TransformInvLap_Size  = sizeof(float)  * (nChan*(BlockSize/2));
+	size_t _TransformInvLap_Size = sizeof(float*) * (nChan              );
 	size_t TransformBuffer_Offs  = 0;
-	size_t TransformTemp_Offs    = TransformBuffer_Offs  + TransformBuffer_Size;
-	size_t TransformInvLap_Offs  = TransformTemp_Offs    + TransformTemp_Size;
-	size_t Quants_Offs           = TransformInvLap_Offs  + TransformInvLap_Size;
-	size_t _TransformInvLap_Offs = Quants_Offs           + Quants_Size;
-	size_t AllocSize = _TransformInvLap_Offs + _TransformInvLap_Size;
+	size_t TransformTemp_Offs    = TransformBuffer_Offs + TransformBuffer_Size;
+	size_t TransformInvLap_Offs  = TransformTemp_Offs   + TransformTemp_Size;
+	size_t _TransformInvLap_Offs = TransformInvLap_Offs + TransformInvLap_Size;
+	size_t AllocSize             = _TransformInvLap_Offs + _TransformInvLap_Size;
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
@@ -64,7 +61,6 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	State->TransformBuffer = (float  *)(Buf + TransformBuffer_Offs);
 	State->TransformTemp   = (float  *)(Buf + TransformTemp_Offs);
 	State->TransformInvLap = (float **)(Buf + _TransformInvLap_Offs);
-	State->Quants          = (uint8_t*)(Buf + Quants_Offs);
 	for(Chan=0;Chan<nChan;Chan++) {
 		State->TransformInvLap[Chan] = (float*)(Buf + TransformInvLap_Offs) + Chan*(BlockSize/2);
 
@@ -98,87 +94,59 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
-	size_t nChan             = State->nChan;
-	size_t BlockSize         = State->BlockSize;
-	size_t nQuants           = State->nQuants;
-	const uint16_t *QuantsBw = State->QuantsBw;
-	float *TransformBuffer   = State->TransformBuffer;
-	float *TransformTemp     = State->TransformTemp;
-	float **TransformInvLap  = State->TransformInvLap;
-	uint8_t *Quants          = State->Quants;
+	size_t nChan            = State->nChan;
+	size_t BlockSize        = State->BlockSize;
+	float *TransformBuffer  = State->TransformBuffer;
+	float *TransformTemp    = State->TransformTemp;
+	float **TransformInvLap = State->TransformInvLap;
 
-	size_t Chan, QBand;
+	size_t Chan;
 	size_t Size = 0;
 	for(Chan=0;Chan<nChan;Chan++) {
-		//! Read quantizers
-		for(QBand=0;QBand<nQuants;QBand++) Quants[QBand] = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-
 		//! Start decoding coefficients
-		size_t NextQuantBand = 0;
+		int32_t v;
 		float *CoefDst = TransformBuffer;
-		for(;;) {
-			size_t nZ;
+		size_t CoefRem = BlockSize;
+		uint8_t Quant  = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
+		if(Quant == 0xF) {
+			//! [8h,0h,]Fh: Stop
+			do *CoefDst++ = 0.0f; while(--CoefRem);
+		} else for(;;) {
+			//! -7h..+7h: Normal
+			v = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
+			if(v != -0x8) {
+				//! Store dequantized
+				*CoefDst++ = (float)(v << Quant);
+				if(--CoefRem == 0) break;
+				continue;
+			}
 
-			//! Insert zeros in unused quantizer bands
-			nZ = 0;
-			while(NextQuantBand < nQuants && Quants[NextQuantBand] == 0xF) nZ += QuantsBw[NextQuantBand++];
-			if(nZ) do *CoefDst++ = 0.0f; while(--nZ);
-			if(NextQuantBand >= nQuants) break;
+			//! Unpack escape code
+			v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
+			if(v != 0x0) {
+				//! 8h,1h..Bh:     4.. 24 zeros
+				//! 8h,Ch..Fh,Xh: 26..152 zeros
+				size_t nZ = v;
+				if(nZ < 0xC) nZ = nZ*2 + 2;
+				else {
+					nZ = (nZ-0xC)<<4 | (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+					nZ = nZ*2 + 26;
+				}
 
-			//! Get bandwidth for current quantizer band (to keep track of when
-			//! it changes, for consecutive enabled quantizer bands) as well as
-			//! the bandwidth until the last consecutive enabled quantizer band
-			size_t CurQuantBand    = NextQuantBand;
-			size_t MaxQuantBandBw  = QuantsBw[CurQuantBand];
-			float *CurQuantBandEnd = CoefDst + MaxQuantBandBw;
-			while(++NextQuantBand < nQuants && Quants[NextQuantBand] != 0xF) MaxQuantBandBw += QuantsBw[NextQuantBand];
+				//! Clipping to avoid buffer overflow on corrupted blocks
+				if(nZ > CoefRem) nZ = CoefRem;
 
-			//! Read the coefficients
-			for(;;) {
-				//! Normal coefficient? (-7h..+7h)
-				int32_t v = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
-				if(v != -0x8) {
-					//! Crossed to the next quantizer band?
-					//! NOTE: Can only cross one quantizer band at a time, or
-					//!       that quantizer band would've been disabled; this
-					//!       simplifies the following into an if() statement
-					//!       rather than a while() loop
-					if(CoefDst >= CurQuantBandEnd) CurQuantBandEnd += QuantsBw[++CurQuantBand];
-
-					//! Store dequantized
-					*CoefDst++ = (float)(v << Quants[CurQuantBand]);
-					if(--MaxQuantBandBw == 0) break;
-				} else {
-					//! Unpack zero run
-					nZ = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-					if(nZ < 0xC) {
-						//! Stop code?
-						//! 8h,0h
-						if(nZ == 0) {
-							do *CoefDst++ = 0.0f; while(--MaxQuantBandBw);
-							break;
-						}
-
-						//! Small run
-						//! 8h,0h..Bh: 2..24 zeros
-						nZ = nZ*2 + 2;
-					} else {
-						//! Long run
-						//! 8h,Ch..Fh,Xh: 26..152 zeros (Ch + n>>4, n&Fh)
-						nZ = (nZ-0xC)<<4 | (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-						nZ = nZ*2 + 26;
-					}
-
-					//! Prevent buffer uverflow
-					//! PONDER: Maybe just report the block as broken?
-					if(nZ > MaxQuantBandBw) {
-						nZ = MaxQuantBandBw;
-					}
-
-					//! Insert zeros
-					MaxQuantBandBw -= nZ;
-					do *CoefDst++ = 0.0f; while(--nZ);
-					if(!MaxQuantBandBw) break;
+				//! Insert zeros
+				CoefRem -= nZ;
+				do *CoefDst++ = 0.0f; while(--nZ);
+				if(CoefRem == 0) break;
+			} else {
+				//! 8h,0h,0h..Eh: Quantizer change
+				//! 8h,0h,Fh:     Stop
+				Quant = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
+				if(Quant == 0xF) {
+					do *CoefDst++ = 0.0f; while(--CoefRem);
+					break;
 				}
 			}
 		}
