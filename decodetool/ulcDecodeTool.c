@@ -17,6 +17,10 @@
 #endif
 /**************************************/
 
+#define MAX_QUANTS 48
+
+/**************************************/
+
 //! Clip to 16bit range
 static inline float Clip16(float x) {
 	if(x < -0x8000) return -0x8000;
@@ -31,29 +35,26 @@ struct FileHeader_t {
 	uint32_t Magic[2];  //! [00h] Magic values
 	uint32_t nSamp;     //! [08h] Number of samples
 	uint32_t RateHz;    //! [0Ch] Playback rate
-	uint16_t BlockSize; //! [10h] Transform block size
-	uint16_t nQuants;   //! [12h] Quantizer bands
+	uint32_t BlockSize; //! [10h] Transform block size
 	uint16_t nChan;     //! [14h] Channels in stream
 	uint16_t RateKbps;  //! [16h] Nominal coding rate
 };
 
 //! Decoding state
 #define MAX_BLOCK_SIZE 4096
-#define MAX_NQUANTS      24
 #define MAX_CHANS         4
-static const size_t CacheMinBlockSize = ((4*MAX_BLOCK_SIZE + 4*MAX_NQUANTS)*MAX_CHANS + 7) / 8;
-static const size_t CacheSize = 64*1024; //! 64KiB
+static const size_t CacheMinBlockSize = ((4 + 4*MAX_BLOCK_SIZE + 12*(MAX_QUANTS-1))*MAX_CHANS + 7) / 8;
+static const size_t CacheSize = 256*1024;
 struct DecodeState_t {
 	//! These need to be cleared to NULL
 	FILE *FileIn;
 	FILE *FileOut;
 	char *AllocBuffer;
 
-	float    *BlockBuffer;
-	int16_t  *BlockOutput;
-	uint16_t *QuantsBw;
-	uint8_t  *CacheBuffer;
-	uint8_t  *CacheNext;
+	float   *BlockBuffer;
+	int16_t *BlockOutput;
+	uint8_t *CacheBuffer;
+	uint8_t *CacheNext;
 };
 
 //! Clean up decode state and exit
@@ -69,12 +70,10 @@ static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *He
 	//! Allocate memory
 	size_t BlockBuffer_Size = sizeof(float)    * Header->nChan*Header->BlockSize;
 	size_t BlockOutput_Size = sizeof(int16_t)  * Header->nChan*Header->BlockSize;
-	size_t QuantsBw_Size    = sizeof(uint16_t) * Header->nQuants;
 	size_t CacheBuffer_Size = CacheSize;
 	size_t BlockBuffer_Offs = 0;
 	size_t BlockOutput_Offs = BlockBuffer_Offs + BlockBuffer_Size;
-	size_t QuantsBw_Offs    = BlockOutput_Offs + BlockOutput_Size;
-	size_t CacheBuffer_Offs = QuantsBw_Offs    + QuantsBw_Size;
+	size_t CacheBuffer_Offs = BlockOutput_Offs + BlockOutput_Size;
 	size_t AllocSize = CacheBuffer_Offs + CacheBuffer_Size;
 	char *Buf = State->AllocBuffer = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
 	if(!Buf) {
@@ -86,12 +85,8 @@ static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *He
 	Buf += -(uintptr_t)Buf % BUFFER_ALIGNMENT;
 	State->BlockBuffer = (float   *)(Buf + BlockBuffer_Offs);
 	State->BlockOutput = (int16_t *)(Buf + BlockOutput_Offs);
-	State->QuantsBw    = (uint16_t*)(Buf + QuantsBw_Offs   );
 	State->CacheBuffer = (uint8_t *)(Buf + CacheBuffer_Offs);
 	State->CacheNext   = State->CacheBuffer;
-
-	//! Read quantizer bandwidths
-	fread(State->QuantsBw, sizeof(uint16_t), Header->nQuants, State->FileIn);
 
 	//! Fill cache
 	fread(State->CacheNext, sizeof(uint8_t), CacheSize, State->FileIn);
@@ -144,11 +139,11 @@ int main(int argc, const char *argv[]) {
 
 	//! Read header
 	struct FileHeader_t Header; fread(&Header, sizeof(Header), 1, State.FileIn);
-	if(Header.Magic[0] != (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'a'<<24) || Header.Magic[1] != (uint32_t)(0x01 | 0xFF<<8 | 0x02<<16 | 0xFE<<24)) {
+	if(Header.Magic[0] != (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'b'<<24) || Header.Magic[1] != (uint32_t)(0x01 | 0xFF<<8 | 0x02<<16 | 0xFE<<24)) {
 		printf("ERROR: Invalid file.\n");
 		StateCleanupExit(&State, -1);
 	}
-	if(Header.BlockSize > MAX_BLOCK_SIZE || Header.nQuants > MAX_NQUANTS || Header.nChan > MAX_CHANS) {
+	if(Header.BlockSize > MAX_BLOCK_SIZE || Header.nChan > MAX_CHANS) {
 		printf("ERROR: Unsupported specification.\n");
 		StateCleanupExit(&State, -1);
 	}
@@ -160,8 +155,6 @@ int main(int argc, const char *argv[]) {
 	struct ULC_DecoderState_t Decoder = {
 		.nChan     = Header.nChan,
 		.BlockSize = Header.BlockSize,
-		.nQuants   = Header.nQuants,
-		.QuantsBw  = State.QuantsBw,
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
 		//! Process blocks
