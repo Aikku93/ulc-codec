@@ -19,10 +19,12 @@
 
 /**************************************/
 
-//! Build quantizer from RMS of coefficients
-static inline int16_t Block_Encode_BuildQuantizer(double QuantsPow, double QuantsAvg) {
-	if(QuantsAvg == 0.0) return QUANTIZER_UNUSED;
-	double sd = round(log(QuantsPow / QuantsAvg) * 0x1.71547652B82FEp0 - 2.0); //! Log2[x]=Log[x]/Log[2]
+//! Build quantizer from sum of raised-power values and sum of absolutes
+//! NOTE: Currently using Sqrt[Sum[x^3]/Sum[x]]. This favours larger
+//!       values which mask lower-power values anyway so it works out better.
+static inline int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
+	if(Abs == 0.0) return QUANTIZER_UNUSED;
+	double sd = round(log(Pow / Abs) * 0x1.71547652B82FEp-1 - 2.0); //! Log2[x^(1/m)]=Log[x]/Log[2^m]
 	if(sd <  0.0) sd =  0.0;
 	if(sd > 14.0) sd = 14.0; //! Fh is reserved
 	return 1 << (size_t)sd;
@@ -78,7 +80,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		FETCH_KEY_DATA(Key);
 		if(Val < 0.0) Val = -Val;
 
-		QuantsPow[Chan][QBand] += Val*Val;
+		QuantsPow[Chan][QBand] += Val*Val*Val;
 		QuantsAvg[Chan][QBand] += Val;
 	}
 	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<nQuants;QBand++) {
@@ -99,7 +101,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		//!  v == 0.4: round(v / Quant) -> 0 (collapsed)
 		if(Val < 0.5*Quants[Chan][QBand]) {
 			//! Remove key from analysis and rebuild quantizer
-			QuantsPow[Chan][QBand] -= Val*Val;
+			QuantsPow[Chan][QBand] -= Val*Val*Val;
 			QuantsAvg[Chan][QBand] -= Val;
 			Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAvg[Chan][QBand]);
 
@@ -117,7 +119,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		if(Val < 0.0) Val = -Val;
 
 		//! Does this key collapse if we try to fit it to the analysis?
-		double  Pow = QuantsPow[Chan][QBand] + Val*Val;
+		double  Pow = QuantsPow[Chan][QBand] + Val*Val*Val;
 		double  Avg = QuantsAvg[Chan][QBand] + Val;
 		int32_t Qnt = Block_Encode_BuildQuantizer(Pow, Avg);
 		if(Val < 0.5*Qnt) {
