@@ -1,7 +1,7 @@
 # ulc-codec
 ulc-codec (Ultra-Low-Complexity Codec) is intended to be a low-bitrate audio codec, providing ultra-low-complexity decoding.
 
-This is the dynaquant variant, with no fixed quantizer bandwidths.
+This is the dynaquant variant, with no fixed quantizer bandwidths, and even lower decoding complexity (compared to original ulc-codec).
 
 ## Getting started
 
@@ -30,6 +30,8 @@ This will take ```Input.raw``` (with a playback rate of ```RateHz``` and ```nCha
 This will take ```Input.ulc``` and output ```Output.raw```.
 
 ## Possible issues
+* Quantizer band selection is very ad-hoc and completely breaks down sometimes
+* Aside from a somewhat arbitrary high-frequency boost in the frequency selection criteria, there is no psychoacoustic optimizations, which might be resulting in lower quality for a given rate
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
 
