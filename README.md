@@ -1,6 +1,8 @@
 # ulc-codec
 ulc-codec (Ultra-Low-Complexity Codec) is intended to be a low-bitrate audio codec, providing ultra-low-complexity decoding.
 
+This is the dynaquant variant, with no fixed quantizer bandwidths.
+
 ## Getting started
 
 ### Prerequisites
@@ -32,12 +34,13 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
 
 ## Technical details
-* Target bitrate: 32..96kbps (44.1kHz, M/S stereo)
+* Target bitrate: 64kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
-* MDCT-based encoding (N=4096; 2048 coefficients, 50% overlap)
+    * Compared with original ulc-codec, less noise at higher bitrates, lower fidelity at lower bitrates
+* MDCT-based encoding (50% overlap, using sine window)
+    * Encoding/decoding tools use N=4096 (2048 coefficients), but can use any sensible 2^n
 * Nybble-based syntax (for extra performance)
-* Transient pre-echo reduction formula (very important at low bitrates or with long blocks, both of which apply)
-* Multiple quantization regions (to improve dynamic range of coded coefficients)
+* Transient pre-echo reduction formula (not as effective as with original ulc-codec; more important at low bitrates)
 
 ## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
