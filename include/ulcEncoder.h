@@ -13,18 +13,12 @@
 //! NOTE:
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
 //!  -{RateHz, nChan, BlockSize} must not change after calling ULC_EncoderState_Init()
-//!  -{nQuants,QuantsBw} can be changed on a block-to-block basis
-//! Example for QuantsBw (BlockSize=512, nQuants=8):
-//!  {4,8,12,24,48,96,144,176}
-//! NOTE: UNDEFINED BEHAVIOUR MAY OCCUR IF THE TOTAL OF THE
-//!       QUANTIZER BANDWIDTHS IS NOT EQUAL TO THE BLOCK SIZE.
+//!  -MAX_QUANTS is an internal value, no larger than 48
 struct ULC_EncoderState_t {
 	//! Global state
-	      size_t    RateHz;    //! Playback rate (used for rate control)
-	      size_t    nChan;     //! Channels in encoding scheme
-	      size_t    BlockSize; //! Transform block size
-	      size_t    nQuants;   //! Number of quantizer bands
-	const uint16_t *QuantsBw;  //! Quantizer band bandwidths
+	size_t RateHz;    //! Playback rate (used for rate control)
+	size_t nChan;     //! Channels in encoding scheme
+	size_t BlockSize; //! Transform block size
 
 	//! Rate control state
 	double BitBudget;   //! Bit budget left over from previous block (similar to a bit reservoir)
@@ -38,24 +32,27 @@ struct ULC_EncoderState_t {
 	//!   float         TransformTemp  [2*BlockSize]
 	//!   float         TransformFwdLap[nChan][BlockSize/2]
 	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
-	//!   int16_t       Quants         [nChan][nQuants]
-	//!   double        QuantsPow      [nChan][nQuants]
-	//!   double        QuantsAvg      [nChan][nQuants]
+	//!   double        QuantsPow      [nChan][MAX_QUANTS]
+	//!   double        QuantsAbs      [nChan][MAX_QUANTS]
+	//!   uint16_t      QuantsBw       [nChan][MAX_QUANTS]
+	//!   int16_t       Quants         [nChan][MAX_QUANTS]
 	//!  MD-array pointers:
 	//!   float    *_TransformBuffer[nChan]
 	//!   float    *_TransformFwdLap[nChan]
-	//!   int16_t  *_Quants         [nChan]
 	//!   double   *_QuantsPow      [nChan]
-	//!   double   *_QuantsAvg      [nChan]
+	//!   double   *_QuantsAbs      [nChan]
+	//!   uint16_t *_QuantsBw       [nChan]
+	//!   int16_t  *_Quants         [nChan]
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
 	float     *TransformTemp;
 	float    **TransformFwdLap;
 	void      *AnalysisKeys;
-	int16_t  **Quants;
 	double   **QuantsPow;
-	double   **QuantsAvg;
+	double   **QuantsAbs;
+	uint16_t **QuantsBw;
+	int16_t  **Quants;
 };
 
 /**************************************/
@@ -73,7 +70,7 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //! Encode block
 //! NOTE:
 //!  -Maximum size (in bits) for each block is:
-//!    (4*nQuant + 4*BlockSize)*nChan
+//!    (4 + 12*(MAX_QUANTS-1) + 4*BlockSize)*nChan
 //!   So output buffer size must be at least that size
 //!  -Input data must have its channels arranged sequentially;
 //!   For example:
