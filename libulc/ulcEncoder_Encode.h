@@ -53,11 +53,13 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 	size_t nNzCoded = 0; //! Coded non-zero coefficients
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Code the coefficients
-		if(nNzBands) {
+		//! NOTE:
+		//!  Check Key<nNzBands: If the last channel is silent, this avoids trying to code it by accident
+		//!  Check Key.Chan==Chan: This correctly codes silent channels
+		if(Key < nNzBands && (Keys[Key].Key >> BlockSizeLog2) == Chan) {
+			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
 			size_t  NextBand  = 0;
 			int16_t LastQuant = Keys[Key].Quant;
-
-			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
 			Block_Encode_WriteNybble(IntLog2(LastQuant), &DstBuffer, &Size);
 			do {
 				//! Unpack key data
