@@ -67,8 +67,9 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 	struct AnalysisKey_t Key;
 	for(i=0;i<BlockSize;i++) {
 		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
-		float v = Coef[i]*Coef[i];
-		if(v < 0.5f*0.5f) continue;
+		float v  = Coef[i];
+		float v2 = v*v;
+		if(v2 < 0.5f*0.5f) continue;
 
 		//! To avoid excessive muffling, we slightly decrease
 		//! the importance of the low frequency bands using
@@ -78,7 +79,7 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 
 		//! Build and insert key
 		Key.Key = i | Chan<<BlockSizeLog2;
-		Key.Val = v * AnalysisPower * lfScale;
+		Key.Val = v2 * AnalysisPower * lfScale;
 		Analysis_KeyInsert(&Key, Keys, nKeys);
 		nKeys++;
 	}
