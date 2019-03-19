@@ -5,6 +5,7 @@
 /**************************************/
 #pragma once
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 /**************************************/
@@ -33,11 +34,11 @@ static size_t Block_Encode_BuildQuants_GetQBand(size_t Band, const uint16_t *Qua
 }
 
 //! Build quantizer from sum of raised-power values and sum of absolutes
-//! NOTE: Currently using Sqrt[Sum[x^3]/Sum[x]]. This favours larger
+//! NOTE: Currently using Sum[x^2]/Sum[x]. This somewhat favours larger
 //!       values which mask lower-power values anyway so it works out better.
 static inline int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
 	if(Abs == 0.0) return 0;
-	double sd = round(log(Pow / Abs) * 0x1.71547652B82FEp-1 - 2.0); //! Log2[x^(1/m)]=Log[x]/Log[2^m]
+	double sd = round(log(Pow / Abs) * 0x1.71547652B82FEp0 - 2.0); //! Log2[x^(1/m)]=Log[x]/Log[2^m]
 	if(sd <  0.0) sd =  0.0;
 	if(sd > 14.0) sd = 14.0; //! Fh is reserved
 	return 1 << (size_t)sd;
@@ -80,45 +81,43 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		size_t BandsRem = BlockSize;
 		size_t nQBands = 0;
 		size_t QBandBw = 1;
-		double vLPF = ABS(Coefs[0]);
+		double vLPF = Coefs[0]; vLPF = SQR(vLPF);
 		for(Band=1;Band<BlockSize;Band++) {
-			//! Get smoothed value
-			//! This avoids splitting blocks with notches too easily,
-			//! as that will most likely be masked (or even not coded
-			//! at all) anyway
-			//! NOTE:
-			//!  This is more sensitive to spikes than notches, on the
-			//!  idea that large jumps imply a small quantizer which
-			//!  would result in /clipping/ of the frequency band, which
-			//!  appears to sound worse in testing than just inaccuracy
-			double vNew = SQR(Coefs[Band]);
+			//! Codeable?
+			double vNew = Coefs[Band]; vNew = SQR(vNew);
 			double vOld = vLPF;
-			if(vNew >= 0.5) {
-				if(vNew > vOld) vLPF = (1.0-0.75)*vLPF + 0.75*vNew;
-				else            vLPF = (1.0-0.25)*vLPF + 0.25*vNew;
-			}
+			if(vNew >= SQR(0.5)) {
+				//! Get smoothed value
+				//! This avoids splitting blocks with notches too easily,
+				//! as that will most likely be masked (or even not coded
+				//! at all) anyway
+				vLPF = vLPF*0.05 + vNew*0.95;
 
-			//! Can allow splitting?
-			//! NOTE: Arbitrary number of runs
-			if(QBandBw > 8) {
-				//! Should split?
-				if(vLPF < vOld*(1.0/1.1) || vLPF > vOld*1.1) {
-					//! Split, reset
-					QuantsBw[Chan][nQBands++] = QBandBw;
-					BandsRem -= QBandBw;
-					QBandBw = 0;
-					vLPF = vNew;
+				//! Can allow splitting?
+				//! NOTE: Arbitrary number of runs
+				if(QBandBw > 8) {
+					//! Should split?
+					//! NOTE: Somewhat arbitrary thresholds
+					double ThresLo = 1.05;
+					double ThresHi = 1.05;
+					if(vLPF*ThresLo < vOld || vLPF > vOld*ThresHi) {
+						//! Create a split point
+						//! NOTE: Last band is built from remaining coefficients
+						BandsRem -= QBandBw;
+						QuantsBw[Chan][nQBands++] = QBandBw;
+						if(nQBands == MAX_QUANTS-1) break;
 
-					//! Last band is built from remaining coefficients
-					//! TODO: maybe if this condition hits, adjust QBandLP
-					if(nQBands == MAX_QUANTS-1) break;
+						//! Reset state for a new band
+						QBandBw = 0;
+						vLPF = vNew;
+					}
 				}
 			}
 
 			//! Increase bandwidth
 			QBandBw++;
 		}
-		if(BandsRem) QuantsBw[Chan][nQBands++] = BandsRem;
+		QuantsBw[Chan][nQBands++] = BandsRem;
 	}
 
 	//! Clip to maximum available keys
@@ -139,7 +138,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		FETCH_KEY_DATA(Key);
 		if(Val < 0.0) Val = -Val;
 
-		QuantsPow[Chan][QBand] += Val*Val*Val;
+		QuantsPow[Chan][QBand] += Val*Val;
 		QuantsAbs[Chan][QBand] += Val;
 	}
 	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<MAX_QUANTS;QBand++) {
@@ -160,7 +159,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		//!  v == 0.4: round(v / Quant) -> 0 (collapsed)
 		if(Val < 0.5*Quants[Chan][QBand]) {
 			//! Remove key from analysis and rebuild quantizer
-			QuantsPow[Chan][QBand] -= Val*Val*Val;
+			QuantsPow[Chan][QBand] -= Val*Val;
 			QuantsAbs[Chan][QBand] -= Val;
 			Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 
@@ -178,7 +177,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		if(Val < 0.0) Val = -Val;
 
 		//! Does this key collapse if we try to fit it to the analysis?
-		double  Pow = QuantsPow[Chan][QBand] + Val*Val*Val;
+		double  Pow = QuantsPow[Chan][QBand] + Val*Val;
 		double  Avg = QuantsAbs[Chan][QBand] + Val;
 		int32_t Qnt = Block_Encode_BuildQuantizer(Pow, Avg);
 		if(Val < 0.5*Qnt) {
