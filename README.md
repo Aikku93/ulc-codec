@@ -36,11 +36,15 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
 
 ## Technical details
-* Target bitrate: 64kbps+ (44.1kHz, M/S stereo)
+* Target bitrate: 32kbps-256kbps (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
-    * Compared with original ulc-codec, less noise at higher bitrates, lower fidelity at lower bitrates
+    * Compared with original ulc-codec:
+        * Improved quality at high bitrates (128kbps+)
+        * Comparable quality at low bitrates (32-96kbps)
+        * Slightly reduced quality at ultra-low bitrates (8-16kbps)
 * MDCT-based encoding (50% overlap, using sine window)
     * Encoding/decoding tools use N=4096 (2048 coefficients), but can use any sensible 2^n
+        * Due to extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation
 * Nybble-based syntax (for extra performance)
 * Transient pre-echo reduction formula (not as effective as with original ulc-codec; more important at low bitrates)
 
