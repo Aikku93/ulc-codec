@@ -30,23 +30,19 @@ This will take ```Input.raw``` (with a playback rate of ```RateHz``` and ```nCha
 This will take ```Input.ulc``` and output ```Output.raw```.
 
 ## Possible issues
-* Quantizer band selection is very ad-hoc and completely breaks down sometimes
 * Aside from a somewhat arbitrary high-frequency boost in the frequency selection criteria, there is no psychoacoustic optimizations, which might be resulting in lower quality for a given rate
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
 
 ## Technical details
-* Target bitrate: 32kbps-256kbps (44.1kHz, M/S stereo)
+* Target bitrate: 16..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
-    * Compared with original ulc-codec:
-        * Improved quality at high bitrates (128kbps+)
-        * Comparable quality at low bitrates (32-96kbps)
-        * Slightly reduced quality at ultra-low bitrates (8-16kbps)
+    * Improved quality (especially at >128kbps) compared with original ulc-codec
 * MDCT-based encoding (50% overlap, using sine window)
     * Encoding/decoding tools use N=4096 (2048 coefficients), but can use any sensible 2^n
         * Due to extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation
-* Nybble-based syntax (for extra performance)
-* Transient pre-echo reduction formula (not as effective as with original ulc-codec; more important at low bitrates)
+* Extremely simple nybble-based syntax (no entropy-code lookups needed)
+* Transient pre-echo reduction formula (not as effective as with original ulc-codec; more important at ultra-low bitrates)
 
 ## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
