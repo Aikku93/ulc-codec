@@ -1,8 +1,6 @@
 # ulc-codec
 ulc-codec (Ultra-Low-Complexity Codec) is intended to be a low-bitrate audio codec, providing ultra-low-complexity decoding.
 
-This is the dynaquant variant, with no fixed quantizer bandwidths, and even lower decoding complexity (compared to original ulc-codec).
-
 ## Getting started
 
 ### Prerequisites
@@ -30,19 +28,18 @@ This will take ```Input.raw``` (with a playback rate of ```RateHz``` and ```nCha
 This will take ```Input.ulc``` and output ```Output.raw```.
 
 ## Possible issues
-* Aside from a somewhat arbitrary high-frequency boost in the frequency selection criteria, there is no psychoacoustic optimizations, which might be resulting in lower quality for a given rate
+* Aside from a somewhat arbitrary high-frequency boost in the frequency selection criteria (and larger quantizer bands in the high-frequency range), there is no psychoacoustic optimizations, which might be resulting in lower quality for a given rate
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
 
 ## Technical details
 * Target bitrate: 16..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
-    * Improved quality (especially at >128kbps) compared with original ulc-codec
 * MDCT-based encoding (50% overlap, using sine window)
     * Encoding/decoding tools use N=4096 (2048 coefficients), but can use any sensible 2^n
-        * Due to extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation
+        * Due to extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
-* Transient pre-echo reduction formula (not as effective as with original ulc-codec; more important at ultra-low bitrates)
+* Transient pre-echo reduction formula (more important at ultra-low bitrates)
 
 ## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
