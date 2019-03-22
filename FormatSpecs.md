@@ -9,7 +9,7 @@ The encoding tools align each block (that is, including all channels) to byte bo
 
 These blocks code MDCT coefficients that have been pre-filtered with a pre-echo reduction formula. Therefore, to decode, we simply apply the inverse of said formula and then perform an IMDCT.
 
-NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever.
+NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization).
 
 ### Syntax
 ***
@@ -61,6 +61,7 @@ Because a short run can already code up to 24 zeros at once, a long run codes 26
 To unpack: ```n = (([second nybble] - Ch)<<4 | [third nybble]) * 2 + 26```
 
 ### Inverse transform process
+***
 
 Inverse transform takes the above-decoded coefficients and applies the inverse of a pre-echo reduction formula, followed by IMDCT.
 
@@ -71,7 +72,7 @@ The pre-echo reduction formula used in this codec is a basic sum/difference tran
 The transform (and its inverse, due to its involutive nature) is as follows:
 
     X[2*n+0] = x[2*n+0] + x[2*n+1]
-    X[2*N+1] = x[2*n+0] - x[2*n+1]
+    X[2*n+1] = x[2*n+0] - x[2*n+1]
     
 #### IMDCT
 
