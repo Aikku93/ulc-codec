@@ -32,12 +32,9 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
-	size_t nChan             = State->nChan;
-	size_t BlockSize         = State->BlockSize;
-	size_t nQuants           = State->nQuants;
-	float **TransformBuffer  = State->TransformBuffer;
-	const uint16_t *QuantsBw = State->QuantsBw;
-	int16_t **Quants         = State->Quants;
+	size_t nChan            = State->nChan;
+	size_t BlockSize        = State->BlockSize;
+	float **TransformBuffer = State->TransformBuffer;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
 	//! Sort keys by band index
@@ -50,49 +47,32 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 	Analysis_KeysSort(Keys, Keys+nNzBands, 1u << (nChanLog2 + BlockSizeLog2 - 1));
 
 	//! Start coding
-	size_t Chan, QBand;
+	size_t Chan;
 	size_t Key      = 0;
 	size_t Size     = 0; //! Block size (in bits)
 	size_t nNzCoded = 0; //! Coded non-zero coefficients
 	for(Chan=0;Chan<nChan;Chan++) {
-		//! Code the quantizer values (in log2 form)
-		for(QBand=0;QBand<nQuants;QBand++) {
-			size_t s = IntLog2(Quants[Chan][QBand]);
-			Block_Encode_WriteNybble(s, &DstBuffer, &Size);
-		}
-
-		//! Start coding coefficients
-		size_t NextNz, LastNz = 0;
-		size_t NxtQuantBand = 0;
-		for(;;) {
-			//! Skip unused quantizer bands
-			while(NxtQuantBand < nQuants && Quants[Chan][NxtQuantBand] == QUANTIZER_UNUSED) {
-				LastNz += QuantsBw[NxtQuantBand++];
-			}
-			if(NxtQuantBand >= nQuants) break;
-
-			//! Set limit for the /current/ quantizer band
-			NextNz  = LastNz;
-			LastNz += QuantsBw[NxtQuantBand];
-			size_t CurQuantBand = NxtQuantBand;
-			size_t CurQuantEnd  = LastNz;
-
-			//! Set limit for coefficients, taking into account consecutive quantizer bands
-			while(++NxtQuantBand < nQuants && Quants[Chan][NxtQuantBand] != QUANTIZER_UNUSED) LastNz += QuantsBw[NxtQuantBand];
-
-			//! Code the coefficients
+		//! Code the coefficients
+		//! NOTE:
+		//!  Check Key<nNzBands: If the last channel is silent, this avoids trying to code it by accident
+		//!  Check Key.Chan==Chan: This correctly codes silent channels
+		if(Key < nNzBands && (Keys[Key].Key >> BlockSizeLog2) == Chan) {
+			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
+			size_t  NextBand  = 0;
+			int16_t LastQuant = Keys[Key].Quant;
+			Block_Encode_WriteNybble(IntLog2(LastQuant), &DstBuffer, &Size);
 			do {
 				//! Unpack key data
-				//! If we cross to the next [coded] quantizer band or channel, break out
-				size_t tBand = Keys[Key].Key & (BlockSize-1);  if(tBand >= LastNz) break;
-				size_t tChan = Keys[Key].Key >> BlockSizeLog2; if(tChan != Chan)   break;
+				//! If we cross to the next channel, break out
+				size_t tChan = Keys[Key].Key >> BlockSizeLog2; if(tChan != Chan) break;
+				size_t tBand = Keys[Key].Key & (BlockSize-1);
 
 				//! Code the zero runs
 				//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
 				//!       This is because two zero coefficients can be coded as 0h,0h, so
 				//!       we instead use 8h,0h for the 'stop' code. This also allows coding
 				//!       of some coefficients we may have missed (see below)
-				size_t zR = tBand - NextNz;
+				size_t zR = tBand - NextBand;
 				while(zR >= 4) {
 					//! Small run?
 					size_t n = zR;
@@ -112,8 +92,19 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 					}
 
 					//! Insert zeros
-					NextNz += n;
-					zR     -= n;
+					NextBand += n;
+					zR       -= n;
+				}
+
+				//! Update quantizer?
+				if(Keys[Key].Quant != LastQuant) {
+					LastQuant = Keys[Key].Quant;
+
+					//! 8h,0h,0h..Eh: Quantizer change
+					size_t s = IntLog2(LastQuant);
+					Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
+					Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+					Block_Encode_WriteNybble(s,   &DstBuffer, &Size);
 				}
 
 				//! Insert coded coefficients
@@ -125,33 +116,31 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 				//!  as it would cost the same either way (though they might quantize
 				//!  sub-optimally from not being considered originally)
 				do {
-					//! Crossed to the next quantizer band?
-					//! NOTE: Can only cross one quantizer band at a time, or
-					//!       that quantizer band would've been disabled; this
-					//!       simplifies the following into an if() statement
-					//!       rather than a while() loop
-					if(NextNz >= CurQuantEnd) CurQuantEnd += QuantsBw[++CurQuantBand];
-
 					//! Get quantized coefficient
 					//! -7h..+7h
-					int32_t Qn = (int32_t)round(TransformBuffer[Chan][NextNz] / Quants[Chan][CurQuantBand]);
+					int32_t Qn = (int32_t)round(TransformBuffer[Chan][NextBand] / LastQuant);
 					if(Qn < -7) Qn = -7;
 					if(Qn > +7) Qn = +7;
 
 					//! Write to output
 					Block_Encode_WriteNybble(Qn, &DstBuffer, &Size);
 					if(Qn != 0) nNzCoded++;
-				} while(++NextNz <= tBand);
+				} while(++NextBand <= tBand);
 			} while(++Key < nNzBands);
 
-			//! Finalize the block (8h,0h: Stop)
-			//! If we're at the edge of the block, just end normally
-			size_t n = LastNz - NextNz;
-			     if(n == 1) Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
-			else if(n >= 2) {
+			//! 8h,0h,Fh: Stop
+			//! If we're at the edge of the block, it might work better to just fill with 0h
+			size_t n = BlockSize - NextBand;
+			if(n > 3) {
 				Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
 				Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+				Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
+			} else if(n > 0) {
+				do Block_Encode_WriteNybble(0x0, &DstBuffer, &Size); while(--n);
 			}
+		} else {
+			//! [8h,0h,]Fh: Stop
+			Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
 		}
 	}
 

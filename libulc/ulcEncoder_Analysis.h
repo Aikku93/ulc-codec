@@ -14,7 +14,10 @@
 #define ANALYSIS_KEY_MAX_BITS 32
 struct AnalysisKey_t {
 	uint32_t Key; //! Band | Chan<<log2(BlockSize)
-	float    Val; //! Analysis value (eg. for biased preferencing)
+	union {
+		float   Val;   //! Sorting value (ie. Coef^2 * Importance; for biased preferencing)
+		int16_t Quant; //! Quantizer (set after calling Block_Encode_BuildQuants() in ulcEncoder_Quantizer.h)
+	};
 };
 
 /**************************************/

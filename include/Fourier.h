@@ -48,6 +48,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N);
 //!  BufIn[N]
 //!  BufLap[N/2]
 //!  BufTmp[N]
+//!  Window[N]
 //! Implemented transforms (matrix form):
 //!  mtxMDCT  = Table[Cos[(n-1/2 + N/2)(k-1/2)Pi/N], {k, N}, {n,2N}]
 //!  mtxIMDCT = Table[Cos[(n-1/2 + N/2)(k-1/2)Pi/N], {k,2N}, {n, N}]
@@ -55,8 +56,12 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N);
 //!  -N must be a power of two, and >= 8
 //!  -BufOut must not be the same as BufIn
 //!  -Sine window (modulated lapped transform)
+//!  -MDCTw/IMDCTw: Window is for first half, negated; eg. for MLT:
+//!    Window[n] = -Sin[(n+1/2)Pi/(2N)]
 void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N);
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N);
+void Fourier_MDCTw (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N, const float *Window);
+void Fourier_IMDCTw(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N, const float *Window);
 
 /**************************************/
 //! EOF
