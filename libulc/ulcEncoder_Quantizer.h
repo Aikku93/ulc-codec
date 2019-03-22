@@ -80,27 +80,20 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		const float *Coefs = CoefBuffer[Chan];
 		size_t BandsRem = BlockSize;
 		size_t nQBands = 0;
-		size_t QBandBw = 1;
-		double vLPF = Coefs[0]; vLPF = SQR(vLPF);
-		for(Band=1;Band<BlockSize;Band++) {
+		size_t QBandBw = 0;
+		double SumSqr  = 0.0;
+		for(Band=0;Band<BlockSize;Band++) {
 			//! Codeable?
 			double vNew = Coefs[Band]; vNew = SQR(vNew);
-			double vOld = vLPF;
 			if(vNew >= SQR(0.5)) {
-				//! Get smoothed value
-				//! This avoids splitting blocks with notches too easily,
-				//! as that will most likely be masked (or even not coded
-				//! at all) anyway
-				vLPF = vLPF*0.05 + vNew*0.95;
-
-				//! Can allow splitting?
-				//! NOTE: Arbitrary number of runs
-				if(QBandBw > 8) {
-					//! Should split?
-					//! NOTE: Somewhat arbitrary thresholds
-					double ThresLo = 1.05;
-					double ThresHi = 1.05;
-					if(vLPF*ThresLo < vOld || vLPF > vOld*ThresHi) {
+				//! Enough bands to decide on a split?
+				//! NOTE: Somewhat arbitrary and less sensitive at high freq
+				size_t QBandBwThres = 1 + Band/32;
+				if(QBandBw > QBandBwThres) {
+					//! Coefficient not in range?
+					//! NOTE: Somewhat arbitrary (though tuned) thresholds
+					double t = vNew*QBandBw;
+					if(t < SQR(1.0/8.0)*SumSqr || t > SQR(4.0)*SumSqr) {
 						//! Create a split point
 						//! NOTE: Last band is built from remaining coefficients
 						BandsRem -= QBandBw;
@@ -109,9 +102,12 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 
 						//! Reset state for a new band
 						QBandBw = 0;
-						vLPF = vNew;
+						SumSqr  = 0.0;
 					}
 				}
+
+				//! Add to quantizer band
+				SumSqr += vNew;
 			}
 
 			//! Increase bandwidth
