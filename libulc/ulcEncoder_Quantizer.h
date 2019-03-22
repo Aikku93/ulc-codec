@@ -80,7 +80,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		const float *Coefs = CoefBuffer[Chan];
 		size_t BandsRem = BlockSize;
 		size_t nQBands = 0;
-		size_t QBandBw = 0;
+		size_t QBandBw = 0, QBandNzBw = 0;
 		double SumSqr  = 0.0;
 		for(Band=0;Band<BlockSize;Band++) {
 			//! Codeable?
@@ -89,7 +89,7 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 				//! Enough bands to decide on a split?
 				//! NOTE: Somewhat arbitrary and less sensitive at high freq
 				size_t QBandBwThres = 1 + Band/32;
-				if(QBandBw > QBandBwThres) {
+				if(QBandNzBw > QBandBwThres) {
 					//! Coefficient not in range?
 					//! NOTE: Somewhat arbitrary (though tuned) thresholds
 					double t = vNew*QBandBw;
@@ -101,13 +101,14 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 						if(nQBands == MAX_QUANTS-1) break;
 
 						//! Reset state for a new band
-						QBandBw = 0;
+						QBandBw = QBandNzBw = 0;
 						SumSqr  = 0.0;
 					}
 				}
 
 				//! Add to quantizer band
 				SumSqr += vNew;
+				QBandNzBw++;
 			}
 
 			//! Increase bandwidth
