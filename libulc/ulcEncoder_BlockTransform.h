@@ -62,7 +62,7 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 		__m128 v4 = _mm_load_ps(DataSrc + i+16);
 		__m128 v5 = _mm_load_ps(DataSrc + i+20);
 		__m128 v6 = _mm_load_ps(DataSrc + i+24);
-		__m128 v7 = _mm_load_ps(DataSrc + i+27);
+		__m128 v7 = _mm_load_ps(DataSrc + i+28);
 		v0 = _mm_mul_ps(v0, mScale);
 		v1 = _mm_mul_ps(v1, mScale);
 		v2 = _mm_mul_ps(v2, mScale);
