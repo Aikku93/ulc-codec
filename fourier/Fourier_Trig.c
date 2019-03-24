@@ -14,34 +14,34 @@
 
 8th order cosine approximation
 Estimates Cos[x*Pi/2], x=[0,1]
-RMSE=0.000000114459 (PSNR=138.8dB)
+RMSE=0.000000040504495 (PSNR=147.9dB)
 ------------------------------
 
 a[x_] := Cos[x*Pi/2];
 b[x_] := (x^2 - 1)*((c1 + (c2 + c3*x^2)*x^2)*x^2 - 1);
 Solve[{
-  a[1/4] == b[1/4],
-  a[1/2] == b[1/2],
-  Integrate[a[x] - b[x], {x, 0, 7/8}] == 0
+  a[430/1000] == b[430/1000],
+  a[710/1000] == b[710/1000],
+  a[895/1000] == b[895/1000]
 }, {c1, c2, c3}]
 
 This gives:
   c1 ~= 0.23
   c2 ~= -0.02
-  c3 ~= 0.00087
+  c3 ~= 0.00086
 
-We generally only call SinCos for x/N with small x,
-so we minimize error in those regions rather than
-aiming for a best fit over the whole range.
-However, the MDCT/IMDCT routines also use x/N+0.5,
-so we also need some optimization for that area.
+Although SinCos is generally called as x/N with small
+x and large N, the same equation is used for BOTH
+sine /and/ cosine, so we must optimize at both ends.
+And since DCT4 gradually closes in on x=0.5, we must
+optimize the whole space anyway.
 
 !*/
 /**************************************/
 
-#define C1 ( 0x1.DE9E45DE9FBFFp-3)
-#define C2 (-0x1.4716E4380E769p-6)
-#define C3 ( 0x1.C9344264DB172p-11)
+#define C1 ( 0x1.DE9D73D230B71p-3)
+#define C2 (-0x1.46EAA650565C1p-6)
+#define C3 ( 0x1.C20AB73E45F6Bp-11)
 
 /**************************************/
 #if defined(__AVX__)
