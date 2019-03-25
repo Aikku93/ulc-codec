@@ -36,7 +36,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * Target bitrate: 16..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
-    * Encoding/decoding tools use N=4096 (2048 coefficients) with 50% overlap, but can use any sensible N=2<sup>n</sup> with any overlap (provided that the number of overlap samples is a multiple of 16)
+    * Encoding/decoding tools use N=4096 (2048 coefficients) with 37.5% overlap, but can use any sensible N=2<sup>n</sup> with any overlap (provided that the number of overlap samples is a multiple of 16)
         * Due to extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 * Transient pre-echo reduction formula (more important at ultra-low bitrates)
