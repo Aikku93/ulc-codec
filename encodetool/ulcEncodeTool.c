@@ -22,7 +22,7 @@
 //! Transform block size
 //! Feel free to change this; the decoder doesn't care
 #define BLOCK_SIZE    2048
-#define BLOCK_OVERLAP 2048
+#define BLOCK_OVERLAP 1536
 
 /**************************************/
 
