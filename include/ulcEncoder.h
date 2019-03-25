@@ -12,13 +12,14 @@
 //! Encoder state structure
 //! NOTE:
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
-//!  -{RateHz, nChan, BlockSize} must not change after calling ULC_EncoderState_Init()
+//!  -{RateHz, nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
 //!  -MAX_QUANTS is an internal value, no larger than 48
 struct ULC_EncoderState_t {
 	//! Global state
-	size_t RateHz;    //! Playback rate (used for rate control)
-	size_t nChan;     //! Channels in encoding scheme
-	size_t BlockSize; //! Transform block size
+	size_t RateHz;       //! Playback rate (used for rate control)
+	size_t nChan;        //! Channels in encoding scheme
+	size_t BlockSize;    //! Transform block size
+	size_t BlockOverlap; //! Block overlap
 
 	//! Rate control state
 	double BitBudget;   //! Bit budget left over from previous block (similar to a bit reservoir)
