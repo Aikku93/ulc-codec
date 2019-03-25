@@ -16,9 +16,13 @@
 #endif
 /**************************************/
 
+//! Header magic value
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'c'<<24)
+
 //! Transform block size
 //! Feel free to change this; the decoder doesn't care
-#define BLOCK_SIZE 2048
+#define BLOCK_SIZE    2048
+#define BLOCK_OVERLAP 2048
 
 /**************************************/
 
@@ -95,31 +99,35 @@ int main(int argc, const char *argv[]) {
 		return -1;
 	}
 
-	/*! Write file header !*/ {
-		//! Core header
-		struct {
-			uint32_t Magic[2];  //! [00h] Magic values
-			uint32_t nSamp;     //! [08h] Number of samples
-			uint32_t RateHz;    //! [0Ch] Playback rate
-			uint32_t BlockSize; //! [10h] Transform block size
-			uint16_t nChan;     //! [14h] Channels in stream
-			uint16_t RateKbps;  //! [16h] Nominal coding rate
-		} Header = {
-			{(uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'b'<<24), (uint32_t)(0x01 | 0xFF<<8 | 0x02<<16 | 0xFE<<24)},
-			nSamp,
-			RateHz,
-			BLOCK_SIZE,
-			(uint16_t)nChan,
-			(uint16_t)RateKbps,
-		};
-		fwrite(&Header, sizeof(Header), 1, OutFile);
-	}
+	//! Create file header and skip for now; written later
+	struct {
+		uint32_t Magic;        //! [00h] Magic value/signature
+		uint32_t MaxBlockSize; //! [04h] Largest block size (in bytes; 0 = Unknown)
+		uint32_t nSamp;        //! [08h] Number of samples
+		uint32_t RateHz;       //! [0Ch] Playback rate
+		uint16_t BlockSize;    //! [10h] Transform block size
+		uint16_t BlockOverlap; //! [12h] Block overlap
+		uint16_t nChan;        //! [14h] Channels in stream
+		uint16_t RateKbps;     //! [16h] Nominal coding rate
+	} FileHeader = {
+		HEADER_MAGIC,
+		0, //! MaxBlockSize filled later
+		nSamp,
+		RateHz,
+		BLOCK_SIZE,
+		BLOCK_OVERLAP,
+		(uint16_t)nChan,
+		(uint16_t)RateKbps,
+	};
+	long int FileHeaderOffs = ftell(OutFile);
+	fseek(OutFile, +sizeof(FileHeader), SEEK_CUR);
 
 	//! Create encoder
 	struct ULC_EncoderState_t Encoder = {
-		.RateHz    = RateHz,
-		.nChan     = nChan,
-		.BlockSize = BLOCK_SIZE,
+		.RateHz       = RateHz,
+		.nChan        = nChan,
+		.BlockSize    = BLOCK_SIZE,
+		.BlockOverlap = BLOCK_OVERLAP,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		//! Process blocks
@@ -155,6 +163,7 @@ int main(int argc, const char *argv[]) {
 
 			//! Copy what we can into the cache
 			Size = (Size+7) / 8;
+			if(Size > FileHeader.MaxBlockSize) FileHeader.MaxBlockSize = Size;
 			while(Size) {
 				//! Copy up to the limits of the cache area
 				size_t n = CACHE_SIZE - CacheIdx; //! =CacheRem
@@ -188,6 +197,10 @@ int main(int argc, const char *argv[]) {
 		//! Destroy encoder
 		ULC_EncoderState_Destroy(&Encoder);
 	} else printf("ERROR: Unable to initialize encoder.\n");
+
+	//! Write file header
+	fseek(OutFile, FileHeaderOffs, SEEK_SET);
+	fwrite(&FileHeader, sizeof(FileHeader), 1, OutFile);
 
 	//! Clean up
 	fclose(OutFile);
