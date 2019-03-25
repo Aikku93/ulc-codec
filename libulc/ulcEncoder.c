@@ -3,10 +3,10 @@
 //! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <math.h>
 /**************************************/
 #include "Fourier.h"
 #include "ulcEncoder.h"
@@ -142,7 +142,7 @@ size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, con
 		double Budget = State->BitBudget;
 		if(Budget < MinBudget) Budget = MinBudget;
 		if(Budget > MaxBudget) Budget = MaxBudget;
-		nNzMax = round(Budget * State->CoefBitRate);
+		nNzMax = lrint(Budget * State->CoefBitRate);
 
 		//! Sometimes we may get less non-zero bands than we're
 		//! able to code (eg. during silence), so just clip here
