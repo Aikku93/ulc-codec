@@ -17,6 +17,7 @@
 #endif
 /**************************************/
 
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'c'<<24)
 #define MAX_QUANTS 48
 
 /**************************************/
@@ -32,18 +33,19 @@ static inline float Clip16(float x) {
 
 //! File header
 struct FileHeader_t {
-	uint32_t Magic[2];  //! [00h] Magic values
-	uint32_t nSamp;     //! [08h] Number of samples
-	uint32_t RateHz;    //! [0Ch] Playback rate
-	uint32_t BlockSize; //! [10h] Transform block size
-	uint16_t nChan;     //! [14h] Channels in stream
-	uint16_t RateKbps;  //! [16h] Nominal coding rate
+	uint32_t Magic;        //! [00h] Magic value/signature
+	uint32_t MaxBlockSize; //! [04h] Largest block size (in bytes; 0 = Unknown)
+	uint32_t nSamp;        //! [08h] Number of samples
+	uint32_t RateHz;       //! [0Ch] Playback rate
+	uint16_t BlockSize;    //! [10h] Transform block size
+	uint16_t BlockOverlap; //! [12h] Block overlap
+	uint16_t nChan;        //! [14h] Channels in stream
+	uint16_t RateKbps;     //! [16h] Nominal coding rate
 };
 
 //! Decoding state
 #define MAX_BLOCK_SIZE 4096
 #define MAX_CHANS         4
-static const size_t CacheMinBlockSize = ((4 + 4*MAX_BLOCK_SIZE + 12*(MAX_QUANTS-1))*MAX_CHANS + 7) / 8;
 static const size_t CacheSize = 256*1024;
 struct DecodeState_t {
 	//! These need to be cleared to NULL
@@ -93,10 +95,10 @@ static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *He
 }
 
 //! Advance cached data
-static void StateCacheAdvance(struct DecodeState_t *State, size_t nBytes) {
+static void StateCacheAdvance(struct DecodeState_t *State, size_t nBytes, size_t MinSize) {
 	State->CacheNext += nBytes;
 	size_t Rem = State->CacheBuffer + CacheSize - State->CacheNext;
-	if(Rem < CacheMinBlockSize) {
+	if(Rem < MinSize) {
 		memcpy(State->CacheBuffer, State->CacheNext, Rem);
 		fread(State->CacheBuffer + Rem, sizeof(uint8_t), CacheSize-Rem, State->FileIn);
 		State->CacheNext = State->CacheBuffer;
@@ -139,7 +141,7 @@ int main(int argc, const char *argv[]) {
 
 	//! Read header
 	struct FileHeader_t Header; fread(&Header, sizeof(Header), 1, State.FileIn);
-	if(Header.Magic[0] != (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'b'<<24) || Header.Magic[1] != (uint32_t)(0x01 | 0xFF<<8 | 0x02<<16 | 0xFE<<24)) {
+	if(Header.Magic != HEADER_MAGIC) {
 		printf("ERROR: Invalid file.\n");
 		StateCleanupExit(&State, -1);
 	}
@@ -153,8 +155,9 @@ int main(int argc, const char *argv[]) {
 
 	//! Create decoder
 	struct ULC_DecoderState_t Decoder = {
-		.nChan     = Header.nChan,
-		.BlockSize = Header.BlockSize,
+		.nChan        = Header.nChan,
+		.BlockSize    = Header.BlockSize,
+		.BlockOverlap = Header.BlockOverlap,
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
 		//! Process blocks
@@ -170,7 +173,7 @@ int main(int argc, const char *argv[]) {
 
 			//! Decode block
 			size_t Size = ULC_DecodeBlock(&Decoder, BlockBuffer, State.CacheNext);
-			StateCacheAdvance(&State, (Size + 7) / 8);
+			StateCacheAdvance(&State, (Size + 7) / 8, Header.MaxBlockSize);
 
 			//! Apply M/S transform
 			if(nChan == 2) for(size_t n=0;n<BlockSize;n++) {
