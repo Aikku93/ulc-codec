@@ -263,20 +263,90 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 	//! Combine
 	//!  w = U_n.(z1^T, z2^T)^T
 	//!  y = (P_n)^T.w
-	//! TODO: SIMD opt? How to even structure this loop?
+	//! TODO: Avoid unaligned load/store in SSE/AVX code?
 	{
 		const float *TmpLo = Tmp;
 		const float *TmpHi = Tmp + N;
 		      float *Dst   = Buf;
+#if defined(__AVX__)
+		__m256 a, b;
+		__m256 t0, t1;
+
+		*Dst++ = *TmpLo++;
+		for(i=0;i<N/2-8;i+=8) {
+			TmpHi -= 8; b = _mm256_load_ps(TmpHi);
+			a = _mm256_loadu_ps(TmpLo); TmpLo += 8;
+			b = _mm256_shuffle_ps(b, b, 0x1B);
+			b = _mm256_permute2f128_ps(b, b, 0x01);
+
+			t0 = _mm256_add_ps(a, b);
+			t1 = _mm256_sub_ps(a, b);
+			a  = _mm256_unpacklo_ps(t0, t1);
+			b  = _mm256_unpackhi_ps(t0, t1);
+			t0 = _mm256_permute2f128_ps(a, b, 0x20);
+			t1 = _mm256_permute2f128_ps(a, b, 0x31);
+			_mm256_storeu_ps(Dst, t0); Dst += 8;
+			_mm256_storeu_ps(Dst, t1); Dst += 8;
+		}
+		{
+			TmpHi -= 8; b = _mm256_load_ps(TmpHi);
+			a = _mm256_loadu_ps(TmpLo); TmpLo += 8;
+			_mm_store_ss(Dst + 14, _mm256_castps256_ps128(b));
+			b = _mm256_shuffle_ps(b, b, 0x1B);
+			b = _mm256_permute2f128_ps(b, b, 0x01);
+
+			t0 = _mm256_add_ps(a, b);
+			t1 = _mm256_sub_ps(a, b);
+			a = _mm256_unpacklo_ps(t0, t1);
+			b = _mm256_unpackhi_ps(t0, t1);
+			t0 = _mm256_permute2f128_ps(a, b, 0x20);
+			t1 = _mm256_permute2f128_ps(a, b, 0x31);
+			_mm256_storeu_ps(Dst, t0);                              Dst += 8;
+			_mm_storeu_ps(Dst, _mm256_castps256_ps128(t1));         Dst += 4;
+			t1 = _mm256_permute2f128_ps(t1, t1, 0x01);
+			_mm_storel_pi((__m64*)Dst, _mm256_castps256_ps128(t1)); Dst += 2;
+		}
+#elif defined(__SSE__)
+		__m128 a, b;
+		__m128 t0, t1;
+
+		*Dst++ = *TmpLo++;
+		for(i=0;i<N/2-4;i+=4) {
+			TmpHi -= 4; b = _mm_loadr_ps(TmpHi);
+			a = _mm_loadu_ps(TmpLo); TmpLo += 4;
+
+			t0 = _mm_add_ps(a, b);
+			t1 = _mm_sub_ps(a, b);
+			a = _mm_unpacklo_ps(t0, t1);
+			b = _mm_unpackhi_ps(t0, t1);
+			_mm_storeu_ps(Dst, a); Dst += 4;
+			_mm_storeu_ps(Dst, b); Dst += 4;
+		}
+		{
+			TmpHi -= 4; b = _mm_load_ps(TmpHi);
+			a = _mm_loadu_ps(TmpLo); TmpLo += 4;
+			_mm_store_ss(Dst + 6, b);
+			b = _mm_shuffle_ps(b, b, 0x1B);
+
+			t0 = _mm_add_ps(a, b);
+			t1 = _mm_sub_ps(a, b);
+			a = _mm_unpacklo_ps(t0, t1);
+			b = _mm_unpackhi_ps(t0, t1);
+			_mm_storeu_ps(Dst, a);         Dst += 4;
+			_mm_storel_pi((__m64*)Dst, b); Dst += 2;
+		}
+#else
+		float a, b;
 
 		*Dst++ = *TmpLo++;
 		for(i=0;i<N/2-1;i++) {
-			float a = *TmpLo++;
-			float b = *--TmpHi;
+			a = *TmpLo++;
+			b = *--TmpHi;
 			*Dst++ = a + b;
 			*Dst++ = a - b;
 		}
 		*Dst++ = *--TmpHi;
+#endif
 	}
 }
 
