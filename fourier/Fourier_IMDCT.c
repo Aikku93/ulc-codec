@@ -15,9 +15,9 @@
 #include "Fourier.h"
 /**************************************/
 
-void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N) {
+void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N, size_t Overlap) {
 	size_t i;
-	float Ns = 1.0f / N;
+	float Ns = 1.0f / Overlap;
 	const float *Lap   = BufLap + N/2;
 	const float *Tmp   = BufTmp + N/2;
 	      float *OutLo = BufOut;
@@ -47,7 +47,19 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		c = _mm256_xor_ps(c, _mm256_set1_ps(-0.0f));
 	}
 
-	for(i=0;i<N/2;i+=8) {
+	for(i=0;i<(N-Overlap)/2;i+=8) {
+		Lap -= 8; a = _mm256_load_ps(Lap);
+		b = _mm256_load_ps(Tmp); Tmp += 8;
+		a = _mm256_xor_ps(a, _mm256_set1_ps(-0.0f));
+		b = _mm256_xor_ps(b, _mm256_set1_ps(-0.0f));
+		a = _mm256_shuffle_ps(a, a, 0x1B);
+		a = _mm256_permute2f128_ps(a, a, 0x01);
+		b = _mm256_shuffle_ps(b, b, 0x1B);
+		b = _mm256_permute2f128_ps(b, b, 0x01);
+		_mm256_store_ps(OutLo, a); OutLo += 8;
+		OutHi -= 8; _mm256_store_ps(OutHi, b);
+	}
+	for(;i<N/2;i+=8) {
 		Lap -= 8; a = _mm256_load_ps(Lap);
 		b = _mm256_load_ps(Tmp); Tmp += 8;
 		a = _mm256_shuffle_ps(a, a, 0x1B);
@@ -96,7 +108,15 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		c = _mm_xor_ps(c, _mm_set1_ps(-0.0f));
 	}
 
-	for(i=0;i<N/2;i+=4) {
+	for(i=0;i<(N-Overlap)/2;i+=4) {
+		Lap -= 4; a = _mm_loadr_ps(Lap);
+		b = _mm_load_ps(Tmp); Tmp += 4;
+		a = _mm_xor_ps(a, _mm_set1_ps(-0.0f));
+		b = _mm_xor_ps(b, _mm_set1_ps(-0.0f));
+		_mm_store_ps(OutLo, a); OutLo += 4;
+		OutHi -= 4; _mm_storer_ps(OutHi, b);
+	}
+	for(;i<N/2;i+=4) {
 		Lap -= 4; a = _mm_loadr_ps(Lap);
 		b = _mm_load_ps(Tmp); Tmp += 4;
 #if defined(__FMA__)
@@ -129,7 +149,13 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	Fourier_SinCos(0.5f*Ns, &s, &c);
 	c = -c;
 
-	for(i=0;i<N/2;i++) {
+	for(i=0;i<(N-Overlap)/2;i++) {
+		float a = *--Lap;
+		float b = *Tmp++;
+		*OutLo++ = -a;
+		*--OutHi = -b;
+	}
+	for(;i<N/2;i++) {
 		float a = *--Lap;
 		float b = *Tmp++;
 		*OutLo++ =  c*a + s*b;
