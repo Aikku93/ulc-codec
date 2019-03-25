@@ -13,7 +13,6 @@
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
-#define ABS(x) ((x) < 0 ? (-(x)) : (x))
 #define SQR(x) ((x)*(x))
 /**************************************/
 
@@ -149,11 +148,6 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 		if(Val < 0.0) Val = -Val;
 
 		//! Collapse?
-		//! Compare with 0.5*Quant, because:
-		//!  round(v / Quant) == 0 <-> abs(v) < 0.5*Quant
-		//! eg. Quant == 1:
-		//!  v == 0.5: round(v / Quant) -> 1 (not collapsed)
-		//!  v == 0.4: round(v / Quant) -> 0 (collapsed)
 		if(Val < 0.5*Quants[Chan][QBand]) {
 			//! Remove key from analysis and rebuild quantizer
 			QuantsPow[Chan][QBand] -= Val*Val;
@@ -195,14 +189,16 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 	//! data, since now we might have smaller values stuck in the middle
 	//! Additionally save the quantizer directly to the key structure,
 	//! as this avoids a lookup inside the coding loop
+	//! Finally, also try to keep any extra keys if we remove some, even
+	//! if they will quantize sub-optimally
 	for(Key=0;Key<nNzBands;) {
 		FETCH_KEY_DATA(Key);
 		if(Val < 0.0) Val = -Val;
-		int16_t q = Quants[Chan][QBand];
 
+		int16_t q = Quants[Chan][QBand];
 		if(Val < 0.5*q) {
 			Analysis_KeyRemove(Key, Keys, nKeys); nKeys--;
-			nNzBands--;
+			if(nNzBands > nKeys) nNzBands = nKeys;
 		} else Keys[Key++].Quant = q;
 	}
 
