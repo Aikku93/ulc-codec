@@ -3,9 +3,9 @@
 //! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <math.h>
 /**************************************/
 #include "Fourier.h"
 #include "ulcEncoder.h"
@@ -16,6 +16,9 @@
 /**************************************/
 
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
+static inline int32_t Block_Encode_Quantize(float v, float q) {
+	return lrint(v/q);
+}
 static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, size_t *Size) {
 	//! Push nybble
 	*(*Dst) >>= 4;
@@ -118,14 +121,14 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 				do {
 					//! Get quantized coefficient
 					//! -7h..+7h
-					int32_t Qn = (int32_t)round(TransformBuffer[Chan][NextBand] / LastQuant);
+					int32_t Qn = Block_Encode_Quantize(TransformBuffer[Chan][NextBand], LastQuant);
 					if(Qn < -7) Qn = -7;
 					if(Qn > +7) Qn = +7;
 
 					//! Write to output
 					Block_Encode_WriteNybble(Qn, &DstBuffer, &Size);
-					if(Qn != 0) nNzCoded++;
 				} while(++NextBand <= tBand);
+				nNzCoded++;
 			} while(++Key < nNzBands);
 
 			//! 8h,0h,Fh: Stop
