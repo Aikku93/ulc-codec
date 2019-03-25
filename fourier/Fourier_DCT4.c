@@ -132,7 +132,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 		const float *SrcLo = Buf;
 		const float *SrcHi = Buf + N;
 		      float *DstLo = Tmp;
-		      float *DstHi = Tmp + N;
+		      float *DstHi = Tmp + N/2;
 #if defined(__AVX__)
 		__m256 a, b;
 		__m256 t0, t1;
@@ -148,7 +148,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 			Fourier_SinCosAVX(c, &s, &c);
 		}
 
-		for(i=0;i<N/16;i++) {
+		for(i=0;i<N/2;i+=8) {
 			SrcHi -= 8;
 			b = _mm256_load_ps(SrcHi);
 			a = _mm256_load_ps(SrcLo);
@@ -165,11 +165,8 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 			t0 = _mm256_add_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
 #endif
 			t1 = _mm256_xor_ps(t1, _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f));
-			t1 = _mm256_shuffle_ps(t1, t1, 0x1B);
-			t1 = _mm256_permute2f128_ps(t1, t1, 0x01);
-
 			_mm256_store_ps(DstLo, t0); DstLo += 8;
-			DstHi -= 8; _mm256_store_ps(DstHi, t1);
+			_mm256_store_ps(DstHi, t1); DstHi += 8;
 #if defined(__FMA__)
 			t0 = _mm256_mul_ps(wc, c);
 			t1 = _mm256_mul_ps(ws, c);
@@ -197,7 +194,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 			Fourier_SinCosSSE(c, &s, &c);
 		}
 
-		for(i=0;i<N/8;i++) {
+		for(i=0;i<N/2;i+=4) {
 			SrcHi -= 4;
 			b = _mm_loadr_ps(SrcHi);
 			a = _mm_load_ps(SrcLo);
@@ -214,7 +211,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 			t1 = _mm_xor_ps(t1, _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f));
 
 			_mm_store_ps(DstLo, t0); DstLo += 4;
-			DstHi -= 4; _mm_storer_ps(DstHi, t1);
+			_mm_store_ps(DstHi, t1); DstHi += 4;
 #if defined(__FMA__)
 			t0 = _mm256_mul_ps(wc, c);
 			t1 = _mm256_mul_ps(ws, c);
@@ -240,17 +237,17 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 		float wc, ws;
 		Fourier_SinCos(0.5f * Ns, &s,  &c);
 		Fourier_SinCos(1.0f * Ns, &ws, &wc);
-		for(i=0;i<N/4;i++) {
+		for(i=0;i<N/2;i+=2) {
 			a = *SrcLo++;
 			b = *--SrcHi;
 			*DstLo++ =  c*a + s*b;
-			*--DstHi =  s*a - c*b;
+			*DstHi++ =  s*a - c*b;
 			UPDATE_SINCOS();
 
 			a = *SrcLo++;
 			b = *--SrcHi;
 			*DstLo++ =  c*a + s*b;
-			*--DstHi = -s*a + c*b;
+			*DstHi++ = -s*a + c*b;
 			UPDATE_SINCOS();
 		}
 #undef UPDATE_SINCOS
@@ -267,14 +264,20 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N) {
 	//!  w = U_n.(z1^T, z2^T)^T
 	//!  y = (P_n)^T.w
 	//! TODO: SIMD opt? How to even structure this loop?
-	Buf[0] = Tmp[0];
-	for(i=1;i<N/2;i++) {
-		float a = Tmp[i];
-		float b = Tmp[N-i] * (i%2 ? (-1) : (+1));
-		Buf[i*2-1] = a + b;
-		Buf[i*2+0] = a - b;
+	{
+		const float *TmpLo = Tmp;
+		const float *TmpHi = Tmp + N;
+		      float *Dst   = Buf;
+
+		*Dst++ = *TmpLo++;
+		for(i=0;i<N/2-1;i++) {
+			float a = *TmpLo++;
+			float b = *--TmpHi;
+			*Dst++ = a + b;
+			*Dst++ = a - b;
+		}
+		*Dst++ = *--TmpHi;
 	}
-	Buf[N-1] = Tmp[N/2];
 }
 
 /**************************************/
