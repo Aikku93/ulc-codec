@@ -13,6 +13,7 @@
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
+#define ABS(x) ((x) < 0 ? (-(x)) : (x))
 #define SQR(x) ((x)*(x))
 /**************************************/
 
@@ -35,12 +36,57 @@ static size_t Block_Encode_BuildQuants_GetQBand(size_t Band, const uint16_t *Qua
 //! Build quantizer from sum of raised-power values and sum of absolutes
 //! NOTE: Currently using Sum[x^2]/Sum[x]. This somewhat favours larger
 //!       values which mask lower-power values anyway so it works out better.
-static inline int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
+//! NOTE: Biased by -2 because 2^2=4 which is the 'middle' value between 1..7
+//!       for quantized coefficients
+static int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
 	if(Abs == 0.0) return 0;
-	double sd = round(log(Pow / Abs) * 0x1.71547652B82FEp0 - 2.0); //! Log2[x^(1/m)]=Log[x]/Log[2^m]
-	if(sd <  0.0) sd =  0.0;
-	if(sd > 14.0) sd = 14.0; //! Fh is reserved
-	return 1 << (size_t)sd;
+
+	long int sd = lrint(log(Pow / Abs) * 0x1.71547652B82FEp0) - 2; //! Log2[x^(1/m)]=Log[x]/Log[2^m]
+	if(sd <  0) sd =  0;
+	if(sd > 14) sd = 14; //! Fh is reserved
+	return 1 << sd;
+}
+
+//! Build quantizer bands
+static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize) {
+	size_t Band;
+	size_t BandsRem = BlockSize;
+	size_t nQBands = 0;
+	size_t QBandBw = 0, QBandNzBw = 0;
+	double SumSqr  = 0.0;
+	for(Band=0;Band<BlockSize;Band++) {
+		//! Codeable?
+		double vNew = SQR((double)Coefs[Band]);
+		if(vNew >= SQR(0.5)) {
+			//! Enough bands to decide on a split?
+			//! NOTE: Somewhat arbitrary and less sensitive at high freq
+			size_t QBandBwThres = 1 + Band/32;
+			if(QBandNzBw > QBandBwThres) {
+				//! Coefficient not in range?
+				//! NOTE: Somewhat arbitrary (though tuned) thresholds
+				double t = vNew*QBandBw;
+				if(t < SQR(1.0/8.0)*SumSqr || t > SQR(4.0)*SumSqr) {
+					//! Create a split point
+					//! NOTE: Last band is built from remaining coefficients
+					BandsRem -= QBandBw;
+					QuantsBw[nQBands++] = QBandBw;
+					if(nQBands == MAX_QUANTS-1) break;
+
+					//! Reset state for a new band
+					QBandBw = QBandNzBw = 0;
+					SumSqr  = 0.0;
+				}
+			}
+
+			//! Add to quantizer band
+			SumSqr += vNew;
+			QBandNzBw++;
+		}
+
+		//! Increase bandwidth
+		QBandBw++;
+	}
+	QuantsBw[nQBands++] = BandsRem;
 }
 
 /**************************************/
@@ -56,12 +102,12 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 
 	//! Key data fetcher
 	size_t Band, Chan, QBand;
-	double Val;
+	float  Val;
 #define FETCH_KEY_DATA(KeyIdx) \
 	Band  = Keys[KeyIdx].Key & (BlockSize-1),  \
 	Chan  = Keys[KeyIdx].Key >> BlockSizeLog2, \
 	QBand = Block_Encode_BuildQuants_GetQBand(Band, QuantsBw[Chan]), \
-	Val   = CoefBuffer[Chan][Band]
+	Val   = ABS(CoefBuffer[Chan][Band])
 
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
@@ -74,134 +120,96 @@ static size_t Block_Encode_BuildQuants(const struct ULC_EncoderState_t *State, s
 	double   **QuantsAbs  = State->QuantsAbs;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
-	//! Build quantizer bands
+	//! Clear quantizer state
 	for(Chan=0;Chan<nChan;Chan++) {
-		const float *Coefs = CoefBuffer[Chan];
-		size_t BandsRem = BlockSize;
-		size_t nQBands = 0;
-		size_t QBandBw = 0, QBandNzBw = 0;
-		double SumSqr  = 0.0;
-		for(Band=0;Band<BlockSize;Band++) {
-			//! Codeable?
-			double vNew = Coefs[Band]; vNew = SQR(vNew);
-			if(vNew >= SQR(0.5)) {
-				//! Enough bands to decide on a split?
-				//! NOTE: Somewhat arbitrary and less sensitive at high freq
-				size_t QBandBwThres = 1 + Band/32;
-				if(QBandNzBw > QBandBwThres) {
-					//! Coefficient not in range?
-					//! NOTE: Somewhat arbitrary (though tuned) thresholds
-					double t = vNew*QBandBw;
-					if(t < SQR(1.0/8.0)*SumSqr || t > SQR(4.0)*SumSqr) {
-						//! Create a split point
-						//! NOTE: Last band is built from remaining coefficients
-						BandsRem -= QBandBw;
-						QuantsBw[Chan][nQBands++] = QBandBw;
-						if(nQBands == MAX_QUANTS-1) break;
-
-						//! Reset state for a new band
-						QBandBw = QBandNzBw = 0;
-						SumSqr  = 0.0;
-					}
-				}
-
-				//! Add to quantizer band
-				SumSqr += vNew;
-				QBandNzBw++;
-			}
-
-			//! Increase bandwidth
-			QBandBw++;
+		for(QBand=0;QBand<MAX_QUANTS;QBand++) {
+			QuantsPow[Chan][QBand] = 0.0;
+			QuantsAbs[Chan][QBand] = 0.0;
+			//Quants   [Chan][QBand] = 0; //! <- Will be set during first pass below
 		}
-		QuantsBw[Chan][nQBands++] = BandsRem;
 	}
+
+	//! Build quantizer bands
+	for(Chan=0;Chan<nChan;Chan++) Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize);
 
 	//! Clip to maximum available keys
 	//! This can happen if rate control says we can fit more
 	//! non-zero bands than are actually present for this block
 	if(nNzMax > nKeys) nNzMax = nKeys;
 
-	//! Clear quantizer state
-	for(Chan=0;Chan<nChan;Chan++) {
-		for(QBand=0;QBand<MAX_QUANTS;QBand++) {
-			QuantsPow[Chan][QBand] = 0.0;
-			QuantsAbs[Chan][QBand] = 0.0;
-		}
-	}
-
-	//! Build initial quantizers by considering all the keys available
+	//! Build initial quantizers by considering
+	//! all available keys (ie. the 'first pass')
 	for(Key=0;Key<nNzMax;Key++) {
 		FETCH_KEY_DATA(Key);
-		if(Val < 0.0) Val = -Val;
 
-		QuantsPow[Chan][QBand] += Val*Val;
+		QuantsPow[Chan][QBand] += SQR((double)Val);
 		QuantsAbs[Chan][QBand] += Val;
 	}
 	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<MAX_QUANTS;QBand++) {
 		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 	}
 
-	//! Remove any collapsed keys
-	size_t nNzBands = 0, nNzBandsOrig = nNzMax;
-	while(nNzBands < nNzBandsOrig) {
-		FETCH_KEY_DATA(nNzBands);
-		if(Val < 0.0) Val = -Val;
+	//! Loop until quantizers stabilize
+	//! NOTE: Saving quantizers to key value; this avoids
+	//! a lookup inside the coding loop
+	size_t nNzBands;
+	for(nNzBands = 0;;) {
+		//! Remove any collapsed keys
+		size_t nNzMaxOrig = nNzMax;
+		while(nNzBands < nNzMaxOrig) {
+			FETCH_KEY_DATA(nNzBands);
 
-		//! Collapse?
-		if(Val < 0.5*Quants[Chan][QBand]) {
-			//! Remove key from analysis and rebuild quantizer
-			QuantsPow[Chan][QBand] -= Val*Val;
-			QuantsAbs[Chan][QBand] -= Val;
-			Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
+			//! Collapse?
+			int16_t Qnt = Quants[Chan][QBand];
+			if(Val < 0.5f*Qnt) {
+				//! Remove key from analysis and rebuild quantizer
+				QuantsPow[Chan][QBand] -= SQR((double)Val);
+				QuantsAbs[Chan][QBand] -= Val;
+				Quants   [Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 
-			//! Remove key from list
-			Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
-			nNzBandsOrig--;
-		} else nNzBands++;
-	}
-
-	//! Try to add more keys if any collapsed above
-	//! Note clipping again: nKeys might've dropped enough that nNzMax needs to change again
-	if(nNzMax > nKeys) nNzMax = nKeys;
-	while(nNzBands < nNzMax) {
-		FETCH_KEY_DATA(nNzBands);
-		if(Val < 0.0) Val = -Val;
-
-		//! Does this key collapse if we try to fit it to the analysis?
-		double  Pow = QuantsPow[Chan][QBand] + Val*Val;
-		double  Avg = QuantsAbs[Chan][QBand] + Val;
-		int32_t Qnt = Block_Encode_BuildQuantizer(Pow, Avg);
-		if(Val < 0.5*Qnt) {
-			//! Remove key from list
-			Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
-			if(nNzMax > nKeys) nNzMax = nKeys;
-		} else {
-			//! No collapse - save new quantizer state
-			QuantsPow[Chan][QBand] = Pow;
-			QuantsAbs[Chan][QBand] = Avg;
-			Quants   [Chan][QBand] = Qnt;
-			nNzBands++;
+				//! Remove key from list
+				Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
+				nNzMaxOrig--;
+			} else Keys[nNzBands++].Quant = Qnt;
 		}
+
+		//! Clip nNzMax again: nKeys might've dropped enough that nNzMax needs to change again
+		if(nNzMax > nKeys) nNzMax = nKeys;
+
+		//! Try to add more keys if any collapsed above
+		//! NOTE: Normally, no keys collapse above, so
+		//! this section isn't used and we break out of
+		//! the rate/quantizer optimization loop during
+		//! the first iteration; this is 'just in case'
+		size_t QuantsUpdated = 0;
+		while(nNzBands < nNzMax) {
+			FETCH_KEY_DATA(nNzBands);
+
+			//! Does this key collapse if we try to fit it to the analysis?
+			double  Pow = QuantsPow[Chan][QBand] + SQR((double)Val);
+			double  Abs = QuantsAbs[Chan][QBand] + Val;
+			int16_t Qnt = Block_Encode_BuildQuantizer(Pow, Abs);
+			if(Val < 0.5f*Qnt) {
+				//! Remove key from list
+				Analysis_KeyRemove(nNzBands, Keys, nKeys); nKeys--;
+				if(nNzMax > nKeys) nNzMax = nKeys;
+			} else {
+				//! No collapse - save new quantizer state
+				QuantsPow[Chan][QBand] = Pow;
+				QuantsAbs[Chan][QBand] = Abs;
+				if(Quants[Chan][QBand] != Qnt) {
+					//! Only count /modified/ quantizers,
+					//! not the ones we just created
+					if(Quants[Chan][QBand] != 0) QuantsUpdated++;
+					Quants[Chan][QBand] = Qnt;
+				}
+				Keys[nNzBands++].Quant = Qnt;
+			}
+		}
+
+		//! If quantizers aren't modified, we're done
+		if(!QuantsUpdated) break;
 	}
-
-	//! Double-check that no keys we kept collapse
-	//! This is needed due to the psy-opt that amplified high frequency
-	//! data, since now we might have smaller values stuck in the middle
-	//! Additionally save the quantizer directly to the key structure,
-	//! as this avoids a lookup inside the coding loop
-	//! Finally, also try to keep any extra keys if we remove some, even
-	//! if they will quantize sub-optimally
-	for(Key=0;Key<nNzBands;) {
-		FETCH_KEY_DATA(Key);
-		if(Val < 0.0) Val = -Val;
-
-		int16_t q = Quants[Chan][QBand];
-		if(Val < 0.5*q) {
-			Analysis_KeyRemove(Key, Keys, nKeys); nKeys--;
-			if(nNzBands > nKeys) nNzBands = nKeys;
-		} else Keys[Key++].Quant = q;
-	}
-
 	return nNzBands;
 #undef FETCH_KEY_DATA
 }
