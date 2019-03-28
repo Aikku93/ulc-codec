@@ -31,6 +31,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * Aside from a somewhat arbitrary high-frequency boost in the frequency selection criteria (and larger quantizer bands in the high-frequency range), there is no psychoacoustic optimizations, which might be resulting in lower quality for a given rate
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
+    * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
 
 ## Technical details
 * Target bitrate: 16..256kbps+ (44.1kHz, M/S stereo)
