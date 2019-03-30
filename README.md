@@ -1,6 +1,8 @@
 # ulc-codec
 ulc-codec (Ultra-Low-Complexity Codec) is intended to be a low-bitrate audio codec, providing ultra-low-complexity decoding.
 
+As a proof of concept of the decoding complexity, a Gameboy Advance demonstration may be found in the ulcplayer-gba folder. To use it, you must provide your own ```SoundData.ulc``` in the ```source``` folder and compile with a suitable ARM compiler. Mostly due to memory constraints, the player only supports mono audio. However, CPU usage averages at around 35% for 32768Hz @ ~132kbps.
+
 ## Getting started
 
 ### Prerequisites
