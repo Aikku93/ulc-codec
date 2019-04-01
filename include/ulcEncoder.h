@@ -79,8 +79,11 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!    0,1,2,3...BlockSize-1, //! Chan0
 //!    0,1,2,3...BlockSize-1, //! Chan1
 //!   }
+//!  -PowerDecay is meant for M/S transform and the like, where
+//!   channels are increasingly 'less important'. Pass 1.0 if
+//!   all channels are equally important.
 //! Returns the block size in bits
-size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, double RateKbps);
+size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, double RateKbps, float PowerDecay);
 
 /**************************************/
 //! EOF
