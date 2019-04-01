@@ -42,7 +42,7 @@
 .equ GLYPHS_TILEOFS, BGDESIGN_NTILES
 .equ GLYPHS_TILEADR, (0x06000000 + GLYPHS_TILEMAP*0x0800)
 
-.equ GRAPH_NTILES, (GRAPH_W*GRAPH_H) / (8*8)
+.equ GRAPH_NTILES, (GRAPH_W*GRAPH_H/2) / (8*8)
 .equ GRAPHL_TILEMAP, 29
 .equ GRAPHL_TILEOFS, (GLYPHS_TILEOFS + GLYPHS_NTILES)
 .equ GRAPHL_TILEADR, (0x06000000 + GRAPHL_TILEOFS*32)
@@ -184,6 +184,7 @@ main:
 
 .arm
 UpdateGfx:
+	STMFD	sp!, {r4-fp,lr}
 	LDR	r0, =0x04000000
 	LDR	r1, =0x1F40
 	STRH	r1, [r0]
@@ -200,25 +201,6 @@ UpdateGfx:
 	STR	r1, [r0, #0x1C]
 	LDR	r1, =0x10102F53
 	STR	r1, [r0, #0x50] @ Layer BG0,BG1,OBJ over BG0,BG1,BG2,BG3, additive blend
-0:	LDR	r0, .LRedraw_BufOfs
-	LDR	r1, .LRedraw_PosMu
-	LDR	r2, =ulc_State
-	LDR	r2, [r2, #0x08]
-	LDR	r2, [r2, #0x0C]
-	LDR	r3, =GRAPH_SMPSTRIDE_RCP
-	MUL	r3, r2, r3
-	LDR	r2, =GRAPH_W
-	UMULL	r3, ip, r2, r3 @ GRAPH_W * Rate/Stride + Mu
-	ADDS	r3, r3, r1
-	ADC	ip, ip, #0x00
-	MOV	r2, r3, lsr #0x16
-	BIC	r3, r3, r2, lsl #0x16
-	STR	r3, .LRedraw_PosMu
-	ORR	r2, r2, ip, lsl #0x20-22
-	ADDS	r0, r0, r2
-	SUBCS	r0, r0, #BLOCK_SIZE*2
-	STR	r0, .LRedraw_BufOfs
-0:	STMFD	sp!, {r4-fp,lr}
 
 .LRedraw_Clear:
 1:	LDR	r0, =GLYPHS_TILEADR + ((ARTIST_Y/8)*32 + ARTIST_X/8)*2
@@ -231,11 +213,7 @@ UpdateGfx:
 	BL	.LRedraw_Set32
 1:	LDR	r0, =GRAPHL_TILEADR
 	LDR	r1, =0
-	LDR	r2, =GRAPH_NTILES * 32
-	BL	.LRedraw_Set32
-1:	LDR	r0, =GRAPHR_TILEADR
-	LDR	r1, =0
-	LDR	r2, =GRAPH_NTILES * 32
+	LDR	r2, =GRAPH_NTILES * 32 * 2 @ Clear L+R
 	BL	.LRedraw_Set32
 
 .LRedraw_DrawTitle:
@@ -268,61 +246,62 @@ UpdateGfx:
 1:	LDRB	ip, [r2, sl]            @ Abs[xL] -> ip
 	CMP	ip, #0x80
 	RSBCS	ip, ip, #0x0100
-	RSB	r6, r6, r6, lsr #0x04   @ LP_L = LP_L*15/16 + xL*1/16
-	RSB	r6, r6, ip, lsl #0x10-4 @ NOTE: LP_L in 8.16
+	SUB	lr, r6, ip, lsl #0x10   @ LP_L = LP_L - (LP_L - xL)*1/64
+	SUB	r6, r6, lr, asr #0x06   @ NOTE: LP_L in 8.16
 	ADD	r8, r8, r6
 	LDRB	lr, [r0]
-	RSB	lr, lr, lr, lsr #0x02   @ Combine with old (nicer effect)
-	RSB	ip, lr, ip, lsr #0x02
+	RSB	ip, ip, lr              @ Combine with old (nicer effect)
+	SUB	ip, lr, ip, asr #0x03
 	STRB	ip, [r0], #0x01
 	LDRB	ip, [r3, sl]            @ Abs[xR] -> ip
 	CMP	ip, #0x80
 	RSBCS	ip, ip, #0x0100
-	RSB	r7, r7, r7, lsr #0x04   @ LP_R = LP_R*15/16 + xR*1/16
-	RSB	r7, r7, ip, lsl #0x10-4 @ NOTE: LP_R in 8.16
+	SUB	lr, r7, ip, lsl #0x10   @ LP_R = LP_R - (LP_R - xR)*1/64
+	SUB	r7, r7, lr, asr #0x06   @ NOTE: LP_R in 8.16
 	ADD	r9, r9, r7
 	LDRB	lr, [r1]
-	RSB	lr, lr, lr, lsr #0x02   @ Combine with old
-	RSB	ip, lr, ip, lsr #0x02
+	RSB	ip, ip, lr              @ Combine with old
+	SUB	ip, lr, ip, asr #0x03
 	STRB	ip, [r1], #0x01
 	ADD	r5, r5, r4            @ PosMu += Step
 	ADDS	sl, sl, r5, lsr #0x16 @ Update position, wrap, clear integer part of PosMu
-	BIC	r5, r5, #0xFF<<22     @ (step is less than 8 at sane rates, so clearing only up to 255 is more than fine)
 	SUBCS	sl, sl, #BLOCK_SIZE*2
+	BIC	r5, r5, #0xFF<<22     @ (step is less than 8 at sane rates, so clearing only up to 255 is more than fine)
 	SUBS	fp, fp, #0x01
 	BNE	1b
-2:	@STR	sl, .LRedraw_BufOfs @ Updated in VBlank or can go out of sync from long decode times
-	@STR	r5, .LRedraw_PosMu
+2:	STR	sl, .LRedraw_BufOfs @ Updated in VBlank or can go out of sync from long decode times
+	STR	r5, .LRedraw_PosMu
 	STR	r6, .LRedraw_LowPassL
 	STR	r7, .LRedraw_LowPassR
 
 .LRedraw_DrawSpeakers:
-	LDR	r5, =0x07000000
 	LDR	r2, .LRedraw_PowerOldL
 	LDR	r3, .LRedraw_PowerOldR
-	RSB	r8, r8, r2
-	RSB	r9, r9, r3
-	SUB	r2, r2, r8, asr #0x01 @ Dampen attack/decay
-	SUB	r3, r3, r9, asr #0x01
+	SUBS	ip, r8, r2
+	ADDHI	r2, r2, ip, asr #0x01 @ Dampen attack (slight)
+	ADDCC	r2, r2, ip, asr #0x04 @ Dampen decay (heavy)
+	SUBS	ip, r9, r3
+	ADDHI	r3, r3, ip, asr #0x01
+	ADDCC	r3, r3, ip, asr #0x04
 	STR	r2, .LRedraw_PowerOldL
 	STR	r3, .LRedraw_PowerOldR
-	UMULL	r8, r9, r2, r2 @ Arbitrary scaling
+	UMULL	r8, r9, r2, r2    @ Arbitrary scaling
 	UMULL	r2, ip, r3, r3
 	MOV	r2, r9, lsr #0x17
 	MOV	r3, ip, lsr #0x17
-	CMP	r2, #0x03
-	MOVHI	r2, #0x03
-	CMP	r3, #0x03
-	MOVHI	r3, #0x03
-	AND	ip, r8, #0x03 @ Using r8 as source of entropy
-	CMP	ip, #0x02
-	MOVHI	ip, #0x02
+	ADD	ip, r2, r3        @ Using input bits as source of entropy for speaker animation
+	AND	ip, ip, #0x03<<1
+	CMP	ip, #0x02<<1
+	MOVHI	ip, #0x02<<1
 	CMP	r2, #0x02
-	ADDCS	r2, r2, ip, lsl #0x01
+	MOVHI	r2, #0x03
+	ADDCS	r2, r2, ip
 	CMP	r3, #0x02
-	ADDCS	r3, r3, ip, lsl #0x01
+	MOVHI	r3, #0x03
+	ADDCS	r3, r3, ip
 	MOV	r2, r2, lsl #0x04 @ 16x 8x8 tiles per 32x32 area
 	MOV	r3, r3, lsl #0x04 @ 16x 8x8 tiles per 32x32 area
+	LDR	r5, =0x07000000
 	STRH	r2, [r5, #0x08*0+0x04] @ L-T (tile in Attr2 bit 0..9)
 	STRH	r2, [r5, #0x08*1+0x04] @ L-B
 	STRH	r3, [r5, #0x08*2+0x04] @ R-T
