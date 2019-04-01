@@ -109,11 +109,14 @@ static void StateCacheAdvance(struct DecodeState_t *State, size_t nBytes, size_t
 
 int main(int argc, const char *argv[]) {
 	//! Check arguments
-	if(argc != 3) {
+	int MidSideXfm = 1;
+	if(argc > 3) MidSideXfm = (!strcmp(argv[3], "-nomidside")) ? 0 : (-1);
+	if(argc < 3 || argc > 4 || MidSideXfm == -1) {
 		printf(
 			"ulcDecodeTool - Ultra-Low Complexity Codec Decoding Tool\n"
-			"Usage: ulcdecodetool Input.ulc Output.sw\n"
+			"Usage: ulcdecodetool Input.ulc Output.sw [-nomidside]\n"
 			"Multi-channel data will be interleaved.\n"
+			"-nomidside disables M/S stereo.\n"
 		);
 		return 1;
 	}
@@ -176,7 +179,7 @@ int main(int argc, const char *argv[]) {
 			StateCacheAdvance(&State, (Size + 7) / 8, Header.MaxBlockSize);
 
 			//! Apply M/S transform
-			if(nChan == 2) for(size_t n=0;n<BlockSize;n++) {
+			if(MidSideXfm && nChan == 2) for(size_t n=0;n<BlockSize;n++) {
 				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
 				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
 				*a = va + vb;
