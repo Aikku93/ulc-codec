@@ -36,11 +36,14 @@ static uint8_t CacheMem[CACHE_SIZE];
 
 int main(int argc, const char *argv[]) {
 	//! Check arguments
-	if(argc < 5 || argc > 6) {
+	int MidSideXfm = 1;
+	if(argc > 6) MidSideXfm = (!strcmp(argv[6], "-nomidside")) ? 0 : (-1);
+	if(argc < 5 || argc > 7) {
 		printf(
 			"ulcEncodeTool - Ultra-Low Complexity Codec Encoding Tool\n"
-			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [nChan=1]\n"
+			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [nChan=1 [-nomidside]]\n"
 			"Multi-channel data must be interleaved.\n"
+			"-nomidside disables M/S stereo.\n"
 		);
 		return 1;
 	}
@@ -148,7 +151,7 @@ int main(int argc, const char *argv[]) {
 			}
 
 			//! Apply M/S transform
-			if(nChan == 2) for(n=0;n<BLOCK_SIZE;n++) {
+			if(MidSideXfm && nChan == 2) for(n=0;n<BLOCK_SIZE;n++) {
 				float *a = &BlockBuffer[0*BLOCK_SIZE+n], va = *a;
 				float *b = &BlockBuffer[1*BLOCK_SIZE+n], vb = *b;
 				*a = (va + vb) * 0.5f;
@@ -158,7 +161,7 @@ int main(int argc, const char *argv[]) {
 			//! Encode block
 			//! Reuse BlockFetch[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockFetch;
-			size_t Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps);
+			size_t Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? 0x1.6A09E6p-1f : 1.0f); //! 1/sqrt[2]);
 			TotalSize += Size;
 
 			//! Copy what we can into the cache
