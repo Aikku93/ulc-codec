@@ -1,5 +1,5 @@
 /**************************************/
-.include "source/ulc_Specs.inc"
+.include "source/ulc/ulc_Specs.inc"
 /**************************************/
 .text
 .balign 2
@@ -19,15 +19,18 @@ ulc_Init:
 	SUB	r2, r3
 	BNE	.LInit_BadHeader
 	LDRH	r3, [r0, #0x14]
-	CMP	r3, #0x01 @ Currently only support mono
+.if ULC_STEREO
+	CMP	r3, #0x02
+.else
+	CMP	r3, #0x01
+.endif
 	BNE	.LInit_BadHeader
 0:	MOV	ip, r0
 	PUSH	{lr}
 0:	LDR	r1, =ulc_State
 	@MOV	r2, #0x00       @ [already 0 from above]
-	@MOV	r3, #0x01       @ [already 1 from above]
 	STRB	r2, [r1, #0x00] @ BufIdx = 0
-	STRB	r3, [r1, #0x01] @ nBufProc = 1
+	STRB	r2, [r1, #0x01] @ nBufProc = 0
 	STR	r0, [r1, #0x08] @ SoundFile
 	LDR	r2, [r0, #0x08] @ nBlkRem = nSamp/BLOCK_SIZE+1
 	LSR	r2, #BLOCK_SIZE_LOG2
@@ -39,7 +42,11 @@ ulc_Init:
 	LDR	r1, =ulc_TM1Proc
 	STR	r1, [r0, #0x04*4]
 0:	LDR	r0, =0x04000080    @ &SOUNDCNT -> r0
+.if ULC_STEREO
+	LDR	r1, =0x9A0C0000    @ FIFOB 100%, FIFOB 100%, FIFOA -> L, FIFOB -> R, FIFOA reset, FIFOB reset
+.else
 	LDR	r1, =0x0B040000    @ FIFOA 100%, FIFOA -> L+R, FIFOA reset
+.endif
 	STR	r0, [r0, #0x04]    @ Master enable (bit 7)
 	STR	r1, [r0]
 0:	ADD	r0, #0xBC-0x80     @ &DMA1.{SAD,DAD,CNT}
@@ -50,6 +57,12 @@ ulc_Init:
 	LSL	r3, #0x18
 	STRH	r3, [r0, #0x0A]    @ [CNT_H=0]
 	STMIA	r0!, {r1-r3}
+.if ULC_STEREO
+	LDR	r1, =ulc_OutputBuffer + 2*BLOCK_SIZE
+	ADD	r2, #0x04
+	STRH	r3, [r0, #0x0A]
+	STMIA	r0!, {r1-r3}
+.endif
 0:	LDR	r0, =16777216      @ Period = HW_RATE / PlaybackRate
 	MOV	r1, ip
 	LDR	r1, [r1, #0x0C]
@@ -91,7 +104,11 @@ ulc_TM1Proc:
 	ADD	r1, #0xC6       @ &DMA1.CNT_H -> r1
 	LDRH	r3, [r1, #0x00] @ DMA1.CNT_H(=B600h) -> r3
 	STRH	r2, [r1, #0x00] @ DMA1.CNT_H = 0
-	STRH	r3, [r1, #0x00] @ Restart DMA
+	STRH	r3, [r1, #0x00] @ Restart DMA1
+.if ULC_STEREO
+	STRH	r2, [r1, #0x0C] @ DMA2.CNT_H = 0
+	STRH	r3, [r1, #0x0C] @ Restart DMA2
+.endif
 2:	STRB	r2, [r0, #0x00]
 	LDRB	r1, [r0, #0x01] @ nBufProc++
 	ADD	r1, #0x01
@@ -120,6 +137,9 @@ ulc_State:
 
 ulc_OutputBuffer:
 	.space 2*BLOCK_SIZE
+.if ULC_STEREO
+	.space 2*BLOCK_SIZE
+.endif
 .size   ulc_OutputBuffer, .-ulc_OutputBuffer
 .global ulc_OutputBuffer
 
