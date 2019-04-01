@@ -108,12 +108,8 @@ main:
 	BCS	1b
 
 .LMain:
-	LDR	r4, =VBLANK_READY_ADR
-	LDR	r5, =UpdateGfx
-	LDR	r6, =RedrawGfx
-	STR	r5, [r4] @ Anything not VBLANK_READY_ADR
 	LDR	r1, =_IRQTable
-	LDR	r0, =.Lmain_VBlankProc+1
+	LDR	r0, =UpdateGfx
 	STR	r0, [r1, #0x04*0]
 	LDR	r1, =0x04000004
 	LDR	r0, =1<<3
@@ -127,14 +123,7 @@ main:
 1:	BL	ulc_BlockProcess
 	MOV	r0, #0x00 @ IntrWait (return if already set)
 	MVN	r1, r0    @ Any interrupt
-	STR	r1, [r4]  @ [clear VBlank ready, just in case]
 	SWI	0x04
-2:	LDR	r0, [r4] @ VBlank ready?
-	SUB	r0, r4
-	BNE	1b
-	STR	r0, [r4]
-	BL	.Lbxr5
-	BL	.Lbxr6
 	B	1b
 .Lbxr5:	BX	r5
 .Lbxr6:	BX	r6
@@ -151,11 +140,6 @@ main:
 	SUB	r2, #0x04
 	BNE	1b
 2:	BX	lr
-
-.Lmain_VBlankProc:
-	LDR	r0, =VBLANK_READY_ADR
-	STR	r0, [r0]
-	BX	lr
 
 .balign 4
 .Lmain_InitGraphTiles:
@@ -234,18 +218,7 @@ UpdateGfx:
 	ADDS	r0, r0, r2
 	SUBCS	r0, r0, #BLOCK_SIZE*2
 	STR	r0, .LRedraw_BufOfs
-0:	BX	lr
-
-/**************************************/
-.size UpdateGfx, .-UpdateGfx
-/**************************************/
-.section .iwram, "ax", %progbits
-.balign 4
-/**************************************/
-
-.arm
-RedrawGfx:
-	STMFD	sp!, {r4-fp,lr}
+0:	STMFD	sp!, {r4-fp,lr}
 
 .LRedraw_Clear:
 1:	LDR	r0, =GLYPHS_TILEADR + ((ARTIST_Y/8)*32 + ARTIST_X/8)*2
@@ -323,7 +296,7 @@ RedrawGfx:
 	STR	r6, .LRedraw_LowPassL
 	STR	r7, .LRedraw_LowPassR
 
-.LDrawSpeakers:
+.LRedraw_DrawSpeakers:
 	LDR	r5, =0x07000000
 	LDR	r2, .LRedraw_PowerOldL
 	LDR	r3, .LRedraw_PowerOldR
@@ -445,7 +418,7 @@ RedrawGfx:
 .LRedraw_GraphDataR: .space GRAPH_W
 
 /**************************************/
-.size RedrawGfx, .-RedrawGfx
+.size UpdateGfx, .-UpdateGfx
 /**************************************/
 
 .section .rodata
@@ -458,7 +431,6 @@ SoundFile:
 SoundFile_Artist:
 	.asciz "Some Artist"
 .size SoundFile_Artist, .-SoundFile_Artist
-
 
 SoundFile_Title:
 	.asciz "Song Name"
