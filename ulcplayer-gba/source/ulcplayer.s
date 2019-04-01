@@ -40,13 +40,16 @@
 .equ GLYPHS_TILEMAP, 30
 .equ GLYPHS_PAL16,    4
 .equ GLYPHS_TILEOFS, BGDESIGN_NTILES
+.equ GLYPHS_TILEADR, (0x06000000 + GLYPHS_TILEMAP*0x0800)
 
 .equ GRAPH_NTILES, (GRAPH_W*GRAPH_H) / (8*8)
 .equ GRAPHL_TILEMAP, 29
 .equ GRAPHL_TILEOFS, (GLYPHS_TILEOFS + GLYPHS_NTILES)
+.equ GRAPHL_TILEADR, (0x06000000 + GRAPHL_TILEOFS*32)
 .equ GRAPHL_PAL16,    2
 .equ GRAPHR_TILEMAP, 28
 .equ GRAPHR_TILEOFS, (GRAPHL_TILEOFS + GRAPH_NTILES)
+.equ GRAPHR_TILEADR, (0x06000000 + GRAPHR_TILEOFS*32)
 .equ GRAPHR_PAL16,    3
 
 .equ SPEAKERBASS_NTILES, 128
@@ -85,7 +88,7 @@ main:
 	LDR	r2, =0x0500
 	BL	.Lmain_Set32
 0:	BL	.Lmain_InitGraphTiles
-0:	LDR	r0, =OAM_ShadowBuf
+0:	LDR	r0, =0x07000000
 	LDR	r2, =SPEAKER_LT_Y|(1<<10) | (SPEAKER_LT_X | 2<<14)<<16
 	LDR	r3, =0x0000
 	LDR	r4, =SPEAKER_LB_Y|(1<<10) | (SPEAKER_LB_X | 2<<14)<<16
@@ -197,24 +200,7 @@ main:
 
 .arm
 UpdateGfx:
-	STMFD	sp!, {r4-r9,lr}
-1:	LDR	r0, =0x06000000 + GLYPHS_TILEMAP*0x0800
-	LDR	r1, =Glyphs_ShadowBuf
-	LDR	r2, =0x0500
-	BL	.LUpdateGfx_Copy32Fast
-1:	LDR	r0, =0x06000000 + GRAPHL_TILEOFS*32
-	LDR	r1, =GraphL_ShadowBuf
-	LDR	r2, =GRAPH_W*GRAPH_H / 2
-	BL	.LUpdateGfx_Copy32Fast
-1:	LDR	r0, =0x06000000 + GRAPHR_TILEOFS*32
-	LDR	r1, =GraphR_ShadowBuf
-	LDR	r2, =GRAPH_W*GRAPH_H / 2
-	BL	.LUpdateGfx_Copy32Fast
-1:	LDR	r0, =0x07000000
-	LDR	r1, =OAM_ShadowBuf
-	LDR	r2, =128*8
-	BL	.LUpdateGfx_Copy32Fast
-2:	LDR	r0, =0x04000000
+	LDR	r0, =0x04000000
 	LDR	r1, =0x1F40
 	STRH	r1, [r0]
 	LDR	r1, =GRAPHL_TILEMAP<<8 | (GRAPHR_TILEMAP<<8)<<16
@@ -238,25 +224,17 @@ UpdateGfx:
 	LDR	r3, =GRAPH_SMPSTRIDE_RCP
 	MUL	r3, r2, r3
 	LDR	r2, =GRAPH_W
-	UMULL	ip, lr, r2, r3 @ GRAPH_W * Rate/Stride + Mu
-	ADDS	ip, ip, r1
-	ADC	lr, lr, #0x00
-	MOV	r2, ip, lsr #0x16
-	BIC	ip, ip, r2, lsl #0x16
-	STR	ip, .LRedraw_PosMu
-	ORR	r2, r2, lr, lsl #0x20-22
+	UMULL	r3, ip, r2, r3 @ GRAPH_W * Rate/Stride + Mu
+	ADDS	r3, r3, r1
+	ADC	ip, ip, #0x00
+	MOV	r2, r3, lsr #0x16
+	BIC	r3, r3, r2, lsl #0x16
+	STR	r3, .LRedraw_PosMu
+	ORR	r2, r2, ip, lsl #0x20-22
 	ADDS	r0, r0, r2
 	SUBCS	r0, r0, #BLOCK_SIZE*2
 	STR	r0, .LRedraw_BufOfs
-0:	LDMFD	sp!, {r4-r9,lr}
-	BX	lr
-
-.LUpdateGfx_Copy32Fast:
-1:	LDMIA	r1!, {r3-r9,ip}
-	STMIA	r0!, {r3-r9,ip}
-	SUBS	r2, r2, #0x20
-	BHI	1b
-0:	MOV	pc, lr
+0:	BX	lr
 
 /**************************************/
 .size UpdateGfx, .-UpdateGfx
@@ -270,29 +248,29 @@ RedrawGfx:
 	STMFD	sp!, {r4-fp,lr}
 
 .LRedraw_Clear:
-1:	LDR	r0, =Glyphs_ShadowBuf + ((ARTIST_Y/8)*32 + ARTIST_X/8)*2
+1:	LDR	r0, =GLYPHS_TILEADR + ((ARTIST_Y/8)*32 + ARTIST_X/8)*2
 	LDR	r1, =0
 	LDR	r2, =ARTIST_W*2
 	BL	.LRedraw_Set32
-1:	LDR	r0, =Glyphs_ShadowBuf + ((TITLE_Y/8)*32 + TITLE_X/8)*2
+1:	LDR	r0, =GLYPHS_TILEADR + ((TITLE_Y/8)*32 + TITLE_X/8)*2
 	LDR	r1, =0
 	LDR	r2, =TITLE_W*2
 	BL	.LRedraw_Set32
-1:	LDR	r0, =GraphL_ShadowBuf
+1:	LDR	r0, =GRAPHL_TILEADR
 	LDR	r1, =0
 	LDR	r2, =GRAPH_NTILES * 32
 	BL	.LRedraw_Set32
-1:	LDR	r0, =GraphR_ShadowBuf
+1:	LDR	r0, =GRAPHR_TILEADR
 	LDR	r1, =0
 	LDR	r2, =GRAPH_NTILES * 32
 	BL	.LRedraw_Set32
 
 .LRedraw_DrawTitle:
-1:	LDR	r0, =Glyphs_ShadowBuf + ((ARTIST_Y/8)*32 + ARTIST_X/8)*2
+1:	LDR	r0, =GLYPHS_TILEADR + ((ARTIST_Y/8)*32 + ARTIST_X/8)*2
 	LDR	r1, =SoundFile_Artist
 	LDR	r2, =ARTIST_W
 	BL	.LRedraw_DrawString
-1:	LDR	r0, =Glyphs_ShadowBuf + ((TITLE_Y/8)*32 + TITLE_X/8)*2
+1:	LDR	r0, =GLYPHS_TILEADR + ((TITLE_Y/8)*32 + TITLE_X/8)*2
 	LDR	r1, =SoundFile_Title
 	LDR	r2, =TITLE_W
 	BL	.LRedraw_DrawString
@@ -346,7 +324,7 @@ RedrawGfx:
 	STR	r7, .LRedraw_LowPassR
 
 .LDrawSpeakers:
-	LDR	r5, =OAM_ShadowBuf
+	LDR	r5, =0x07000000
 	LDR	r2, .LRedraw_PowerOldL
 	LDR	r3, .LRedraw_PowerOldR
 	RSB	r8, r8, r2
@@ -380,8 +358,8 @@ RedrawGfx:
 .LRedraw_DrawGraphs:
 	SUB	r0, r0, #GRAPH_W
 	SUB	r1, r1, #GRAPH_W
-	LDR	r2, =GraphL_ShadowBuf + (GRAPH_H/2-1)*4
-	LDR	r3, =GraphR_ShadowBuf + (GRAPH_H/2-1)*4
+	LDR	r2, =GRAPHL_TILEADR + (GRAPH_H/2-1)*4
+	LDR	r3, =GRAPHR_TILEADR + (GRAPH_H/2-1)*4
 	LDR	r4, =GRAPH_W
 	MOV	r5, #0x01         @ PixelStep (will be rotated every pixel)
 1:	LDRB	r6, [r0], #0x01   @ Value -> r6
@@ -485,27 +463,6 @@ SoundFile_Artist:
 SoundFile_Title:
 	.asciz "Song Name"
 .size SoundFile_Title, .-SoundFile_Title
-
-/**************************************/
-
-.section .sbss
-.balign 4
-
-Glyphs_ShadowBuf:
-	.space 0x0600
-.size Glyphs_ShadowBuf, .-Glyphs_ShadowBuf
-
-GraphL_ShadowBuf:
-	.space GRAPH_NTILES * 32
-.size GraphL_ShadowBuf, .-GraphL_ShadowBuf
-
-GraphR_ShadowBuf:
-	.space GRAPH_NTILES * 32
-.size GraphR_ShadowBuf, .-GraphR_ShadowBuf
-
-OAM_ShadowBuf:
-	.space 128*8
-.size OAM_ShadowBuf, .-OAM_ShadowBuf
 
 /**************************************/
 /* EOF                                */
