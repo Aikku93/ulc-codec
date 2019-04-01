@@ -1,9 +1,8 @@
 #----------------------------#
-# Set path to ARM GCC here
-PATH := /c/GCCARM/bin:$(PATH)
+PATH := /x/Tools/GCCARM/bin:$(PATH)
 #----------------------------#
 
-SOURCES  := source
+SOURCES  := source source/res source/sys source/ulc
 INCLUDES := include
 BUILD    := build
 TARGET   := ulcplayer
