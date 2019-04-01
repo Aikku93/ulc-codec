@@ -350,10 +350,10 @@ RedrawGfx:
 	ADDCS	r3, r3, ip, lsl #0x01
 	MOV	r2, r2, lsl #0x04 @ 16x 8x8 tiles per 32x32 area
 	MOV	r3, r3, lsl #0x04 @ 16x 8x8 tiles per 32x32 area
-	STRB	r2, [r5, #0x08*0+0x04] @ L-T (tile in Attr2 bit 0..9)
-	STRB	r2, [r5, #0x08*1+0x04] @ L-B
-	STRB	r3, [r5, #0x08*2+0x04] @ R-T
-	STRB	r3, [r5, #0x08*3+0x04] @ R-B
+	STRH	r2, [r5, #0x08*0+0x04] @ L-T (tile in Attr2 bit 0..9)
+	STRH	r2, [r5, #0x08*1+0x04] @ L-B
+	STRH	r3, [r5, #0x08*2+0x04] @ R-T
+	STRH	r3, [r5, #0x08*3+0x04] @ R-B
 
 .LRedraw_DrawGraphs:
 	SUB	r0, r0, #GRAPH_W
