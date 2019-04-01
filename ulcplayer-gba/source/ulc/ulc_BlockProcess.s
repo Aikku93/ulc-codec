@@ -1,5 +1,5 @@
 /**************************************/
-.include "source/ulc_Specs.inc"
+.include "source/ulc/ulc_Specs.inc"
 /**************************************/
 .if BLOCK_OVERLAP == 2048
 	.equ IMDCT_WS_BITS, 22
@@ -181,7 +181,7 @@ ulc_BlockProcess:
 	ADD	sl, sl, #(BLOCK_SIZE/2)*4                 @ Tmp = TmpBuf+N/2 (forwards)
 	LDR	fp, =ulc_LappingBuffer + (BLOCK_SIZE/2)*4 @ Lap = LapBuf+N/2 (backwards)
 	LDR	ip, [sp, #0x04]     @ OutLo
-.if 0
+.if ULC_STEREO
 	TST	ip, #0x80000000
 	ADDNE	ip, ip, #BLOCK_SIZE*2
 	ADDNE	fp, fp, #(BLOCK_SIZE/2)*4
@@ -313,7 +313,7 @@ ulc_BlockProcess:
 	SUB	sl, sl, #(BLOCK_SIZE/2)*4 @ Rewind buffer
 
 .LDecodeCoefs_NextChan:
-.if 0
+.if ULC_STEREO
 	ADDS	r5, r5, #0x80000000
 	BCC	.LChannels_Loop
 .endif
@@ -324,7 +324,7 @@ ulc_BlockProcess:
 @ r6: &NextByte
 
 .LSaveState_Exit:
-.if 0
+.if ULC_STEREO
 	TST	r6, #0x80000000
 	BIC	r6, r6, #0x80000000 @ Clear nybble mask (always move to next byte on next frame)
 	SUBEQ	r6, r6, #0x01       @ We are always one nybble ahead, so rewind the byte if on first nybble
@@ -350,10 +350,19 @@ ulc_BlockProcess:
 	MOV	r7, #0x00
 	MOV	r8, #0x00
 	MOV	r9, #BLOCK_SIZE
+.if ULC_STEREO
+	ADD	sl, r5, #BLOCK_SIZE*2
+.endif
 1:	STMIA	r5!, {r0-r4,r6-r8}
 	STMIA	r5!, {r0-r4,r6-r8}
 	STMIA	r5!, {r0-r4,r6-r8}
 	STMIA	r5!, {r0-r4,r6-r8}
+.if ULC_STEREO
+	STMIA	sl!, {r0-r4,r6-r8}
+	STMIA	sl!, {r0-r4,r6-r8}
+	STMIA	sl!, {r0-r4,r6-r8}
+	STMIA	sl!, {r0-r4,r6-r8}
+.endif
 	SUBS	r9, r9, #0x08*16
 	BNE	1b
 2:	B	.LExit
@@ -376,6 +385,9 @@ ulc_TransformTemp:
 
 ulc_LappingBuffer:
 	.space 4*(BLOCK_SIZE/2)
+.if ULC_STEREO
+	.space 4*(BLOCK_SIZE/2)
+.endif
 .size ulc_LappingBuffer, .-ulc_LappingBuffer
 
 /**************************************/
