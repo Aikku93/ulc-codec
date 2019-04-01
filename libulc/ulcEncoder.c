@@ -125,13 +125,13 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
 /**************************************/
 
 //! Encode block
-size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, double RateKbps) {
+size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, double RateKbps, float PowerDecay) {
 	//! Refill bit budget
 	double AvgBitBudget = RateKbps*1000.0/State->RateHz * State->BlockSize;
 	State->BitBudget += AvgBitBudget;
 
 	//! Transform input, build keys, and get maximum number of non-zero bands
-	size_t nKeys = Block_Transform(State, SrcData);
+	size_t nKeys = Block_Transform(State, SrcData, PowerDecay);
 	size_t nNzMax; {
 		//! Limit to 1.25x target bitrate to avoid quality spikes,
 		//! as these have a tendency to sound bad in context
