@@ -124,7 +124,7 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 //!  -Applies anti-pre-echo formula
 //!  -Stores keys for block coefficients
 //! Returns the number of keys stored
-static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data) {
+static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
 
@@ -151,13 +151,8 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);
 
 		//! Insert coefficient keys
-		//! NOTE:
-		//!  Channels get increasingly lower analysis power,
-		//!  as the input is expected to have some form of
-		//!  decorrelation transform applied, such as M/S,
-		//!  Hadamard, DCT, etc.
 		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower);
-		AnalysisPower *= 0x1.6A09E6p-1; //! 1/sqrt[2]
+		AnalysisPower *= PowerDecay;
 	}
 	return nKeys;
 }
