@@ -11,9 +11,10 @@
 /**************************************/
 .equ GRAPH_W,  112 @ Pixels
 .equ GRAPH_H,   64 @ Pixels (NOTE: lower half reflected from top)
-.equ GRAPHL_X,  64 @ Pixels
+.equ GRAPH_TAIL, 8
+.equ GRAPHL_X,  56 @ Pixels
 .equ GRAPHL_Y,  48 @ Pixels
-.equ GRAPHR_X,  64 @ Pixels
+.equ GRAPHR_X,  56 @ Pixels
 .equ GRAPHR_Y,  48 @ Pixels
 .equ ARTIST_X,  64 @ Pixels
 .equ ARTIST_Y,  16 @ Pixels
@@ -29,7 +30,6 @@
 .equ SPEAKER_RT_Y,  24
 .equ SPEAKER_RB_X, 200
 .equ SPEAKER_RB_Y,  72
-.equ VBLANK_READY_ADR, 0x0203FFFC
 .equ GRAPH_SMPSTRIDE_RCP, 627 @ (1<<22) / (VBlankRate * GRAPH_W)
 /**************************************/
 .equ BGDESIGN_NTILES, 211
@@ -42,7 +42,7 @@
 .equ GLYPHS_TILEOFS, BGDESIGN_NTILES
 .equ GLYPHS_TILEADR, (0x06000000 + GLYPHS_TILEMAP*0x0800)
 
-.equ GRAPH_NTILES, (GRAPH_W*GRAPH_H/2) / (8*8)
+.equ GRAPH_NTILES, ((GRAPH_W+GRAPH_TAIL*2)*GRAPH_H/2) / (8*8)
 .equ GRAPHL_TILEMAP, 29
 .equ GRAPHL_TILEOFS, (GLYPHS_TILEOFS + GLYPHS_NTILES)
 .equ GRAPHL_TILEADR, (0x06000000 + GRAPHL_TILEOFS*32)
@@ -149,11 +149,11 @@ main:
 	LDR	r3, =0x06000000 + GRAPHR_TILEMAP*0x0800 + ((GRAPH_H/8-1)*32)*2
 	LDR	r4, =GRAPHL_TILEOFS | GRAPHL_PAL16<<12
 	LDR	r5, =GRAPHR_TILEOFS | GRAPHR_PAL16<<12
-	LDR	r6, =GRAPH_H/8/2 @ Reflected
+	LDR	r6, =GRAPH_H/2/8 @ Reflected
 	BX	pc
 	NOP
 .arm
-1:	SUB	r6, r6, #(GRAPH_W/8)<<16
+1:	SUB	r6, r6, #((GRAPH_W+GRAPH_TAIL*2)/8)<<16
 0:	STRH	r4, [r0], #0x02
 	STRH	r5, [r1], #0x02
 	ORR	ip, r4, #0x01<<11
@@ -164,12 +164,12 @@ main:
 	ADD	r5, r5, #(GRAPH_H/2)/8
 	ADDS	r6, r6, #0x01<<16
 	BCC	0b
-0:	ADD	r0, r0, #(32-GRAPH_W/8)*2 @ Next row
-	ADD	r1, r1, #(32-GRAPH_W/8)*2
-	SUB	r2, r2, #(32+GRAPH_W/8)*2 @ Previous row
-	SUB	r3, r3, #(32+GRAPH_W/8)*2
-	SUB	r4, r4, #(GRAPH_H/2/8)*(GRAPH_W/8)-1
-	SUB	r5, r5, #(GRAPH_H/2/8)*(GRAPH_W/8)-1
+0:	ADD	r0, r0, #(32-(GRAPH_W+GRAPH_TAIL*2)/8)*2 @ Next row
+	ADD	r1, r1, #(32-(GRAPH_W+GRAPH_TAIL*2)/8)*2
+	SUB	r2, r2, #(32+(GRAPH_W+GRAPH_TAIL*2)/8)*2 @ Previous row
+	SUB	r3, r3, #(32+(GRAPH_W+GRAPH_TAIL*2)/8)*2
+	SUB	r4, r4, #(GRAPH_H/2/8)*((GRAPH_W+GRAPH_TAIL*2)/8)-1
+	SUB	r5, r5, #(GRAPH_H/2/8)*((GRAPH_W+GRAPH_TAIL*2)/8)-1
 	SUBS	r6, r6, #0x01
 	BNE	1b
 2:	BX	lr
@@ -246,22 +246,22 @@ UpdateGfx:
 1:	LDRB	ip, [r2, sl]            @ Abs[xL] -> ip
 	CMP	ip, #0x80
 	RSBCS	ip, ip, #0x0100
-	SUB	lr, r6, ip, lsl #0x10   @ LP_L = LP_L - (LP_L - xL)*1/64
-	SUB	r6, r6, lr, asr #0x06   @ NOTE: LP_L in 8.16
+	RSB	lr, r6, ip, lsl #0x10   @ LP_L = LP_L + (xL - LP_L)*1/64
+	ADD	r6, r6, lr, asr #0x06   @ NOTE: LP_L in 8.16
 	ADD	r8, r8, r6
 	LDRB	lr, [r0]
-	RSB	ip, ip, lr              @ Combine with old (nicer effect)
-	SUB	ip, lr, ip, asr #0x03
+	SUB	ip, ip, lr              @ Combine with old (nicer effect)
+	ADD	ip, lr, ip, asr #0x03
 	STRB	ip, [r0], #0x01
 	LDRB	ip, [r3, sl]            @ Abs[xR] -> ip
 	CMP	ip, #0x80
 	RSBCS	ip, ip, #0x0100
-	SUB	lr, r7, ip, lsl #0x10   @ LP_R = LP_R - (LP_R - xR)*1/64
-	SUB	r7, r7, lr, asr #0x06   @ NOTE: LP_R in 8.16
+	RSB	lr, r7, ip, lsl #0x10   @ LP_R = LP_R + (xR - LP_R)*1/64
+	ADD	r7, r7, lr, asr #0x06   @ NOTE: LP_R in 8.16
 	ADD	r9, r9, r7
 	LDRB	lr, [r1]
-	RSB	ip, ip, lr              @ Combine with old
-	SUB	ip, lr, ip, asr #0x03
+	SUB	ip, ip, lr              @ Combine with old
+	ADD	ip, lr, ip, asr #0x03
 	STRB	ip, [r1], #0x01
 	ADD	r5, r5, r4            @ PosMu += Step
 	ADDS	sl, sl, r5, lsr #0x16 @ Update position, wrap, clear integer part of PosMu
@@ -308,12 +308,38 @@ UpdateGfx:
 	STRH	r3, [r5, #0x08*3+0x04] @ R-B
 
 .LRedraw_DrawGraphs:
-	SUB	r0, r0, #GRAPH_W
-	SUB	r1, r1, #GRAPH_W
-	LDR	r2, =GRAPHL_TILEADR + (GRAPH_H/2-1)*4
-	LDR	r3, =GRAPHR_TILEADR + (GRAPH_H/2-1)*4
+	LDR	r2, =GRAPHL_TILEADR + (GRAPH_H/2-1)*4 + (GRAPH_H/2)*(GRAPH_TAIL/8)*4
+	LDR	r3, =GRAPHR_TILEADR + (GRAPH_H/2-1)*4 + (GRAPH_H/2)*(GRAPH_TAIL/8)*4
+1:	MOV	r5, #0x01            @ PixelStep
+	LDRB	r6, [r0, #-GRAPH_W]! @ L-side (L), rewind
+	ADR	lr, 0f
+0:	MOV	r5, r5, ror #0x04
+	SUB	r7, r2, #(GRAPH_H/2)*(GRAPH_TAIL/8)*4
+	MOVS	r6, r6, lsr #0x01
+	BNE	.LRedraw_DrawGraphBar
+2:	MOV	r5, #0x01
+	LDRB	r6, [r1, #-GRAPH_W]! @ L-side (R), rewind
+	ADR	lr, 0f
+0:	MOV	r5, r5, ror #0x04
+	SUB	r7, r3, #(GRAPH_H/2)*(GRAPH_TAIL/8)*4
+	MOVS	r6, r6, lsr #0x01
+	BNE	.LRedraw_DrawGraphBar
+1:	MOV	r5, #0x10000000
+	LDRB	r6, [r0, #GRAPH_W-1] @ R-side (L)
+	ADR	lr, 0f
+0:	MOV	r5, r5, ror #0x1C
+	ADD	r7, r2, #(GRAPH_H/2)*(GRAPH_W/8)*4
+	MOVS	r6, r6, lsr #0x01
+	BNE	.LRedraw_DrawGraphBar
+2:	MOV	r5, #0x10000000
+	LDRB	r6, [r1, #GRAPH_W-1] @ R-side (R)
+	ADR	lr, 0f
+0:	MOV	r5, r5, ror #0x1C
+	ADD	r7, r3, #(GRAPH_H/2)*(GRAPH_W/8)*4
+	MOVS	r6, r6, lsr #0x01
+	BNE	.LRedraw_DrawGraphBar
 	LDR	r4, =GRAPH_W
-	MOV	r5, #0x01         @ PixelStep (will be rotated every pixel)
+	MOV	r5, #0x01 @ PixelStep (will be rotated every pixel)
 1:	LDRB	r6, [r0], #0x01   @ Value -> r6
 	MOV	r7, r2
 	MOVS	r6, r6, lsr #0x01 @ Rescale
@@ -363,10 +389,11 @@ UpdateGfx:
 2:	BX	lr
 
 @ r5:  PixelStep
-@ r6:  Value (guaranteed not zero, will be destroyed)
+@ r6:  Value (guaranteed not zero, will NOT be destroyed (only clipped))
 @ r7: &Target
 @ r8:  [Scratch]
 @ r9:  [Scratch]
+@ ip:  [Scratch]
 .LRedraw_DrawGraphBar:
 	CMP	r6, #GRAPH_H/2
 	MOVHI	r6, #GRAPH_H/2
@@ -374,9 +401,9 @@ UpdateGfx:
 0:	SUBS	r9, r6, #0x0F         @ Handle small bars
 	MULCC	r8, r5, r6
 	BLS	2f
-1:	LDR	r6, [r7]
-	ORR	r6, r6, r8
-	STR	r6, [r7], #-0x04
+1:	LDR	ip, [r7]
+	ORR	ip, ip, r8
+	STR	ip, [r7], #-0x04
 	SUBS	r9, r9, #0x01
 	BNE	1b
 2:	LDR	r9, [r7]
