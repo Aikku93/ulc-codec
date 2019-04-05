@@ -243,52 +243,46 @@ UpdateGfx:
 	LDR	r5, =GRAPH_SMPSTRIDE_RCP
 	MUL	r4, r5, r4 @ Step[.22fxp]
 	MOV	r5, #0x00  @ PosMu (not important to track accurately across frames)
-	MOV	r6, #0x00  @ PowL = 0 (for speaker effect)
-	MOV	r7, #0x00  @ PowR = 0
-	LDR	r8, .LRedraw_LowPassL
-	LDR	r9, .LRedraw_LowPassR
+	LDR	r6, .LRedraw_LowPassL
+	LDR	r7, .LRedraw_LowPassR
 1:	LDRB	ip, [r2, r1, lsl #0x08] @ Abs[xR] -> ip
-	LDRB	lr, [r0, #GRAPH_W]      @ OldR -> lr
 	TST	ip, #0x80
 	RSBNE	ip, ip, #0x0100
-	SUB	ip, ip, lr              @ Combine with old (nicer effect)
+	LDRB	lr, [r0, #GRAPH_W]      @ Combine with old (nicer effect)
+	SUB	ip, ip, lr
 	ADD	ip, lr, ip, asr #0x03
 	STRB	ip, [r0, #GRAPH_W]
-	RSB	lr, r9, ip, lsl #0x10   @ LP_R = LP_R + (xR - LP_R)*1/32
-	ADD	r9, r9, lr, asr #0x05   @ NOTE: LP_R in 8.16
-	ADD	r7, r7, r9              @ PowR += LP_R
-0:	ADD	r5, r5, r4              @  PosMu += Step
+	RSB	lr, r7, ip, lsl #0x17   @ LP_R = LP_R + (xR - LP_R)*1/32 (NOTE: 8.23fxp)
+	ADD	r7, r7, lr, asr #0x05
+0:	ADD	r5, r5, r4              @ [PosMu += Step]
 	LDRB	ip, [r2], r5, lsr #0x16 @ Abs[xL] -> ip, update position
-	LDRB	lr, [r0]                @ OldL -> lr
-	BIC	r5, r5, #0xFF<<22       @  Clear integer part (step is less than 8 at sane rates, so clearing only up to 255 is more than fine)
-	CMP	r2, r3                  @  Wrap
-	SUBCS	r2, r2, #BLOCK_SIZE*2
 	TST	ip, #0x80
 	RSBNE	ip, ip, #0x0100
-	SUB	ip, ip, lr              @ Combine with old
+	LDRB	lr, [r0]                @ Combine with old
+	SUB	ip, ip, lr
 	ADD	ip, lr, ip, asr #0x03
 	STRB	ip, [r0], #0x01
-	RSB	lr, r8, ip, lsl #0x10   @ LP_L = LP_L + (xL - LP_L)*1/32
-	ADD	r8, r8, lr, asr #0x05   @ NOTE: LP_L in 8.16
-	ADD	r6, r6, r8              @ PowL += LP_L
+	RSB	lr, r6, ip, lsl #0x17   @ LP_L = LP_L + (xL - LP_L)*1/32
+	ADD	r6, r6, lr, asr #0x05
+0:	BIC	r5, r5, #0xFF<<22       @ Clear integer part (step is less than 8 at sane rates, so clearing only up to 255 is more than fine)
+	CMP	r2, r3                  @ Wrap
+	SUBCS	r2, r2, #BLOCK_SIZE*2
 	ADDS	r1, r1, #0x01<<24
 	BCC	1b
-2:	STR	r8, .LRedraw_LowPassL
-	STR	r9, .LRedraw_LowPassR
+2:	STR	r6, .LRedraw_LowPassL
+	STR	r7, .LRedraw_LowPassR
 
 .LRedraw_DrawSpeakers:
-	UMULL	ip, r2, r6, r6          @ Reduce low-power disturbance (x^4)
-	UMULL	ip, r6, r2, r2
+	UMULL	ip, r2, r6, r6          @ Modify response curve (x^2)
 	UMULL	ip, r3, r7, r7
-	UMULL	ip, r7, r3, r3
 	MVN	ip, #0x0F
-	AND	r2, ip, r6, lsr #0x0F-4 @ 16x 8x8 tiles per 32x32 area (arbitrary scaling)
-	AND	r3, ip, r7, lsr #0x0F-4
+	AND	r2, ip, r2, lsr #0x16-4 @ 16x 8x8 tiles per 32x32 area (arbitrary scaling)
+	AND	r3, ip, r3, lsr #0x16-4
 	CMP	r2, #0x07<<4            @ Clip animation frames
 	MOVHI	r2, #0x07<<4
 	CMP	r3, #0x07<<4
 	MOVHI	r3, #0x07<<4
-0:	LDR	ip, =0x07000000
+0:	MOV	ip, #0x07000000
 	STRH	r2, [ip, #0x08*0+0x04] @ L-T (tile in Attr2 bit 0..9)
 	STRH	r2, [ip, #0x08*1+0x04] @ L-B
 	STRH	r3, [ip, #0x08*2+0x04] @ R-T
@@ -419,11 +413,11 @@ SoundFile:
 .size SoundFile, .-SoundFile
 
 SoundFile_Artist:
-	.asciz "Some Artist"
+	.asciz "S3RL"
 .size SoundFile_Artist, .-SoundFile_Artist
 
 SoundFile_Title:
-	.asciz "Song Name"
+	.asciz "Hentai"
 .size SoundFile_Title, .-SoundFile_Title
 
 /**************************************/
