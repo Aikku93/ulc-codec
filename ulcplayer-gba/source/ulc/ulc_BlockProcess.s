@@ -11,6 +11,11 @@
 	.equ IMDCT_WS, (0x010C15)
 	.equ IMDCT_C,  (0x8000)
 	.equ IMDCT_S,  (0x0011)
+.elseif BLOCK_OVERLAP == 1024
+	.equ IMDCT_WS_BITS, 21
+	.equ IMDCT_WS, (0x0C91)
+	.equ IMDCT_C,  (0x8000)
+	.equ IMDCT_S,  (0x0019)
 .elseif BLOCK_OVERLAP == 768
 	.equ IMDCT_WS_BITS, 25
 	.equ IMDCT_WS, (0x010C15)
@@ -32,12 +37,13 @@ ulc_BlockProcess:
 	LDR	r4, =ulc_State
 0:	LDRH	r0, [r4, #0x00] @ --nBufProc?
 	SUBS	r0, r0, #0x0100
-	STRCSH	r0, [r4, #0x00]
 	BCC	.LExit
-0:	TST	r0, #0x01
-	LDMIB	r4, {r0,r5,r6}  @ nBlkRem -> r0, &SoundFile -> r5, &NextByte -> r6
+	TST	r0, #0x01
+	EOR	r0, r0, #0x01   @ WrBufIdx ^= 1?
+	STRH	r0, [r4, #0x00]
+0:	LDMIB	r4, {r0,r6}     @ nBlkRem -> r0, &NextByte -> r6
 	LDR	r5, =ulc_OutputBuffer
-	ADDEQ	r5, r5, #BLOCK_SIZE
+	ADDNE	r5, r5, #BLOCK_SIZE
 	SUBS	r0, r0, #0x01   @ --nBlkRem?
 	STRCS	r0, [r4, #0x04]
 	BCC	.LNoBlocksRem
@@ -320,6 +326,70 @@ ulc_BlockProcess:
 
 /**************************************/
 
+.if ULC_STEREO && ULC_MIDSIDE_XFM
+.LMidSideXfm:
+	ADD	ip, r5, #BLOCK_SIZE*2
+	MOV	r7, #0x7F
+	SUB	r7, r7, #BLOCK_SIZE << 8
+1:	LDR	r0, [r5]
+	LDR	r1, [ip]
+	MOV	fp, r1, asr #0x18
+	MOV	sl, r0, asr #0x18
+	MOV	r9, r1, lsl #0x08
+	MOV	r9, r9, asr #0x18
+	MOV	r8, r0, lsl #0x08
+	MOV	r8, r8, asr #0x18
+	MOV	r3, r1, lsl #0x10
+	MOV	r3, r3, asr #0x18
+	MOV	r2, r0, lsl #0x10
+	MOV	r2, r2, asr #0x18
+	MOV	r1, r1, lsl #0x18
+	MOV	r0, r0, lsl #0x18
+	MOV	r0, r0, asr #0x18
+	ADD	r0, r0, r1, asr #0x18
+	SUB	r1, r0, r1, asr #0x18-1
+	ADD	r2, r2, r3
+	SUB	r3, r2, r3, lsl #0x01
+	ADD	r8, r8, r9
+	SUB	r9, r8, r9, lsl #0x01
+	ADD	sl, sl, fp
+	SUB	fp, sl, fp, lsl #0x01
+	TEQ	r0, r0, lsl #0x18
+	ADCMI	r0, r7, #0x00
+	TEQ	r1, r1, lsl #0x18
+	ADCMI	r1, r7, #0x00
+	TEQ	r2, r2, lsl #0x18
+	ADCMI	r2, r7, #0x00
+	TEQ	r3, r3, lsl #0x18
+	ADCMI	r3, r7, #0x00
+	TEQ	r8, r8, lsl #0x18
+	ADCMI	r8, r7, #0x00
+	TEQ	r9, r9, lsl #0x18
+	ADCMI	r9, r7, #0x00
+	TEQ	sl, sl, lsl #0x18
+	ADCMI	sl, r7, #0x00
+	TEQ	fp, fp, lsl #0x18
+	ADCMI	fp, r7, #0x00
+	AND	r0, r0, #0xFF
+	AND	r1, r1, #0xFF
+	AND	r2, r2, #0xFF
+	AND	r3, r3, #0xFF
+	AND	r8, r8, #0xFF
+	AND	r9, r9, #0xFF
+	ORR	r0, r0, r2, lsl #0x08
+	ORR	r0, r0, r8, lsl #0x10
+	ORR	r0, r0, sl, lsl #0x18
+	ORR	r1, r1, r3, lsl #0x08
+	ORR	r1, r1, r9, lsl #0x10
+	ORR	r1, r1, fp, lsl #0x18
+	STR	r0, [r5], #0x04
+	STR	r1, [ip], #0x04
+	ADDS	r7, r7, #0x04<<8
+	BCC	1b
+.endif
+
+/**************************************/
+
 @ r4: &State
 @ r6: &NextByte
 
@@ -332,7 +402,7 @@ ulc_BlockProcess:
 	SUBS	r6, r6, #0x80000000
 	ADDCC	r6, r6, #0x80000000-1
 .endif
-	STR	r6, [r4, #0x0C]
+	STR	r6, [r4, #0x08]
 
 .LExit:
 	LDMFD	sp!, {r4-fp,lr}
