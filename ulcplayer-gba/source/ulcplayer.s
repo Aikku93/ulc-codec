@@ -238,7 +238,7 @@ UpdateGfx:
 	SUB	r1, r1, #GRAPH_W<<24
 	LDR	r3, =ulc_OutputBuffer + BLOCK_SIZE*2 @ End -> r3
 	ADD	r2, r3, r5                           @ Src -> r2
-	LDR	r4, [r4, #0x08]
+	LDR	r4, [r4, #0x0C]
 	LDR	r4, [r4, #0x0C]
 	LDR	r5, =GRAPH_SMPSTRIDE_RCP
 	MUL	r4, r5, r4 @ Step[.22fxp]
@@ -413,11 +413,11 @@ SoundFile:
 .size SoundFile, .-SoundFile
 
 SoundFile_Artist:
-	.asciz "S3RL"
+	.asciz "Artist"
 .size SoundFile_Artist, .-SoundFile_Artist
 
 SoundFile_Title:
-	.asciz "Hentai"
+	.asciz "Title..."
 .size SoundFile_Title, .-SoundFile_Title
 
 /**************************************/
