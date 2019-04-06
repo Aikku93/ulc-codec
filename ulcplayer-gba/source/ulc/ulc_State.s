@@ -29,15 +29,14 @@ ulc_Init:
 	PUSH	{lr}
 0:	LDR	r1, =ulc_State
 	@MOV	r2, #0x00       @ [already 0 from above]
-	STRB	r2, [r1, #0x00] @ BufIdx = 0
-	STRB	r2, [r1, #0x01] @ nBufProc = 0
-	STR	r0, [r1, #0x08] @ SoundFile
+	STR	r2, [r1, #0x00] @ WrBufIdx = 0, nBufProc = 0, RdBufIdx = 0
+	STR	r0, [r1, #0x0C] @ SoundFile
 	LDR	r2, [r0, #0x08] @ nBlkRem = nSamp/BLOCK_SIZE+1
 	LSR	r2, #BLOCK_SIZE_LOG2
 	ADD	r2, #0x01
 	STR	r2, [r1, #0x04]
 	ADD	r0, #0x18       @ NextByte = Data + sizeof(Header)
-	STR	r0, [r1, #0x0C]
+	STR	r0, [r1, #0x08]
 0:	LDR	r0, =_IRQTable     @ Set TM1 (buffer end) interrupt handler
 	LDR	r1, =ulc_TM1Proc
 	STR	r1, [r0, #0x04*4]
@@ -96,7 +95,7 @@ ulc_Init:
 .thumb_func
 ulc_TM1Proc:
 	LDR	r0, =ulc_State
-	LDRB	r1, [r0, #0x00] @ BufIdx ^= 1?
+	LDRB	r1, [r0, #0x02] @ RdBufIdx ^= 1?
 	MOV	r2, #0x01
 	EOR	r2, r1
 	BNE	2f
@@ -109,7 +108,7 @@ ulc_TM1Proc:
 	STRH	r2, [r1, #0x0C] @ DMA2.CNT_H = 0
 	STRH	r3, [r1, #0x0C] @ Restart DMA2
 .endif
-2:	STRB	r2, [r0, #0x00]
+2:	STRB	r2, [r0, #0x02]
 	LDRB	r1, [r0, #0x01] @ nBufProc++
 	ADD	r1, #0x01
 	STRB	r1, [r0, #0x01]
@@ -123,13 +122,13 @@ ulc_TM1Proc:
 /**************************************/
 
 ulc_State:
-	.byte 0 @ [00h] BufIdx
+	.byte 0 @ [00h] WrBufIdx
 	.byte 0 @ [01h] nBufProc
-	.byte 0 @ [02h]
+	.byte 0 @ [02h] RdBufIdx
 	.byte 0 @ [03h]
 	.word 0 @ [04h] nBlkRem
-	.word 0 @ [08h] &SoundFile
-	.word 0 @ [0Ch] &NextByte
+	.word 0 @ [08h] &NextByte
+	.word 0 @ [0Ch] &SoundFile
 .size   ulc_State, .-ulc_State
 .global ulc_State
 
