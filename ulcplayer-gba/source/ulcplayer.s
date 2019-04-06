@@ -234,8 +234,12 @@ UpdateGfx:
 
 .LRedraw_GetSamples:
 	LDR	r0, =.LRedraw_GraphDataL
+.if ULC_STEREO
 	MOV	r1, #(BLOCK_SIZE*2) >> 8             @ Distance to right channel
 	SUB	r1, r1, #GRAPH_W<<24
+.else
+	MOV	r1, #(-GRAPH_W)<<24
+.endif
 	LDR	r3, =ulc_OutputBuffer + BLOCK_SIZE*2 @ End -> r3
 	ADD	r2, r3, r5                           @ Src -> r2
 	LDR	r4, [r4, #0x0C]
