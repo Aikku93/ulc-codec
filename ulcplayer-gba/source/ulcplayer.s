@@ -249,25 +249,29 @@ UpdateGfx:
 	MOV	r5, #0x00  @ PosMu (not important to track accurately across frames)
 	LDR	r6, .LRedraw_LowPassL
 	LDR	r7, .LRedraw_LowPassR
-1:	LDRB	ip, [r2, r1, lsl #0x08] @ Abs[xR] -> ip
-	TST	ip, #0x80
-	RSBNE	ip, ip, #0x0100
+	MOV	r8, #0x00 @ PowL=0
+	MOV	r9, #0x00 @ PowR=0
+1:	ADD	r5, r5, r4              @ [PosMu += Step]
+0:	LDRB	ip, [r2, r1, lsl #0x08] @ Abs[xR] -> ip
+	MOVS	ip, ip, lsl #0x18
+	RSB	lr, r7, ip, asr #0x18-5 @ LP_R = LP_R + (xR - LP_R)*1/32 (NOTE: 8.5fxp)
+	ADD	r7, r7, lr, asr #0x05
+	MLA	r9, r7, r7, r9          @ PowR += LP_R (16.10fxp)
+	RSBMI	ip, ip, #0x00
 	LDRB	lr, [r0, #GRAPH_W]      @ Combine with old (nicer effect)
-	SUB	ip, ip, lr
+	RSB	ip, lr, ip, lsr #0x18
 	ADD	ip, lr, ip, asr #0x03
 	STRB	ip, [r0, #GRAPH_W]
-	RSB	lr, r7, ip, lsl #0x17   @ LP_R = LP_R + (xR - LP_R)*1/32 (NOTE: 8.23fxp)
-	ADD	r7, r7, lr, asr #0x05
-0:	ADD	r5, r5, r4              @ [PosMu += Step]
-	LDRB	ip, [r2], r5, lsr #0x16 @ Abs[xL] -> ip, update position
-	TST	ip, #0x80
-	RSBNE	ip, ip, #0x0100
+0:	LDRB	ip, [r2], r5, lsr #0x16 @ Abs[xL] -> ip, update position
+	MOVS	ip, ip, lsl #0x18
+	RSB	lr, r6, ip, asr #0x18-5 @ LP_L = LP_L + (xL - LP_L)*1/32
+	ADD	r6, r6, lr, asr #0x05
+	MLA	r8, r6, r6, r8          @ PowL += LP_L
+	RSBMI	ip, ip, #0x00
 	LDRB	lr, [r0]                @ Combine with old
-	SUB	ip, ip, lr
+	RSB	ip, lr, ip, lsr #0x18
 	ADD	ip, lr, ip, asr #0x03
 	STRB	ip, [r0], #0x01
-	RSB	lr, r6, ip, lsl #0x17   @ LP_L = LP_L + (xL - LP_L)*1/32
-	ADD	r6, r6, lr, asr #0x05
 0:	BIC	r5, r5, #0xFF<<22       @ Clear integer part (step is less than 8 at sane rates, so clearing only up to 255 is more than fine)
 	CMP	r2, r3                  @ Wrap
 	SUBCS	r2, r2, #BLOCK_SIZE*2
@@ -277,20 +281,28 @@ UpdateGfx:
 	STR	r7, .LRedraw_LowPassR
 
 .LRedraw_DrawSpeakers:
-	UMULL	ip, r2, r6, r6          @ Modify response curve (x^2)
-	UMULL	ip, r3, r7, r7
+	LDR	r6, .LRedraw_SpeakerLowPassL
+	LDR	r7, .LRedraw_SpeakerLowPassL
+	SUBS	r8, r8, r6
+	ADDCC	r8, r6, r8, asr #0x02   @ Dampen decay  (heavy)
+	ADDCS	r8, r6, r8, asr #0x01   @ Dampen attack (slight)
+	SUBS	r9, r9, r7
+	ADDCC	r9, r7, r9, asr #0x02
+	ADDCS	r9, r7, r9, asr #0x01
+	STR	r8, .LRedraw_SpeakerLowPassL
+	STR	r9, .LRedraw_SpeakerLowPassL
 	MVN	ip, #0x0F
-	AND	r2, ip, r2, lsr #0x16-4 @ 16x 8x8 tiles per 32x32 area (arbitrary scaling)
-	AND	r3, ip, r3, lsr #0x16-4
-	CMP	r2, #0x07<<4            @ Clip animation frames
-	MOVHI	r2, #0x07<<4
-	CMP	r3, #0x07<<4
-	MOVHI	r3, #0x07<<4
+	AND	r8, ip, r8, lsr #0x18-4 @ 16x 8x8 tiles per 32x32 area (arbitrary scaling)
+	AND	r9, ip, r9, lsr #0x18-4
+	CMP	r8, #0x07<<4            @ Clip animation frames
+	MOVHI	r8, #0x07<<4
+	CMP	r9, #0x07<<4
+	MOVHI	r9, #0x07<<4
 0:	MOV	ip, #0x07000000
-	STRH	r2, [ip, #0x08*0+0x04] @ L-T (tile in Attr2 bit 0..9)
-	STRH	r2, [ip, #0x08*1+0x04] @ L-B
-	STRH	r3, [ip, #0x08*2+0x04] @ R-T
-	STRH	r3, [ip, #0x08*3+0x04] @ R-B
+	STRH	r8, [ip, #0x08*0+0x04] @ L-T (tile in Attr2 bit 0..9)
+	STRH	r8, [ip, #0x08*1+0x04] @ L-B
+	STRH	r9, [ip, #0x08*2+0x04] @ R-T
+	STRH	r9, [ip, #0x08*3+0x04] @ R-B
 
 .LRedraw_DrawGraphs:
 	LDR	r2, =GRAPHL_TILEADR + (GRAPH_H/2-1)*4 + (GRAPH_H/2)*(GRAPH_TAIL/8)*4
@@ -402,6 +414,8 @@ UpdateGfx:
 
 .LRedraw_LowPassL: .word 0
 .LRedraw_LowPassR: .word 0
+.LRedraw_SpeakerLowPassL: .word 0
+.LRedraw_SpeakerLowPassR: .word 0
 .LRedraw_GraphDataL: .space GRAPH_W
 .LRedraw_GraphDataR: .space GRAPH_W
 
