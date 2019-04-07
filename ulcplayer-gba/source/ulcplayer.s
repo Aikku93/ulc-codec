@@ -206,7 +206,7 @@ UpdateGfx:
 	LDR	r1, =0x10102F53
 	STR	r1, [r0, #0x50]!       @ Layer BG0,BG1,OBJ over BG0,BG1,BG2,BG3, additive blend
 0:	LDRH	r5, [r0, #0x0104-0x50] @ Get SmpPos from timer -> r5
-	LDRB	ip, [r4, #0x00]
+	LDRB	ip, [r4, #0x02]
 	SUB	r5, r5, #0x010000+BLOCK_SIZE @ Adjust for double buffer
 	ADD	r5, r5, ip, lsl #BLOCK_SIZE_LOG2
 
