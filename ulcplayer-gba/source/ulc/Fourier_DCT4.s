@@ -5,7 +5,8 @@
 
 @ r0: &Buf
 @ r1: &Tmp
-@ r2:  N
+@ r2:  N (<=800h)
+@ NOTE: Caller must be ARM code
 
 .arm
 Fourier_DCT4:
@@ -32,31 +33,55 @@ Fourier_DCT4:
 	ADDHI	fp, fp, #0x0200*2
 	CMP	r2, #0x0400
 	ADDHI	fp, fp, #0x0400*2
-1:	LDMIA	r0!, {r2-r3}    @ a = *SrcLo++
-	LDMDB	r8!, {r4-r5}    @ b = *--SrcHi
-	LDRH	ip, [fp], #0x02 @ c -> ip
-	LDRH	lr, [fp], #0x02 @ s -> lr
-	MUL	r6, ip, r2      @ *DstLo++ =  c*a + s*b -> r6
-	MUL	r2, lr, r2      @ *DstHi++ =  s*a - c*b -> r2
-	MLA	r6, lr, r5, r6
-	MUL	lr, ip, r5
-	SUB	r2, r2, lr
-	LDRH	ip, [fp], #0x02
-	LDRH	lr, [fp], #0x02
-	MUL	r7, ip, r3      @ *DstLo++ =  c*a + s*b -> r7
-	MUL	r3, lr, r3      @ *DstHi++ = -s*a + c*b -> r3
-	MLA	r7, lr, r4, r7
-	MUL	lr, ip, r4
-	RSB	r3, r3, lr
+1:	LDMIA	fp!, {ip,lr}          @ cs -> ip,lr
+	LDMIA	r0!, {r2-r3}          @ a = *SrcLo++
+	LDMDB	r8!, {r4-r5}          @ b = *--SrcHi
+	MOV	r7, ip, lsr #0x10     @ s -> r7
+	BIC	ip, ip, r7, lsl #0x10 @ c -> ip
+	MUL	r6, ip, r2            @ *DstLo++ =  c*a + s*b -> r6
+	MUL	r2, r7, r2            @ *DstHi++ =  s*a - c*b -> r2
+	MLA	r6, r7, r5, r6
+	MUL	r7, ip, r5
+	SUB	r2, r2, r7
+	MOV	ip, lr, lsr #0x10     @ s -> ip
+	BIC	lr, lr, ip, lsl #0x10 @ c -> lr
+	MUL	r7, lr, r3            @ *DstLo++ =  c*a + s*b -> r7
+	MUL	r3, ip, r3            @ *DstHi++ = -s*a + c*b -> r3
+	MLA	r7, ip, r4, r7
+	MUL	ip, lr, r4
+	RSB	r3, r3, ip
 	MOV	r2, r2, asr #0x0F
 	MOV	r3, r3, asr #0x0F
 	MOV	r6, r6, asr #0x0F
 	MOV	r7, r7, asr #0x0F
 	STMIA	r1!, {r6-r7}
 	STMIA	r9!, {r2-r3}
-	ADDS	sl, sl, #0x04<<16
+2:	LDMIA	fp!, {ip,lr}          @ cs -> ip,lr
+	LDMIA	r0!, {r2-r3}          @ a = *SrcLo++
+	LDMDB	r8!, {r4-r5}          @ b = *--SrcHi
+	MOV	r7, ip, lsr #0x10     @ s -> r7
+	BIC	ip, ip, r7, lsl #0x10 @ c -> ip
+	MUL	r6, ip, r2            @ *DstLo++ =  c*a + s*b -> r6
+	MUL	r2, r7, r2            @ *DstHi++ =  s*a - c*b -> r2
+	MLA	r6, r7, r5, r6
+	MUL	r7, ip, r5
+	SUB	r2, r2, r7
+	MOV	ip, lr, lsr #0x10     @ s -> ip
+	BIC	lr, lr, ip, lsl #0x10 @ c -> lr
+	MUL	r7, lr, r3            @ *DstLo++ =  c*a + s*b -> r7
+	MUL	r3, ip, r3            @ *DstHi++ = -s*a + c*b -> r3
+	MLA	r7, ip, r4, r7
+	MUL	ip, lr, r4
+	RSB	r3, r3, ip
+	MOV	r2, r2, asr #0x0F
+	MOV	r3, r3, asr #0x0F
+	MOV	r6, r6, asr #0x0F
+	MOV	r7, r7, asr #0x0F
+	STMIA	r1!, {r6-r7}
+	STMIA	r9!, {r2-r3}
+3:	ADDS	sl, sl, #0x08<<16
 	BCC	1b
-2:	LDMFD	sp!, {r4-r7}
+0:	LDMFD	sp!, {r4-r7}
 
 @ r8: Buf+N/2
 @ r9: Tmp+N
@@ -106,8 +131,7 @@ Fourier_DCT4:
 	STMIA	ip!, {r0,r7}
 	STMIA	ip!, {r1,r6}
 	STMIA	ip!, {r2-r4}
-3:	LDMFD	sp!, {r4-fp,lr}
-	BX	lr
+3:	LDMFD	sp!, {r4-fp,pc}
 
 /**************************************/
 
@@ -199,8 +223,7 @@ Fourier_DCT4:
 	MOV	r6, r6, asr #0x0E
 	MOV	r9, r9, asr #0x0E
 	STMIA	r0, {r1,r2,r3,r6,r9,sl,ip,lr}
-2:	LDMFD	sp!, {r4-fp,lr}
-	BX	lr
+2:	LDMFD	sp!, {r4-fp,pc}
 
 /**************************************/
 .size   Fourier_DCT4, .-Fourier_DCT4
