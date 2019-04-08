@@ -282,7 +282,7 @@ UpdateGfx:
 
 .LRedraw_DrawSpeakers:
 	LDR	r6, .LRedraw_SpeakerLowPassL
-	LDR	r7, .LRedraw_SpeakerLowPassL
+	LDR	r7, .LRedraw_SpeakerLowPassR
 	SUBS	r8, r8, r6
 	ADDCC	r8, r6, r8, asr #0x02   @ Dampen decay  (heavy)
 	ADDCS	r8, r6, r8, asr #0x01   @ Dampen attack (slight)
@@ -290,7 +290,7 @@ UpdateGfx:
 	ADDCC	r9, r7, r9, asr #0x02
 	ADDCS	r9, r7, r9, asr #0x01
 	STR	r8, .LRedraw_SpeakerLowPassL
-	STR	r9, .LRedraw_SpeakerLowPassL
+	STR	r9, .LRedraw_SpeakerLowPassR
 	MVN	ip, #0x0F
 	AND	r8, ip, r8, lsr #0x18-4 @ 16x 8x8 tiles per 32x32 area (arbitrary scaling)
 	AND	r9, ip, r9, lsr #0x18-4
