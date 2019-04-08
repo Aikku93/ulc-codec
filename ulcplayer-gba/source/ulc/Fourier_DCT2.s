@@ -6,6 +6,7 @@
 @ r0: &Buf
 @ r1: &Tmp
 @ r2:  N
+@ NOTE: Caller must be ARM code
 
 .arm
 Fourier_DCT2:
@@ -29,9 +30,21 @@ Fourier_DCT2:
 	SUB	r6, r6, r3, lsl #0x01
 	SUB	r7, r7, r2, lsl #0x01
 	STMIA	r8!, {r4-r7}
-	ADDS	sl, sl, #0x08<<16
+2:	LDMIA	r0!, {r4-r7}
+	LDMDB	r9!, {r2,r3,ip,lr}
+	ADD	r4, r4, lr
+	ADD	r5, r5, ip
+	ADD	r6, r6, r3
+	ADD	r7, r7, r2
+	STMIA	r1!, {r4-r7}
+	SUB	r4, r4, lr, lsl #0x01
+	SUB	r5, r5, ip, lsl #0x01
+	SUB	r6, r6, r3, lsl #0x01
+	SUB	r7, r7, r2, lsl #0x01
+	STMIA	r8!, {r4-r7}
+3:	ADDS	sl, sl, #0x10<<16
 	BCC	1b
-2:	LDMFD	sp!, {r4-r7}
+0:	LDMFD	sp!, {r4-r7}
 
 @ r8: Tmp+N
 @ r9: Buf+N/2
@@ -60,8 +73,7 @@ Fourier_DCT2:
 	STMIA	r0!, {r3-r9,lr}
 	SUBS	sl, sl, #0x10
 	BNE	1b
-2:	LDMFD	sp!, {r4-sl,lr}
-	BX	lr
+2:	LDMFD	sp!, {r4-sl,pc}
 
 /**************************************/
 
@@ -132,8 +144,7 @@ Fourier_DCT2:
 	SUB	r9, sl, lr, lsl #0x01
 	MOV	r9, r9, asr #0x0F
 	STMIA	r0, {r1,r2,r4,r5,r7,r8,r9,ip}
-2:	LDMFD	sp!, {r4-fp,lr}
-	BX	lr
+2:	LDMFD	sp!, {r4-fp,pc}
 
 /**************************************/
 .size   Fourier_DCT2, .-Fourier_DCT2
