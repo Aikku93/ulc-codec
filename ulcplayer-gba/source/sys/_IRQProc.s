@@ -19,24 +19,21 @@ _IRQProc:
 2:	LDRNE	r0, =_IRQTable @ Call handler
 	LDRNE	r2, =0x077CB531
 	MULNE	r3, r2, r1
-	LDRNE	r1, =.LIRQLog2
+	ADRNE	r1, .LIRQLog2
 	LDRNEB	r1, [r1, r3, lsr #0x20-5]
 	LDRNE	r0, [r0, r1, lsl #0x02]
 	CMPNE	r0, #0x00
-	BXEQ	lr
-3:	MRS	ip, spsr
-	STMFD	sp!, {ip,lr}
-	MSR	cpsr, #0x9F @ SYS mode, IRQ-block flag (to save lr_sys)
-	STR	lr, [sp, #-0x04]!
-	MSR	cpsr, #0x1F @ SYS mode, free to interrupt
-	ADR	lr, 0f
-	BX	r0
-0:	MSR	cpsr, #0x9F @ SYS mode, IRQ-block flag
-	LDR	lr, [sp], #0x04
-	MSR	cpsr, #0x92 @ IRQ mode, IRQ-block flag
-	LDMFD	sp!, {ip,lr}
-	MSR	spsr, ip
+3:	MRSNE	ip, spsr
+	STRNE	lr, [sp, #-0x0C]! @ Save lr_irq
+	STMNEIB	sp, {ip,lr}^      @ Save spsr,lr_sys
+	MSRNE	cpsr, #0x1F       @ SYS mode, free to interrupt
+	ADRNE	lr, 0f
+	BXNE	r0
 	BX	lr
+0:	MSR	cpsr, #0x92       @ IRQ mode, IRQ-block
+	LDMIB	sp, {ip,lr}^      @ Restore spsr,lr_sys
+	MSR	spsr, ip
+	LDR	pc, [sp], #0x0C   @ Return to BIOS
 
 .LIRQLog2:
 	.byte  0, 1,28, 2,29,14,24,3
