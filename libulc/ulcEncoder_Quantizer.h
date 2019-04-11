@@ -13,9 +13,6 @@
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
-#define ABS(x) ((x) < 0 ? (-(x)) : (x))
-#define SQR(x) ((x)*(x))
-/**************************************/
 
 //! Maximum allowed quantizers
 //! NOTE: NO GREATER THAN 48
