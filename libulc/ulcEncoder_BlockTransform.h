@@ -93,7 +93,7 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 //!  AnalysisPower is used to alter the preference for
 //!  the currently-being-analyzed channel
 static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower) {
-	size_t i, BlockSizeLog2 = IntLog2(BlockSize);
+	size_t i;
 	struct AnalysisKey_t Key;
 	for(i=0;i<BlockSize;i++) {
 		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
@@ -107,8 +107,9 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 		      lfScale = 1.0f - 0.5f*lfScale*lfScale;
 
 		//! Build and insert key
-		Key.Key = i | Chan<<BlockSizeLog2;
-		Key.Val = v2 * AnalysisPower * lfScale;
+		Key.Band = i;
+		Key.Chan = Chan;
+		Key.Val  = v2 * lfScale * AnalysisPower;
 		Analysis_KeyInsert(&Key, Keys, nKeys);
 		nKeys++;
 	}
