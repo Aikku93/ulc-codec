@@ -7,13 +7,20 @@
 /**************************************/
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 /**************************************/
 
 //! Analysis key structure
-//! NOTE: ceil(log2(BlockSize * nChan)) <= 32
-#define ANALYSIS_KEY_MAX_BITS 32
+#define ANALYSIS_KEY_UNUSED 0x7FFFFFFF
 struct AnalysisKey_t {
-	uint32_t Key; //! Band | Chan<<log2(BlockSize)
+	union {
+		struct {
+			uint16_t Band;
+			uint16_t Chan;
+		};
+		uint32_t Key; //! Band | Chan<<16
+	};
 	union {
 		float   Val;   //! Sorting value (ie. Coef^2 * Importance; for biased preferencing)
 		int16_t Quant; //! Quantizer (set after calling Block_Encode_BuildQuants() in ulcEncoder_Quantizer.h)
@@ -41,57 +48,22 @@ static void Analysis_KeyInsert(const struct AnalysisKey_t *Key, struct AnalysisK
 	}
 
 	//! Shift and insert
-	//! PONDER: Faster way of doing the shifting?
-	size_t i;
-	for(i=nKeys;i>InsertIdx;i--) Keys[i] = Keys[i-1];
+	memmove(Keys + InsertIdx+1, Keys + InsertIdx, (nKeys - InsertIdx)*sizeof(struct AnalysisKey_t));
 	Keys[InsertIdx] = *Key;
-}
-
-//! Remove key from analysis buffer
-//! NOTE:
-//!  -This implies that nKeys must decrease in the caller
-static void Analysis_KeyRemove(size_t Key, struct AnalysisKey_t *Keys, size_t nKeys) {
-	//! PONDER: Faster way of doing the shifting?
-	size_t i;
-	for(i=Key+1;i<nKeys;i++) Keys[i-1] = Keys[i];
 }
 
 /**************************************/
 
 //! Sort keys in increasing Chan>Band order
-//! eg. Ch=0,Band=0..n, Ch=1,Band=0..m, etc.
-//! NOTE: Due to combining the Band,Chan values as compactly as
-//!       possible (in terms of bits), we can use a radix sort
-static void Analysis_KeysSort(struct AnalysisKey_t *Beg, struct AnalysisKey_t *End, size_t Bit) {
-	//! If size <= 1, then already sorted
-	if(Beg+1 >= End) return;
-
-	//! Swap unsorted keys until L/R meet
-	struct AnalysisKey_t *l = Beg, *r = End-1, TempKey;
-	for(;;) {
-		//! Find swap positions
-		while(l < r && (l->Key & Bit) == 0) l++; //! Find LHS.Bit==1
-		while(l < r && (r->Key & Bit) != 0) r--; //! Find RHS.Bit==0
-
-		//! Found swap point?
-		if(l < r) {
-			TempKey = *l;
-			*l++ = *r;
-			*r-- = TempKey;
-		}
-
-		//! L/R met or crossed over?
-		if(l >= r) break;
-	}
-
-	//! If L/R meet (odd-sized search area), then fix up LHS pointer as needed
-	if((l->Key & Bit) == 0 && l < End) l++;
-
-	//! Sort LHS (Bit==0), RHS (Bit==1)
-	if(Bit >>= 1) {
-		Analysis_KeysSort(Beg, l, Bit);
-		Analysis_KeysSort(l, End, Bit);
-	}
+//! TODO: Replace this sort with something else
+//!       Perhaps radix sort on channels, followed by counting sort on bands.
+static int Analysis_KeysSort_Comparator(const void *_a, const void *_b) {
+	const struct AnalysisKey_t *a = _a;
+	const struct AnalysisKey_t *b = _b;
+	return a->Key - b->Key;
+}
+static void Analysis_KeysSort(struct AnalysisKey_t *Keys, size_t nKeys) {
+	qsort(Keys, nKeys, sizeof(struct AnalysisKey_t), Analysis_KeysSort_Comparator);
 }
 
 /**************************************/
