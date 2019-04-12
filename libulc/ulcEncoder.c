@@ -26,8 +26,11 @@
 #endif
 /**************************************/
 
-#define MIN_CHANS  1
-#define MIN_BANDS 32 //! Mostly depends on the DCT routines
+#define MIN_CHANS     1
+#define MIN_BANDS    64 //! Mostly depends on the SIMD routines (currently limited by Block_Transform_CopySamples())
+#define MAX_CHANS 65535
+#define MAX_BANDS 65535
+#define OVERLAP_MULTIPLES 16 //! Depends on SIMD routines; setting as 16 arbitrarily
 
 //! Initialize encoder state
 int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
@@ -37,15 +40,9 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Verify parameters
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
-	if(nChan     < MIN_CHANS) return -1;
-	if(BlockSize < MIN_BANDS) return -1;
-	{
-		size_t nChanLog2     = IntLog2(nChan);
-		size_t BlockSizeLog2 = IntLog2(BlockSize);
-		if(nChan     > (1u<<nChanLog2))     nChanLog2++; //! Round to next power of two
-		if(BlockSize > (1u<<BlockSizeLog2)) return -1;   //! BlockSize must be a power of two
-		if(nChanLog2+BlockSizeLog2 > ANALYSIS_KEY_MAX_BITS) return -1;
-	}
+	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
+	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
+	if(State->BlockOverlap % OVERLAP_MULTIPLES)        return -1;
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal
