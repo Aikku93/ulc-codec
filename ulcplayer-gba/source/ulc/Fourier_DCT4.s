@@ -136,30 +136,43 @@ Fourier_DCT4:
 /**************************************/
 
 @ r0: &Buf
+@ c1_5: 3FB1h [.14]
+@ s1_5: 645Fh [.18]
+@ c3_5: 7A7Dh [.15]
+@ s3_5: 04A5h [.12]
+@ c5_5: 70E3h [.15]
+@ s5_5: 78ADh [.16]
+@ c7_5: 3179h [.14]
+@ s7_5: 144Dh [.13]
 
 .LDCT4_8:
 	STMFD	sp!, {r4-fp,lr}
 	LDMIA	r0, {r1-r8}
-0:	MOV	ip, #0x7F00 @ c1_5[.15] -> ip
-	MOV	lr, #0x6400 @ s1_5[.18] -> lr
-	ORR	ip, ip, #0x62
-	ORR	lr, lr, #0x5F
-	MUL	r9, ip, r1  @ ax =  c1_5*x[0] + s1_5*x[7] -> r9 [.15]
-	MUL	sl, lr, r1  @ ay =  s1_5*x[0] - c1_5*x[7] -> r1 [.15]
-	MUL	r1, lr, r8
-	ADD	r9, r9, r1, asr #0x03
+0:	MOV	ip, #0x6400           @ s1_5[.18] -> ip
+	ORR	ip, ip, #0x5F
+	RSB	r9, r1, r1, lsl #0x04 @ ax =  c1_5*x[0] + s1_5*x[7] -> r9 [.14]
+	ADD	r9, r9, r1, lsl #0x06
+	RSB	r9, r9, r1, lsl #0x0E
+	MUL	sl, ip, r1            @ ay =  s1_5*x[0] - c1_5*x[7] -> r1 [.14]
 	MUL	r1, ip, r8
-	RSB	r1, r1, sl, asr #0x03
-	MOV	ip, #0x7A00 @ c3_5[.15] -> ip
-	MOV	lr, #0x2500 @ s3_5[.15] -> lr
+	ADD	r9, r9, r1, asr #0x04
+	RSB	r1, r8, r8, lsl #0x04
+	ADD	r1, r1, r8, lsl #0x06
+	RSB	r1, r1, r8, lsl #0x0E
+	RSB	r1, r1, sl, asr #0x04
+0:	MOV	ip, #0x7A00           @ c3_5[.15] -> ip
 	ORR	ip, ip, #0x7D
-	ORR	lr, lr, #0x28
-	MUL	r8, ip, r2  @ bx =  c3_5*x[1] + s3_5*x[6] -> r8 [.15]
-	MUL	sl, lr, r2  @ by = -s3_5*x[1] + c3_5*x[6] -> r2 [.15]
-	MLA	r8, lr, r7, r8
+	MUL	r8, ip, r2            @ bx =  c3_5*x[1] + s3_5*x[6] -> r8 [.15]
+	ADD	sl, r2, r2, lsl #0x02 @ by = -s3_5*x[1] + c3_5*x[6] -> r2 [.15]
+	ADD	sl, sl, sl, lsl #0x05
+	ADD	sl, sl, r2, lsl #0x0A
+	ADD	r2, r7, r7, lsl #0x02
+	ADD	r2, r2, r2, lsl #0x05
+	ADD	r2, r2, r7, lsl #0x0A
+	ADD	r8, r8, r2, lsl #0x03
 	MUL	r2, ip, r7
-	SUB	r2, r2, sl
-	MOV	ip, #0x7000 @ c5_5[.15] -> ip
+	SUB	r2, r2, sl, lsl #0x03
+0:	MOV	ip, #0x7000 @ c5_5[.15] -> ip
 	MOV	lr, #0x7800 @ s5_5[.16] -> lr
 	ORR	ip, ip, #0xE3
 	ORR	lr, lr, #0xAD
@@ -169,7 +182,7 @@ Fourier_DCT4:
 	ADD	r7, r7, r3, asr #0x01
 	MUL	r3, ip, r6
 	RSB	r3, r3, sl, asr #0x01
-	MOV	ip, #0x3100 @ c7_5[.14] -> ip
+0:	MOV	ip, #0x3100 @ c7_5[.14] -> ip
 	MOV	lr, #0x2800 @ s7_5[.14] -> lr
 	ORR	ip, ip, #0x79
 	ORR	lr, lr, #0x9A
@@ -178,15 +191,15 @@ Fourier_DCT4:
 	MLA	r6, lr, r5, r6
 	MUL	r4, ip, r5
 	SUB	r4, r4, sl
-1:	MOV	r9, r9, asr #0x0F
+1:	MOV	r9, r9, asr #0x0E
 	ADD	r9, r9, r6, asr #0x0E @ saxdx = ax+dx -> r9
 	SUB	r6, r9, r6, asr #0x0D @ daxdx = ax-dx -> r6
 	MOV	r8, r8, asr #0x0F
 	ADD	r8, r8, r7, asr #0x0F @ sbxcx = bx+cx -> r8
 	SUB	r7, r8, r7, asr #0x0E @ dbxcx = bx-cx -> r7
 	MOV	r4, r4, asr #0x0E
-	ADD	r4, r4, r1, asr #0x0F @ sdyay = dy+ay -> r4
-	SUB	r1, r4, r1, asr #0x0E @ ddyay = dy-ay -> r1
+	ADD	r4, r4, r1, asr #0x0E @ sdyay = dy+ay -> r4
+	SUB	r1, r4, r1, asr #0x0D @ ddyay = dy-ay -> r1
 	MOV	r3, r3, asr #0x0F
 	ADD	r3, r3, r2, asr #0x0F @ scyby = cy+by -> r3
 	SUB	r2, r3, r2, asr #0x0E @ dcyby = cy-by -> r2
