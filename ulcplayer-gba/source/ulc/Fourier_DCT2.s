@@ -78,6 +78,12 @@ Fourier_DCT2:
 /**************************************/
 
 @ r0: &Buf
+@ c3_4: 3537h [.14]
+@ s3_4: 11C7h [.13]
+@ c1_4: 7D8Ah [.15]
+@ s1_4: 63E3h [.17]
+@ c6_4: 30FBh [.15]
+@ s6_4: 3B21h [.14]
 
 .LDCT2_8:
 	STMFD	sp!, {r4-fp,lr}
@@ -90,20 +96,23 @@ Fourier_DCT2:
 	SUB	r6, r3, r6, lsl #0x01 @ d25 -> r6
 	SUB	r7, r2, r7, lsl #0x01 @ d16 -> r7
 	SUB	r8, r1, r8, lsl #0x01 @ d07 -> r8
-1:	ADD	r1, r1, r4            @ ss07s34 -> r1
+0:	ADD	r1, r1, r4            @ ss07s34 -> r1
 	ADD	r2, r2, r3            @ ss16s25 -> r2
 	SUB	r3, r2, r3, lsl #0x01 @ ds16s25 -> r3
 	SUB	r4, r1, r4, lsl #0x01 @ ds07s34 -> r4
-	MOV	fp, #0x3500           @ c3_4[.14] -> fp
-	MOV	lr, #0x2300           @ s3_4[.14] -> lr
+1:	MOV	fp, #0x3500           @ c3_4[.14] -> fp
 	ORR	fp, fp, #0x37
-	ORR	lr, lr, #0x8E
 	MUL	r9, r5, fp            @ d34d07x =  c3_4*d34 + s3_4*d07 -> r9 [.14]
 	MUL	sl, r8, fp            @ d34d07y = -s3_4*d34 + c3_4*d07 -> sl [.14]
-	MLA	r9, r8, lr, r9
-	MUL	lr, r5, lr
-	SUB	sl, sl, lr
-	MOV	fp, #0x7D00           @ c1_4[.15] -> fp
+	ADD	lr, r8, r8, lsl #0x03
+	ADD	lr, lr, lr, lsl #0x06
+	ADD	lr, lr, r8, lsl #0x0C
+	ADD	r9, r9, lr, lsl #0x01
+	RSB	lr, r5, r5, lsl #0x03
+	ADD	lr, lr, lr, lsl #0x06
+	ADD	lr, lr, r5, lsl #0x0C
+	SUB	sl, sl, lr, lsl #0x01
+1:	MOV	fp, #0x7D00           @ c1_4[.15] -> fp
 	MOV	lr, #0x6300           @ s1_4[.17] -> lr
 	ORR	fp, fp, #0x8A
 	ORR	lr, lr, #0xE3
