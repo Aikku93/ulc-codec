@@ -2,6 +2,9 @@
 .section .iwram, "ax", %progbits
 .balign 4
 /**************************************/
+.equ NESTED_IRQ,    1
+.equ NO_NESTED_TM1, 1 @ TM1 restarts sound DMA, must not be interrupted
+/**************************************/
 
 .arm
 _IRQProc:
@@ -9,31 +12,39 @@ _IRQProc:
 	LDR	r1, [r0, #0x0208]     @ IME -> r1
 	LDR	r2, [r0, #0x0200]!    @ IE,IF -> r2, &IE -> r0
 	ANDS	r1, r1, r1            @ IME?
-	ANDNES	r1, r2, r2, lsr #0x10 @ IE&IF -> r1?
-1:	RSBNE	r2, r1, #0x00       @ Mask to lowest bit
+	ANDNES	r1, r2, r2, lsr #0x10 @ IE&IF -> r1? [C=0, as IE.Bit14..15=0]
+1:	RSBNE	r2, r1, #0x00         @ Mask to lowest bit
 	ANDNE	r1, r1, r2
-	STRNEH	r1, [r0, #0x02]     @ Set IF
-	LDRNE	r2, [r0, #-0x0208]! @ BIOS.IRQFlags -> r2, &BIOS.IRQFlags -> r0
-	ORRNE	r2, r2, r1          @ BIOS.IRQFlags |= Bit
+	STRNEH	r1, [r0, #0x02]       @ Set IF
+	LDRNE	r2, [r0, #-0x0208]!   @ BIOS.IRQFlags -> r2, &BIOS.IRQFlags -> r0
+	ORRNE	r2, r2, r1            @ BIOS.IRQFlags |= Bit
 	STRNEH	r2, [r0]
-2:	LDRNE	r0, =_IRQTable @ Call handler
+2:	LDRNE	r0, =_IRQTable        @ Handler -> r0?
 	LDRNE	r2, =0x077CB531
 	MULNE	r3, r2, r1
-	ADRNE	r1, .LIRQLog2
-	LDRNEB	r1, [r1, r3, lsr #0x20-5]
-	LDRNE	r0, [r0, r1, lsl #0x02]
+	ADRNE	r2, .LIRQLog2
+	LDRNEB	r2, [r2, r3, lsr #0x20-5]
+	LDRNE	r0, [r0, r2, lsl #0x02]
 	CMPNE	r0, #0x00
+.if NESTED_IRQ
+.if NO_NESTED_TM1
+	MOVNES	r1, r1, ror #0x04+1   @ C=TM1?
+	BHI	4f                    @ [C=1,Z=0]
+.endif
 3:	MRSNE	ip, spsr
-	STRNE	lr, [sp, #-0x0C]! @ Save lr_irq
-	STMNEIB	sp, {ip,lr}^      @ Save spsr,lr_sys
-	MSRNE	cpsr, #0x1F       @ SYS mode, free to interrupt
+	STRNE	lr, [sp, #-0x0C]!     @ Save lr_irq
+	STMNEIB	sp, {ip,lr}^          @ Save spsr,lr_sys
+	MSRNE	cpsr, #0x1F           @ SYS mode, free to interrupt
 	ADRNE	lr, 0f
-	BXNE	r0
+.endif
+4:	BXNE	r0
 	BX	lr
-0:	MSR	cpsr, #0x92       @ IRQ mode, IRQ-block
-	LDMIB	sp, {ip,lr}^      @ Restore spsr,lr_sys
+.if NESTED_IRQ
+0:	MSR	cpsr, #0x92           @ IRQ mode, IRQ-block
+	LDMIB	sp, {ip,lr}^          @ Restore spsr,lr_sys
 	MSR	spsr, ip
-	LDR	pc, [sp], #0x0C   @ Return to BIOS
+	LDR	pc, [sp], #0x0C       @ Return to BIOS
+.endif
 
 .LIRQLog2:
 	.byte  0, 1,28, 2,29,14,24,3
