@@ -18,6 +18,10 @@
 //! NOTE: NO GREATER THAN 48
 #define MAX_QUANTS 48
 
+//! Maximum allowed quantizer optimization passes
+//! More passes should give better results at the cost of increased complexity
+#define MAX_QUANTIZER_PASSES 8
+
 /**************************************/
 
 //! Get quantizer band from band index
@@ -144,9 +148,12 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 	}
 
-	//! Fit quantizers to keys
-	size_t nKeysEncode = 0;
-	size_t nDeadKeys   = 0; {
+	//! Fit quantizers to keys until they stabilize
+	//! NOTE: Reusing Keys[].Val as a check for 'key is in analysis'
+	size_t nPass;
+	size_t nKeysEncode;
+	size_t nDeadKeys;
+	for(nPass = 0, nKeysEncode = 0, nDeadKeys = 0; nPass < MAX_QUANTIZER_PASSES; nPass++) {
 		size_t nNzMaxCur = nNzMax; //! nNzMax for this pass
 
 		//! Check for any collapsed keys
@@ -156,53 +163,46 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 			//! Collapse?
 			int16_t Qnt = Quants[Chan][QBand];
 			if(Val < 0.5f*Qnt) {
-				//! Remove key from analysis
-				QuantsPow[Chan][QBand] -= SQR((double)Val);
-				QuantsAbs[Chan][QBand] -= Val;
+				//! Key still present in quantizer?
+				if(Keys[nKeysEncode].Val >= 0.0f) {
+					//! Remove key from analysis (DON'T rebuild the quantizer)
+					QuantsPow[Chan][QBand] -= SQR((double)Val);
+					QuantsAbs[Chan][QBand] -= Val;
+					Keys[nKeysEncode].Val = -1.0f; //! Anything negative
+				}
 
-				//! Rebuild quantizer
-				Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
-
-				//! Increase number of keys to analyze, but DON'T mark the key as unused
-				//! Keys will only be marked unused once we've finished with quantizer
-				//! selection, as this will let us keep 'important' keys that collapse
-				//! on the first pass but don't collapse after optimizing the quantizer
-				//MARK_KEY_UNUSED(nKeysEncode);
+				//! Increase number of keys to analyze
 				nDeadKeys++;
 				if(nNzMaxCur < nKeys) nNzMaxCur++;
-			}
-		} while(++nKeysEncode < nNzMaxCur);
-
-		//! Try to add more keys if any collapsed above
-		//! NOTE: In most cases, no keys collapse above
-		//! so this section isn't used and we break out
-		//! of the rate/quantizer optimization loop in
-		//! the first iteration; this is 'just in case'
-		nNzMaxCur += nDeadKeys; if(nNzMaxCur > nKeys) nNzMaxCur = nKeys;
-		if(nKeysEncode < nNzMaxCur) do {
-			FETCH_KEY_DATA(nKeysEncode);
-
-			//! Does this key collapse if we try to fit it to the analysis?
-			double  Pow = QuantsPow[Chan][QBand] + SQR((double)Val);
-			double  Abs = QuantsAbs[Chan][QBand] + Val;
-			int16_t Qnt = Block_Encode_BuildQuantizer(Pow, Abs);
-			if(Val < 0.5f*Qnt) {
-				//! Increase number of keys to analyze, but DON'T mark the key as unused
-				//! Same reasoning as before
-				//MARK_KEY_UNUSED(nKeysEncode);
-				if(nNzMaxCur < nKeys) nNzMaxCur++;
 			} else {
-				//! No collapse - save new quantizer state
-				QuantsPow[Chan][QBand] = Pow;
-				QuantsAbs[Chan][QBand] = Abs;
-				Quants   [Chan][QBand] = Qnt;
+				//! Key not present in quantizer?
+				if(Keys[nKeysEncode].Val < 0.0f) {
+					//! Re-add key to analysis (DON'T rebuild the quantizer)
+					QuantsPow[Chan][QBand] += SQR((double)Val);
+					QuantsAbs[Chan][QBand] += Val;
+					Keys[nKeysEncode].Val = +1.0f; //! Anything non-negative
+				}
 			}
 		} while(++nKeysEncode < nNzMaxCur);
+
+		//! Rebuild the quantizers
+		size_t nQuantChanges = 0;
+		for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<MAX_QUANTS;QBand++) {
+			int16_t QntOld = Quants[Chan][QBand];
+			int16_t QntNew = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
+			if(QntNew != QntOld) {
+				//! Don't count creating or destroying a quantizer
+				Quants[Chan][QBand] = QntNew;
+				if(QntOld != 0 && QntNew != 0) nQuantChanges++;
+			}
+		}
+
+		//! If converged, early exit
+		if(!nQuantChanges) break;
 	}
 
 	//! Final pass to remove 'dead' keys
-	//! NOTE: Saving quantizers to key value; this avoids
-	//! a lookup inside the coding loop
+	//! NOTE: Saving quantizers to key value; this avoids a lookup inside the coding loop
 	for(nKeysEncode = 0, nDeadKeys = 0; nKeysEncode < nNzMax; nKeysEncode++) {
 		FETCH_KEY_DATA(nKeysEncode);
 
