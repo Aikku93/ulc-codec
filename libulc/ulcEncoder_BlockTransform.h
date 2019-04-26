@@ -92,7 +92,7 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for
 //!  the currently-being-analyzed channel
-static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower) {
+static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, float hfShift) {
 	size_t i;
 	struct AnalysisKey_t Key;
 	for(i=0;i<BlockSize;i++) {
@@ -103,8 +103,11 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 		//! To avoid excessive muffling, we slightly decrease
 		//! the importance of the low frequency bands using
 		//! a pseudo-logarithmic curve (inverted parabola)
+		//! We also apply a slight 'shift' so that at very low
+		//! bitrates, we apply a bit less emphasis to high
+		//! frequencies (this will overall emphasize mid-low)
 		float lfScale = (BlockSize-i - 0.5f)/BlockSize;
-		      lfScale = 1.0f - 0.5f*lfScale*lfScale;
+		      lfScale = 1.0f - 0.5f*SQR(lfScale - hfShift);
 
 		//! Build and insert key
 		Key.Band = i;
@@ -127,6 +130,10 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
+
+	//! NOTE: The scaling here is fairly arbitrary
+	const float hfShiftMax = 0.5f;
+	      float hfShift    = SQR(0.005f / SQR(State->CoefBitRate)); if(hfShift > hfShiftMax) hfShift = hfShiftMax;
 
 	size_t Chan;
 	size_t nKeys = 0;
@@ -151,7 +158,7 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);
 
 		//! Insert coefficient keys
-		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower);
+		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, hfShift);
 		AnalysisPower *= PowerDecay;
 	}
 	return nKeys;
