@@ -90,30 +90,6 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 
 //! Process keys to work with and build quantizers
 //! Returns the number of keys to encode
-//! Crazy number of arguments, but forced inline so works ok
-static inline __attribute__((always_inline)) int Block_Encode_BuildQuants_FetchKeyData(
-	size_t KeyIdx,
-	const struct AnalysisKey_t *Keys,
-	size_t *Band,
-	size_t *Chan,
-	size_t *QBand,
-	float  *Val,
-	float **CoefBuffer,
-	uint16_t **QuantsBw,
-	int CheckUnused
-) {
-	size_t Key = Keys[KeyIdx].Key; if(CheckUnused && Key == ANALYSIS_KEY_UNUSED) return 0;
-#if 0
-	*Band  = Keys[KeyIdx].Band;
-	*Chan  = Keys[KeyIdx].Chan;
-#else
-	*Band  = (uint16_t)Key;
-	*Chan  = Key >> 16;
-#endif
-	*QBand = Block_Encode_BuildQuants_GetQBand(*Band, QuantsBw[*Chan]);
-	*Val   = ABS(CoefBuffer[*Chan][*Band]);
-	return 1;
-}
 static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys) {
 	size_t Key;
 	size_t BlockSize = State->BlockSize;
@@ -121,8 +97,11 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 	//! Key data fetcher
 	size_t Band, Chan, QBand;
 	float  Val;
-#define FETCH_KEY_DATA(KeyIdx)         Block_Encode_BuildQuants_FetchKeyData(KeyIdx, Keys, &Band, &Chan, &QBand, &Val, CoefBuffer, QuantsBw, 1)
-#define FETCH_KEY_DATA_NOCHECK(KeyIdx) Block_Encode_BuildQuants_FetchKeyData(KeyIdx, Keys, &Band, &Chan, &QBand, &Val, CoefBuffer, QuantsBw, 0)
+#define FETCH_KEY_DATA(KeyIdx)     \
+	Band  = Keys[KeyIdx].Band, \
+	Chan  = Keys[KeyIdx].Chan, \
+	QBand = Block_Encode_BuildQuants_GetQBand(Band, QuantsBw[Chan]), \
+	Val   = ABS(CoefBuffer[Chan][Band])
 #define MARK_KEY_UNUSED(KeyIdx) Keys[KeyIdx].Key = ANALYSIS_KEY_UNUSED
 
 	//! Spill state to local variables to make things easier to read
@@ -156,7 +135,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 	//! Build initial quantizers by considering
 	//! all available keys (ie. the 'first pass')
 	for(Key=0;Key<nNzMax;Key++) {
-		FETCH_KEY_DATA_NOCHECK(Key);
+		FETCH_KEY_DATA(Key);
 
 		QuantsPow[Chan][QBand] += SQR((double)Val);
 		QuantsAbs[Chan][QBand] += Val;
@@ -165,21 +144,14 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 	}
 
-	//! Loop until quantizers stabilize
-	//! NOTE: Saving quantizers to key value; this avoids
-	//! a lookup inside the coding loop
-	size_t nKeysEncode;
-	size_t nDeadKeys;
-	for(nKeysEncode = 0, nDeadKeys = 0;;) {
-		size_t nNzMaxCur = nNzMax; //! nNzMax for this iteration
-		size_t QuantsUpdated = 0;
+	//! Fit quantizers to keys
+	size_t nKeysEncode = 0;
+	size_t nDeadKeys   = 0; {
+		size_t nNzMaxCur = nNzMax; //! nNzMax for this pass
 
-		//! Remove any collapsed keys
+		//! Check for any collapsed keys
 		if(nKeysEncode < nNzMaxCur) do {
-			if(!FETCH_KEY_DATA(nKeysEncode)) {
-				if(nNzMaxCur < nKeys) nNzMaxCur++;
-				continue;
-			}
+			FETCH_KEY_DATA(nKeysEncode);
 
 			//! Collapse?
 			int16_t Qnt = Quants[Chan][QBand];
@@ -189,18 +161,16 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 				QuantsAbs[Chan][QBand] -= Val;
 
 				//! Rebuild quantizer
-				int16_t Qnt = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
-				if(Quants[Chan][QBand] != Qnt) {
-					//! If destroyed, don't count it as 'modified'
-					if(Qnt != 0) QuantsUpdated++;
-					Quants[Chan][QBand] = Qnt;
-				}
+				Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 
-				//! Mark unused, increase number of keys to analyze
-				MARK_KEY_UNUSED(nKeysEncode);
+				//! Increase number of keys to analyze, but DON'T mark the key as unused
+				//! Keys will only be marked unused once we've finished with quantizer
+				//! selection, as this will let us keep 'important' keys that collapse
+				//! on the first pass but don't collapse after optimizing the quantizer
+				//MARK_KEY_UNUSED(nKeysEncode);
 				nDeadKeys++;
 				if(nNzMaxCur < nKeys) nNzMaxCur++;
-			} else Keys[nKeysEncode].Quant = Qnt;
+			}
 		} while(++nKeysEncode < nNzMaxCur);
 
 		//! Try to add more keys if any collapsed above
@@ -210,42 +180,46 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 		//! the first iteration; this is 'just in case'
 		nNzMaxCur += nDeadKeys; if(nNzMaxCur > nKeys) nNzMaxCur = nKeys;
 		if(nKeysEncode < nNzMaxCur) do {
-			if(!FETCH_KEY_DATA(nKeysEncode)) {
-				if(nNzMaxCur < nKeys) nNzMaxCur++;
-				continue;
-			}
+			FETCH_KEY_DATA(nKeysEncode);
 
 			//! Does this key collapse if we try to fit it to the analysis?
 			double  Pow = QuantsPow[Chan][QBand] + SQR((double)Val);
 			double  Abs = QuantsAbs[Chan][QBand] + Val;
 			int16_t Qnt = Block_Encode_BuildQuantizer(Pow, Abs);
 			if(Val < 0.5f*Qnt) {
-				//! Remove key from list
-				MARK_KEY_UNUSED(nKeysEncode);
-				nDeadKeys++;
+				//! Increase number of keys to analyze, but DON'T mark the key as unused
+				//! Same reasoning as before
+				//MARK_KEY_UNUSED(nKeysEncode);
 				if(nNzMaxCur < nKeys) nNzMaxCur++;
 			} else {
 				//! No collapse - save new quantizer state
 				QuantsPow[Chan][QBand] = Pow;
 				QuantsAbs[Chan][QBand] = Abs;
-				if(Quants[Chan][QBand] != Qnt) {
-					//! If created, don't count it as 'modified'
-					if(Quants[Chan][QBand] != 0) QuantsUpdated++;
-					Quants[Chan][QBand] = Qnt;
-				}
-				Keys[nKeysEncode].Quant = Qnt;
+				Quants   [Chan][QBand] = Qnt;
 			}
 		} while(++nKeysEncode < nNzMaxCur);
+	}
 
-		//! If quantizers aren't modified, we're done
-		if(!QuantsUpdated) break;
+	//! Final pass to remove 'dead' keys
+	//! NOTE: Saving quantizers to key value; this avoids
+	//! a lookup inside the coding loop
+	for(nKeysEncode = 0, nDeadKeys = 0; nKeysEncode < nNzMax; nKeysEncode++) {
+		FETCH_KEY_DATA(nKeysEncode);
+
+		//! Collapse?
+		int16_t Qnt = Quants[Chan][QBand];
+		if(Val < 0.5f*Qnt) {
+			//! Mark key unused and increase number of keys to analyze
+			MARK_KEY_UNUSED(nKeysEncode);
+			nDeadKeys++;
+			if(nNzMax < nKeys) nNzMax++;
+		} else Keys[nKeysEncode].Quant = Qnt;
 	}
 
 	//! Sort the keys and return how many we work with
 	Analysis_KeysSort(Keys, nKeysEncode);
 	return nKeysEncode - nDeadKeys;
 #undef MARK_KEY_UNUSED
-#undef FETCH_KEY_DATA_NOCHECK
 #undef FETCH_KEY_DATA
 }
 
