@@ -29,6 +29,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 
 ## Possible issues
 * Aside from a somewhat arbitrary high-frequency boost in the frequency selection criteria (and larger quantizer bands in the high-frequency range), there is no psychoacoustic optimizations, which might be resulting in lower quality for a given rate
+    * The reason this model works at all is that low frequencies mask more neighbouring bands than high frequencies do (most audio contains a lot of low-frequency content relative to the high frequencies). However, this breaks down when there isn't much low-frequency masking going on, combined with with decent amount of high-frequency activity; this can lead to completely losing important low-frequency bands. For that reason, a suitable psychoacoustic model is currently being researched.
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
     * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
@@ -38,7 +39,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
     * Encoding/decoding tools use N=4096 (2048 coefficients) with 37.5% overlap, but can use any sensible N=2<sup>n</sup> with any overlap (provided that the number of overlap samples is a multiple of 16)
-        * Due to extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates
+        * Due to the extremely simplified quantization model combined with an improper psychoacoustic model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 * Transient pre-echo reduction formula (more important at ultra-low bitrates)
 
