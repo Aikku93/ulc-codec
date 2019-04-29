@@ -119,17 +119,15 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 	double   **QuantsAbs  = State->QuantsAbs;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
-	//! Clear quantizer state
+	//! Clear quantizer state and build quantizer bands
 	for(Chan=0;Chan<nChan;Chan++) {
 		for(QBand=0;QBand<MAX_QUANTS;QBand++) {
 			QuantsPow[Chan][QBand] = 0.0;
 			QuantsAbs[Chan][QBand] = 0.0;
 			//Quants   [Chan][QBand] = 0; //! <- Will be set during first pass below
 		}
+		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize);
 	}
-
-	//! Build quantizer bands
-	for(Chan=0;Chan<nChan;Chan++) Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize);
 
 	//! Clip to maximum available keys
 	//! This can happen if rate control says we can fit more
@@ -151,9 +149,8 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 	//! Fit quantizers to keys until they stabilize
 	//! NOTE: Reusing Keys[].Val as a check for 'key is in analysis'
 	size_t nPass;
-	size_t nKeysEncode;
-	size_t nDeadKeys;
-	for(nPass = 0, nKeysEncode = 0, nDeadKeys = 0; nPass < MAX_QUANTIZER_PASSES; nPass++) {
+	for(nPass=0;nPass<MAX_QUANTIZER_PASSES;nPass++) {
+		size_t nKeysEncode = 0;
 		size_t nNzMaxCur = nNzMax; //! nNzMax for this pass
 
 		//! Check for any collapsed keys
@@ -172,7 +169,6 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 				}
 
 				//! Increase number of keys to analyze
-				nDeadKeys++;
 				if(nNzMaxCur < nKeys) nNzMaxCur++;
 			} else {
 				//! Key not present in quantizer?
@@ -203,7 +199,9 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 
 	//! Final pass to remove 'dead' keys
 	//! NOTE: Saving quantizers to key value; this avoids a lookup inside the coding loop
-	for(nKeysEncode = 0, nDeadKeys = 0; nKeysEncode < nNzMax; nKeysEncode++) {
+	size_t nKeysEncode;
+	size_t nDeadKeys = 0;
+	for(nKeysEncode=0;nKeysEncode<nNzMax;nKeysEncode++) {
 		FETCH_KEY_DATA(nKeysEncode);
 
 		//! Collapse?
