@@ -8,6 +8,9 @@
 #if defined(__AVX__)
 # include <immintrin.h>
 #endif
+#if defined(__SSE3__)
+# include <pmmintrin.h>
+#endif
 #if defined(__SSE__)
 # include <xmmintrin.h>
 #endif
@@ -87,33 +90,76 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 
 /**************************************/
 
+//! Compute adjusted power for bands
+//! NOTE: N = BlockSize/2
+static inline __attribute__((always_inline)) float Block_Transform_ComputeFinalPower_SupportCurveParam(float BandsPerHz, float Fc, float CurveSpread) {
+	float k = (500.0f + 0.01f*Fc) * CurveSpread;
+	if(k <  25.0f) k =  25.0f;
+	if(k > 750.0f) k = 750.0f;
+
+	//! Rescale to bands and return oscillator parameter
+	k *= BandsPerHz;
+	float s, c; Fourier_SinCos(1.0f / k, &s, &c);
+	return 2.0f*c;
+}
+void Block_Transform_ComputeFinalPower(const float *Coef, float *FinalPower, size_t BlockSize, float Nyquist_Hz) {
+	size_t i, j;
+	size_t N = BlockSize/2;
+
+	//! Convolve with spreading function
+	//! The point of this particular psychoacoustic model
+	//! is that neighbouring bands 'support' a given band
+	//! NOTE: There are twice as many bands in Coef than we store
+	for(i=0;i<N;i++) {
+		float Fc = (i+0.5f) * Nyquist_Hz / N;
+		const float *CoefSrc = Coef + i*2;
+
+		//! Convolve LHS, RHS
+		//! Based on a squared cosine curve
+		float BandPow = SQR(CoefSrc[0]) + SQR(CoefSrc[1]);
+		float PowSum = 0.125f * SQR(BandPow); {
+			float Curve, CurveOld;
+			float CurveOmg = Block_Transform_ComputeFinalPower_SupportCurveParam(N / Nyquist_Hz, Fc, 1.0f);
+
+			//! Using linear prediction for the cosine curve
+			CurveOld = 1.0f, Curve = CurveOmg*0.5f;
+			for(j=1;j<=i*2;j++) {
+				PowSum += BandPow*ABS(CoefSrc[-j]) * SQR(Curve);
+
+				float t = Curve;
+				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
+				if(Curve < 0.0f) break;
+			}
+			CurveOld = 1.0f, Curve = CurveOmg*0.5f;
+			for(j=2;j<(N-i)*2;j++) {
+				PowSum += BandPow*ABS(CoefSrc[+j]) * SQR(Curve);
+
+				float t = Curve;
+				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
+				if(Curve < 0.0f) break;
+			}
+		}
+		FinalPower[i] = PowSum;
+	}
+}
+
+/**************************************/
+
 //! Insert keys for block coefficients
 //! Returns updated number of keys in list
 //! NOTE:
-//!  AnalysisPower is used to alter the preference for
-//!  the currently-being-analyzed channel
-static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, float hfShift) {
+//!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
+static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, const float *FinalPower) {
 	size_t i;
-	struct AnalysisKey_t Key;
 	for(i=0;i<BlockSize;i++) {
 		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
 		float v2 = SQR(Coef[i]);
 		if(v2 < SQR(0.5f)) continue;
 
-		//! To avoid excessive muffling, we slightly decrease
-		//! the importance of the low frequency bands using
-		//! a pseudo-logarithmic curve (inverted parabola)
-		//! We also apply a slight 'shift' so that at very low
-		//! bitrates, we apply a bit less emphasis to high
-		//! frequencies (this will overall emphasize mid-low)
-		float lfScale = (BlockSize-i - 0.5f)/BlockSize;
-		      lfScale = 1.0f - 0.5f*SQR(lfScale - hfShift);
-
 		//! Build and insert key
-		Key.Band = i;
-		Key.Chan = Chan;
-		Key.Val  = v2 * lfScale * AnalysisPower;
-		Analysis_KeyInsert(&Key, Keys, nKeys);
+		Keys[nKeys].Band = i;
+		Keys[nKeys].Chan = Chan;
+		Keys[nKeys].Val  = v2 * FinalPower[i/2] * AnalysisPower;
 		nKeys++;
 	}
 	return nKeys;
@@ -130,10 +176,6 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
-
-	//! NOTE: The scaling here is fairly arbitrary
-	const float hfShiftMax = 0.5f;
-	      float hfShift    = SQR(0.005f / SQR(State->CoefBitRate)); if(hfShift > hfShiftMax) hfShift = hfShiftMax;
 
 	size_t Chan;
 	size_t nKeys = 0;
@@ -154,13 +196,16 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		Block_Transform_CopySamples(BufferSample, Data + Chan*BlockSize, BlockSize, 2.0f/BlockSize * 0.5f);
 
 		//! Apply transforms
+		//! NOTE: Final power stored to BufferTemp
 		Fourier_MDCT(BufferTransform, BufferSample, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
+		Block_Transform_ComputeFinalPower(BufferTransform, BufferTemp, BlockSize, State->RateHz*0.5f);
 		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);
 
 		//! Insert coefficient keys
-		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, hfShift);
+		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, BufferTemp);
 		AnalysisPower *= PowerDecay;
 	}
+	Analysis_KeysValSort(State->AnalysisKeys, nKeys);
 	return nKeys;
 }
 
