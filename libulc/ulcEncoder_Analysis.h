@@ -29,34 +29,7 @@ struct AnalysisKey_t {
 
 /**************************************/
 
-//! Insert key to analysis buffers
-//! Sorted by highest power (passed in 'v') first
-//! NOTE:
-//!  -This implies that nKeys must increase in the caller
-static void Analysis_KeyInsert(const struct AnalysisKey_t *Key, struct AnalysisKey_t *Keys, size_t nKeys) {
-	//! Get insertion index (binary search for yeet points)
-	size_t InsertIdx; {
-		int Lo = 0, Hi = nKeys-1;
-		while(Lo <= Hi) {
-			size_t Mid = (Lo+Hi) / 2u;
-			if(Key->Val > Keys[Mid].Val)
-				Hi = Mid-1;
-			else
-				Lo = Mid+1;
-		}
-		InsertIdx = Lo;
-	}
-
-	//! Shift and insert
-	memmove(Keys + InsertIdx+1, Keys + InsertIdx, (nKeys - InsertIdx)*sizeof(struct AnalysisKey_t));
-	Keys[InsertIdx] = *Key;
-}
-
-/**************************************/
-
 //! Sort keys in increasing Chan>Band order
-//! TODO: Replace this sort with something else
-//!       Perhaps radix sort on channels, followed by counting sort on bands.
 static int Analysis_KeysSort_Comparator(const void *_a, const void *_b) {
 	const struct AnalysisKey_t *a = _a;
 	const struct AnalysisKey_t *b = _b;
@@ -64,6 +37,16 @@ static int Analysis_KeysSort_Comparator(const void *_a, const void *_b) {
 }
 static void Analysis_KeysSort(struct AnalysisKey_t *Keys, size_t nKeys) {
 	qsort(Keys, nKeys, sizeof(struct AnalysisKey_t), Analysis_KeysSort_Comparator);
+}
+
+//! Sort keys in decreasing Val order
+static int Analysis_KeysValSort_Comparator(const void *_a, const void *_b) {
+	const struct AnalysisKey_t *a = _a;
+	const struct AnalysisKey_t *b = _b;
+	return a->Val < b->Val ? (+1) : (-1);
+}
+static void Analysis_KeysValSort(struct AnalysisKey_t *Keys, size_t nKeys) {
+	qsort(Keys, nKeys, sizeof(struct AnalysisKey_t), Analysis_KeysValSort_Comparator);
 }
 
 /**************************************/
