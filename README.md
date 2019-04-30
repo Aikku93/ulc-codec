@@ -32,13 +32,13 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
     * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
+* Due to the extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates (eg. 32kbps @ 44.1kHz). However, an MP3-esque transform (N=1024; 512 coefficients) will sound only slightly inferior compared to it at 'average' bitrates (eg. 128kbps @ 44.1kHz).
 
 ## Technical details
 * Target bitrate: 16..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
     * Encoding/decoding tools use N=4096 (2048 coefficients) with 37.5% overlap, but can use any sensible N=2<sup>n</sup> with any overlap (provided that the number of overlap samples is a multiple of 16)
-        * Due to the extremely simplified quantization model combined with an improper psychoacoustic model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 * Transient pre-echo reduction formula (more important at ultra-low bitrates)
 
