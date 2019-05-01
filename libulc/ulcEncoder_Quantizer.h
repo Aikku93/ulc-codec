@@ -141,7 +141,9 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 
 		QuantsPow[Chan][QBand] += SQR((double)Val);
 		QuantsAbs[Chan][QBand] += Val;
+		Keys[Key].Val = 1.0f; //! Anything non-negative (see below)
 	}
+	for(;Key<nKeys;Key++) Keys[Key].Val = -1.0f; //! Anything negative (see below)
 	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<MAX_QUANTS;QBand++) {
 		Quants[Chan][QBand] = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 	}
