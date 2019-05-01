@@ -190,9 +190,9 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 			Keys[nKeys].Chan = Chan;
 #if USE_PSYHOACOUSTICS
 			//! PONDER: Not sure why this scaling is needed
-			Keys[nKeys].Val  = (v2 - (1.0f/6.0f)*Flat*MaskingPower[i/2]) * AnalysisPower;
+			Keys[nKeys].Val  = v2*AnalysisPower - (1.0f/6.0f)*Flat*MaskingPower[i/2];
 #else
-			Keys[nKeys].Val  = v2 * AnalysisPower;
+			Keys[nKeys].Val  = v2*AnalysisPower;
 #endif
 			nKeys++;
 		}
