@@ -17,6 +17,11 @@ static inline size_t IntLog2(unsigned int x) {
 	return sizeof(unsigned int)*8-1 - __builtin_clz(x);
 }
 
+//! Spline curve
+static inline float SplineCurve(float x) {
+	return (3.0f - 2.0f*x)*SQR(x);
+}
+
 //! Spectral flatness measure
 //! Adapted from "Note on measures for spectral flatness"
 //! DOI: 10.1049/el.2009.1977
@@ -26,7 +31,7 @@ static inline double SpectralFlatness(const float *Buf, size_t N) {
 	//! Get normalization factor
 	double Nrm = 0.0;
 	for(i=0;i<N;i++) Nrm += SQR((double)Buf[i]);
-	if(Nrm == 0.0) return 1.0;
+	if(Nrm == 0.0) return 0.0;
 	Nrm = 1.0 / Nrm;
 
 	//! Measure
