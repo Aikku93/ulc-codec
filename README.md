@@ -28,7 +28,7 @@ This will take ```Input.raw``` (with a playback rate of ```RateHz``` and ```nCha
 This will take ```Input.ulc``` and output ```Output.raw```.
 
 ## Possible issues
-* The psychoacoustic model used is 'intuitively' correct rather than based on any hard evidence. Nevertheless, it appears to be working well
+* The psychoacoustic model used is a very crude approximation to the usual models, as I didn't want to overcomplicate it by involving critical bands and the like. However, it does seem to work well enough to remove inaudible details as needed.
 * Syntax is flexible enough to cause buffer overflows
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
     * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
