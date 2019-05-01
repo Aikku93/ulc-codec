@@ -8,13 +8,11 @@
 #if defined(__AVX__)
 # include <immintrin.h>
 #endif
-#if defined(__SSE3__)
-# include <pmmintrin.h>
-#endif
 #if defined(__SSE__)
 # include <xmmintrin.h>
 #endif
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 /**************************************/
@@ -22,6 +20,14 @@
 /**************************************/
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
+/**************************************/
+
+//! Use psychoacoustic model
+#define USE_PSYHOACOUSTICS 1
+
+//! Bands per spectral flatness measure
+#define FLATNESS_WIDTH 32
+
 /**************************************/
 
 //! Copy scaled samples to buffer
@@ -89,78 +95,115 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 }
 
 /**************************************/
+#if USE_PSYHOACOUSTICS
+/**************************************/
 
-//! Compute adjusted power for bands
-//! NOTE: N = BlockSize/2
-static inline __attribute__((always_inline)) float Block_Transform_ComputeFinalPower_SupportCurveParam(float BandsPerHz, float Fc, float CurveSpread) {
-	float k = (500.0f + 0.01f*Fc) * CurveSpread;
-	if(k <  25.0f) k =  25.0f;
-	if(k > 750.0f) k = 750.0f;
+//! Estimate masking for each band
+static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_CurveParam(float BandsPerHz, float Fc, float CurveSpread) {
+	float k;
+	     if(Fc <=   500.0f) k = 100.0f + 100.0f*SplineCurve( Fc         * (1.0f/  500.0f));
+	else if(Fc <= 20000.0f) k = 250.0f - 200.0f*SplineCurve((Fc-500.0f) * (1.0f/19500.0f));
+	else                    k =  50.0f;
+	k *= CurveSpread;
 
-	//! Rescale to bands and return oscillator parameter
+	//! Rescale to bands. If outside of limits, just return 0, as the
+	//! cosine approximation breaks outside of the x=[0,1] range
 	k *= BandsPerHz;
-	float s, c; Fourier_SinCos(1.0f / k, &s, &c);
+	if(k <= 1.0f) return 0.0f;
+
+	//! Return oscillator parameter for differential equation
+	float s, c;
+	Fourier_SinCos(1.0f / k, &s, &c);
 	return 2.0f*c;
 }
-void Block_Transform_ComputeFinalPower(const float *Coef, float *FinalPower, size_t BlockSize, float Nyquist_Hz) {
+static void Block_Transform_ComputeMaskingPower(const float *Coef, float *MaskingPower, size_t BlockSize, float Nyquist_Hz) {
 	size_t i, j;
-	size_t N = BlockSize/2;
 
 	//! Convolve with spreading function
 	//! The point of this particular psychoacoustic model
 	//! is that neighbouring bands 'support' a given band
-	//! NOTE: There are twice as many bands in Coef than we store
-	for(i=0;i<N;i++) {
-		float Fc = (i+0.5f) * Nyquist_Hz / N;
-		const float *CoefSrc = Coef + i*2;
+	for(i=0;i<BlockSize;i+=2) {
+		float Fc = (i+1.0f) * Nyquist_Hz / BlockSize;
 
 		//! Convolve LHS, RHS
-		//! Based on a squared cosine curve
-		float BandPow = SQR(CoefSrc[0]) + SQR(CoefSrc[1]);
-		float PowSum = 0.125f * SQR(BandPow); {
-			float Curve, CurveOld;
-			float CurveOmg = Block_Transform_ComputeFinalPower_SupportCurveParam(N / Nyquist_Hz, Fc, 1.0f);
+		//! Based on a raised cosine curve
+		float PowSum = 0.0f; {
+			float CurveOmg;
+			float CurveOld, Curve;
 
 			//! Using linear prediction for the cosine curve
+			CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Fc, 0.3f);
 			CurveOld = 1.0f, Curve = CurveOmg*0.5f;
-			for(j=1;j<=i*2;j++) {
-				PowSum += BandPow*ABS(CoefSrc[-j]) * SQR(Curve);
+			for(j=1;(Curve > 0.0f && j <= i);j++) {
+				PowSum += SQR(Curve * Coef[i-j]);
 
 				float t = Curve;
 				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
-				if(Curve < 0.0f) break;
 			}
+			CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Fc, 1.0f);
 			CurveOld = 1.0f, Curve = CurveOmg*0.5f;
-			for(j=2;j<(N-i)*2;j++) {
-				PowSum += BandPow*ABS(CoefSrc[+j]) * SQR(Curve);
+			for(j=2;(Curve > 0.0f && i+j < BlockSize);j++) {
+				PowSum += SQR(Curve * Coef[i+j]);
 
 				float t = Curve;
 				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
-				if(Curve < 0.0f) break;
 			}
 		}
-		FinalPower[i] = PowSum;
+		MaskingPower[i/2] = PowSum;
 	}
 }
 
+//! Compute flatness
+static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, size_t BlockSize) {
+	size_t i;
+	for(i=0;i<BlockSize;i+=FLATNESS_WIDTH) *Flatness++ = SpectralFlatness(Coef + i, FLATNESS_WIDTH);
+	*Flatness = Flatness[-1]; //! Interpolation
+}
+
+/**************************************/
+#endif
 /**************************************/
 
 //! Insert keys for block coefficients
 //! Returns updated number of keys in list
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, const float *FinalPower) {
+static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, const float *MaskingPower, const float *Flatness) {
 	size_t i;
+
+	//! Start inserting keys
+	float Flat_mu   = 0.0f;
+	float Flat_Step = 1.0f / FLATNESS_WIDTH;
+	float Flat_Cur  = *Flatness++;
+	float Flat_Nxt  = *Flatness++;
 	for(i=0;i<BlockSize;i++) {
 		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
 		float v2 = SQR(Coef[i]);
-		if(v2 < SQR(0.5f)) continue;
+		if(v2 >= SQR(0.5f)) {
+			//! Get flatness
+			//! NOTE: mu^2 to get a sharper curve
+			float Flat = SQR(Flat_mu);
+			      Flat = Flat_Cur*(1.0f - Flat) + Flat_Nxt*Flat;
 
-		//! Build and insert key
-		Keys[nKeys].Band = i;
-		Keys[nKeys].Chan = Chan;
-		Keys[nKeys].Val  = v2 * FinalPower[i/2] * AnalysisPower;
-		nKeys++;
+			//! Build and insert key
+			Keys[nKeys].Band = i;
+			Keys[nKeys].Chan = Chan;
+#if USE_PSYHOACOUSTICS
+			//! PONDER: Not sure why this scaling is needed
+			Keys[nKeys].Val  = (v2 - (1.0f/6.0f)*Flat*MaskingPower[i/2]) * AnalysisPower;
+#else
+			Keys[nKeys].Val  = v2 * AnalysisPower;
+#endif
+			nKeys++;
+		}
+
+		//! Step flatness
+		Flat_mu += Flat_Step;
+		if(Flat_mu >= 1.0f) {
+			Flat_mu -= 1.0f;
+			Flat_Cur = Flat_Nxt;
+			Flat_Nxt = *Flatness++;
+		}
 	}
 	return nKeys;
 }
@@ -183,11 +226,13 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Get buffer pointers
 		//! NOTE:
-		//!  TempBuffer has 2*BlockSize elements
+		//!  TransformTemp has 2*BlockSize elements
 		//!  The first half will contain our (scaled) sample data
-		//!  The second half will be for MDCT processing
+		//!  The second half will be for processing
 		float *BufferSample    = State->TransformTemp;
 		float *BufferTemp      = State->TransformTemp + BlockSize;
+		float *BufferMasking   = BufferTemp;
+		float *BufferFlatness  = BufferTemp + BlockSize/2;
 		float *BufferTransform = State->TransformBuffer[Chan];
 		float *BufferFwdLap    = State->TransformFwdLap[Chan];
 
@@ -196,13 +241,16 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		Block_Transform_CopySamples(BufferSample, Data + Chan*BlockSize, BlockSize, 2.0f/BlockSize * 0.5f);
 
 		//! Apply transforms
-		//! NOTE: Final power stored to BufferTemp
+		//! NOTE: Masking power stored to BufferTemp
 		Fourier_MDCT(BufferTransform, BufferSample, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
-		Block_Transform_ComputeFinalPower(BufferTransform, BufferTemp, BlockSize, State->RateHz*0.5f);
+#if USE_PSYHOACOUSTICS
+		Block_Transform_ComputeMaskingPower(BufferTransform, BufferMasking, BlockSize, State->RateHz*0.5f);
+		Block_Transform_ComputeFlatness(BufferTransform, BufferFlatness, BlockSize);
+#endif
 		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);
 
 		//! Insert coefficient keys
-		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, BufferTemp);
+		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, BufferMasking, BufferFlatness);
 		AnalysisPower *= PowerDecay;
 	}
 	Analysis_KeysValSort(State->AnalysisKeys, nKeys);
