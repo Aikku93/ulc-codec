@@ -184,7 +184,10 @@ main:
 
 .arm
 UpdateGfx:
-	STMFD	sp!, {r4-fp,lr}
+	MRS	ip, spsr
+	STR	lr, [sp, #-0x04]! @ Save lr_irq
+	MSR	cpsr, #0x1F       @ SYS mode, free to interrupt
+0:	STMFD	sp!, {r4-fp,ip,lr}
 	LDR	r4, =ulc_State
 0:	MOV	r0, #0x04000000
 	MOV	r1, #0x1F00
@@ -351,8 +354,10 @@ UpdateGfx:
 	BHI	1b
 
 .LRedraw_Exit:
-	LDMFD	sp!, {r4-fp,lr}
-	BX	lr
+	LDMFD	sp!, {r4-fp,ip,lr}
+0:	MSR	cpsr, #0x92     @ IRQ mode, IRQ-block
+	MSR	spsr, ip        @ Restore spsr
+	LDR	pc, [sp], #0x04 @ Return to BIOS
 
 @ NOTE: Copying 128 bits at a time
 .LRedraw_Set32:
@@ -427,15 +432,15 @@ UpdateGfx:
 .balign 4
 
 SoundFile:
-	.incbin "source/res/SoundData.ulc"
+	.incbin "source/res/No!ze Freakz - Freedom.wav.ulc"
 .size SoundFile, .-SoundFile
 
 SoundFile_Artist:
-	.asciz "Artist"
+	.asciz "No!ze Freakz"
 .size SoundFile_Artist, .-SoundFile_Artist
 
 SoundFile_Title:
-	.asciz "Title..."
+	.asciz "Freedom\x7F"
 .size SoundFile_Title, .-SoundFile_Title
 
 /**************************************/
