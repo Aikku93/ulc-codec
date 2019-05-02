@@ -25,8 +25,8 @@
 //! Use psychoacoustic model
 #define USE_PSYHOACOUSTICS 1
 
-//! Bands per spectral flatness measure
-#define FLATNESS_WIDTH 32
+//! Number of spectral flatness bands
+#define FLATNESS_COUNT 64
 
 /**************************************/
 
@@ -101,9 +101,9 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 //! Estimate masking for each band
 static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_CurveParam(float BandsPerHz, float Fc, float CurveSpread) {
 	float k;
-	     if(Fc <=   500.0f) k = 100.0f + 100.0f*SplineCurve( Fc         * (1.0f/  500.0f));
-	else if(Fc <= 20000.0f) k = 250.0f - 200.0f*SplineCurve((Fc-500.0f) * (1.0f/19500.0f));
-	else                    k =  50.0f;
+	     if(Fc <   500.0f) k =  50.0f + 150.0f*SplineCurve( Fc         * (1.0f/  500.0f));
+	else if(Fc < 20000.0f) k = 250.0f - 200.0f*SplineCurve((Fc-500.0f) * (1.0f/19500.0f));
+	else                   k =  50.0f;
 	k *= CurveSpread;
 
 	//! Rescale to bands. If outside of limits, just return 0, as the
@@ -120,8 +120,6 @@ static void Block_Transform_ComputeMaskingPower(const float *Coef, float *Maskin
 	size_t i, j;
 
 	//! Convolve with spreading function
-	//! The point of this particular psychoacoustic model
-	//! is that neighbouring bands 'support' a given band
 	for(i=0;i<BlockSize;i+=2) {
 		float Fc = (i+1.0f) * Nyquist_Hz / BlockSize;
 
@@ -132,8 +130,10 @@ static void Block_Transform_ComputeMaskingPower(const float *Coef, float *Maskin
 			float CurveOld, Curve;
 
 			//! Using linear prediction for the cosine curve
+			//! PONDER: Not sure why scaling is needed here;
+			//! it becomes approximately 1/6 after squaring
 			CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Fc, 0.3f);
-			CurveOld = 1.0f, Curve = CurveOmg*0.5f;
+			CurveOld = 1.0f/2.5f, Curve = CurveOmg*(0.5f/2.5f);
 			for(j=1;(Curve > 0.0f && j <= i);j++) {
 				PowSum += SQR(Curve * Coef[i-j]);
 
@@ -141,7 +141,7 @@ static void Block_Transform_ComputeMaskingPower(const float *Coef, float *Maskin
 				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
 			}
 			CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Fc, 1.0f);
-			CurveOld = 1.0f, Curve = CurveOmg*0.5f;
+			CurveOld = 1.0f/2.5f, Curve = CurveOmg*(0.5f/2.5f);
 			for(j=2;(Curve > 0.0f && i+j < BlockSize);j++) {
 				PowSum += SQR(Curve * Coef[i+j]);
 
@@ -155,8 +155,8 @@ static void Block_Transform_ComputeMaskingPower(const float *Coef, float *Maskin
 
 //! Compute flatness
 static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, size_t BlockSize) {
-	size_t i;
-	for(i=0;i<BlockSize;i+=FLATNESS_WIDTH) *Flatness++ = SpectralFlatness(Coef + i, FLATNESS_WIDTH);
+	size_t i, Width = BlockSize / FLATNESS_COUNT;
+	for(i=0;i<BlockSize;i+=Width) *Flatness++ = SpectralFlatness(Coef + i, Width);
 	*Flatness = Flatness[-1]; //! Interpolation
 }
 
@@ -170,33 +170,37 @@ static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, 
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
 static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, const float *MaskingPower, const float *Flatness) {
 	size_t i;
-
+#if !USE_PSYCHOACOUSTICS
+	(void)MaskingPower;
+	(void)Flatness;
+#endif
 	//! Start inserting keys
+#if USE_PSYHOACOUSTICS
 	float Flat_mu   = 0.0f;
-	float Flat_Step = 1.0f / FLATNESS_WIDTH;
+	float Flat_Step = (float)FLATNESS_COUNT / BlockSize;
 	float Flat_Cur  = *Flatness++;
 	float Flat_Nxt  = *Flatness++;
+#endif
 	for(i=0;i<BlockSize;i++) {
 		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
 		float v2 = SQR(Coef[i]);
 		if(v2 >= SQR(0.5f)) {
+#if USE_PSYHOACOUSTICS
 			//! Get flatness
-			//! NOTE: mu^2 to get a sharper curve
-			float Flat = SQR(Flat_mu);
+			float Flat = SplineCurve(Flat_mu);
 			      Flat = Flat_Cur*(1.0f - Flat) + Flat_Nxt*Flat;
-
+#endif
 			//! Build and insert key
 			Keys[nKeys].Band = i;
 			Keys[nKeys].Chan = Chan;
 #if USE_PSYHOACOUSTICS
-			//! PONDER: Not sure why this scaling is needed
-			Keys[nKeys].Val  = v2*AnalysisPower - (1.0f/6.0f)*Flat*MaskingPower[i/2];
+			Keys[nKeys].Val  = v2*AnalysisPower - Flat*MaskingPower[i/2];
 #else
 			Keys[nKeys].Val  = v2*AnalysisPower;
 #endif
 			nKeys++;
 		}
-
+#if USE_PSYHOACOUSTICS
 		//! Step flatness
 		Flat_mu += Flat_Step;
 		if(Flat_mu >= 1.0f) {
@@ -204,6 +208,7 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 			Flat_Cur = Flat_Nxt;
 			Flat_Nxt = *Flatness++;
 		}
+#endif
 	}
 	return nKeys;
 }
