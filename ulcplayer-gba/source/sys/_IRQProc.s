@@ -2,9 +2,6 @@
 .section .iwram, "ax", %progbits
 .balign 4
 /**************************************/
-.equ NESTED_IRQ,    1
-.equ NO_NESTED_TM1, 1 @ TM1 restarts sound DMA, must not be interrupted
-/**************************************/
 
 .arm
 _IRQProc:
@@ -26,25 +23,8 @@ _IRQProc:
 	LDRNEB	r2, [r2, r3, lsr #0x20-5]
 	LDRNE	r0, [r0, r2, lsl #0x02]
 	CMPNE	r0, #0x00
-.if NESTED_IRQ
-.if NO_NESTED_TM1
-	MOVNES	r1, r1, ror #0x04+1   @ C=TM1?
-	BHI	4f                    @ [C=1,Z=0]
-.endif
-3:	MRSNE	ip, spsr
-	STRNE	lr, [sp, #-0x0C]!     @ Save lr_irq
-	STMNEIB	sp, {ip,lr}^          @ Save spsr,lr_sys
-	MSRNE	cpsr, #0x1F           @ SYS mode, free to interrupt
-	ADRNE	lr, 0f
-.endif
-4:	BXNE	r0
+	BXNE	r0
 	BX	lr
-.if NESTED_IRQ
-0:	MSR	cpsr, #0x92           @ IRQ mode, IRQ-block
-	LDMIB	sp, {ip,lr}^          @ Restore spsr,lr_sys
-	MSR	spsr, ip
-	LDR	pc, [sp], #0x0C       @ Return to BIOS
-.endif
 
 .LIRQLog2:
 	.byte  0, 1,28, 2,29,14,24,3
