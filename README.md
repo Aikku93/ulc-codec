@@ -51,7 +51,6 @@ ulc-codec is released under the GPLv3 license. See the LICENSE file for full ter
 
 ## Acknowledgements
 * Huge thanks to Dennis K (DekuTree64) for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design
-* Special thanks to [No!ze Freakz](https://soundcloud.com/user-462957379) for permission to use their music for demonstration purposes
 
 ## Gameboy Advance player
 
