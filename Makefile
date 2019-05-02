@@ -14,8 +14,9 @@ DECODETOOL_SRCDIR := decodetool
 # Cross-compilation, compile flags
 #----------------------------#
 
+# Alternatively, try "-march=native" for ARCHFLAGS
 ARCHCROSS :=
-ARCHFLAGS := -msse -msse2
+ARCHFLAGS := -msse -msse2 -mavx -mavx2 -mfma
 
 CCFLAGS := $(ARCHFLAGS) -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
 LDFLAGS := -static
