@@ -17,9 +17,9 @@ static inline size_t IntLog2(unsigned int x) {
 	return sizeof(unsigned int)*8-1 - __builtin_clz(x);
 }
 
-//! Spline curve
-static inline float SplineCurve(float x) {
-	return (3.0f - 2.0f*x)*SQR(x);
+//! Smoothstep curve
+static inline float SmoothStep(float x) {
+	return (3.0f - 2.0f*x)*x*x;
 }
 
 //! Spectral flatness measure
