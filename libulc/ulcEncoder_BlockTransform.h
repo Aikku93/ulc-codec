@@ -101,13 +101,13 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 //! Estimate masking for each band
 static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_CurveParam(float BandsPerHz, float Fc, float CurveSpread) {
 	float k;
-	     if(Fc <   500.0f) k =  50.0f + 150.0f*SplineCurve( Fc         * (1.0f/  500.0f));
-	else if(Fc < 20000.0f) k = 250.0f - 200.0f*SplineCurve((Fc-500.0f) * (1.0f/19500.0f));
-	else                   k =  50.0f;
+	     if(Fc <  1000.0f) k =  50.0f + 200.0f*SmoothStep( Fc          * (1.0f/ 1000.0f)); //! 50..250Hz
+	else if(Fc < 20000.0f) k = 250.0f - 225.0f*SmoothStep((Fc-1000.0f) * (1.0f/19000.0f)); //! -250..25Hz
+	else                   k =  25.0f;
 	k *= CurveSpread;
 
 	//! Rescale to bands. If outside of limits, just return 0, as the
-	//! cosine approximation breaks outside of the x=[0,1] range
+	//! cosine approximation breaks outside of the x=[0,2] range
 	k *= BandsPerHz;
 	if(k <= 1.0f) return 0.0f;
 
@@ -116,39 +116,44 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 	Fourier_SinCos(1.0f / k, &s, &c);
 	return 2.0f*c;
 }
-static void Block_Transform_ComputeMaskingPower(const float *Coef, float *MaskingPower, size_t BlockSize, float Nyquist_Hz) {
-	size_t i, j;
+static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Convolve(size_t Band, size_t BlockSize, float Nyquist_Hz, float PowSum, const float *Coef, int Direction) {
+	size_t N;
+	if(Direction == -1) { Coef += Band-1; N = Band-1; }
+	if(Direction == +1) { Coef += Band+2; N = BlockSize - (Band+2); } //! {Coef[n..n+1]} are the 'center of interest' bands, so skip them
+	if(N > 0 && N < BlockSize) { //! NOTE: (N < BlockSize) relies on unsigned overflow behaviour
+		float Band_Norm = (Band+1.0f) / BlockSize;
+		float Spread = (Direction == +1) ? 1.0f : (0.3f + 0.7f*Band_Norm);
 
-	//! Convolve with spreading function
-	for(i=0;i<BlockSize;i+=2) {
-		float Fc = (i+1.0f) * Nyquist_Hz / BlockSize;
+		//! Get oscillator parameters (for linear prediction)
+		//! PONDER: Not sure why scaling is needed here;
+		//! it becomes approximately 1/6 after squaring
+		const float CURVE_SCALE = 1.0f/2.5f;
+		float CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Band_Norm * Nyquist_Hz, Spread);
+		float CurveOld = 1.0f * CURVE_SCALE;
+		float Curve    = 0.5f * CURVE_SCALE * CurveOmg;
 
-		//! Convolve LHS, RHS
-		//! Based on a raised cosine curve
-		float PowSum = 0.0f; {
-			float CurveOmg;
-			float CurveOld, Curve;
+		//! Begin convolution
+		//! Most of the processing time for this computation will
+		//! be spent in this loop, so tried to optimize as best
+		//! as possible for the compiler
+		if(Curve > 0.0f) for(Coef -= Direction;;) {
+			Coef += Direction;
+			PowSum += SQR(Curve * (*Coef));
+			if(!--N) break;
 
-			//! Using linear prediction for the cosine curve
-			//! PONDER: Not sure why scaling is needed here;
-			//! it becomes approximately 1/6 after squaring
-			CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Fc, 0.3f);
-			CurveOld = 1.0f/2.5f, Curve = CurveOmg*(0.5f/2.5f);
-			for(j=1;(Curve > 0.0f && j <= i);j++) {
-				PowSum += SQR(Curve * Coef[i-j]);
-
-				float t = Curve;
-				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
-			}
-			CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Fc, 1.0f);
-			CurveOld = 1.0f/2.5f, Curve = CurveOmg*(0.5f/2.5f);
-			for(j=2;(Curve > 0.0f && i+j < BlockSize);j++) {
-				PowSum += SQR(Curve * Coef[i+j]);
-
-				float t = Curve;
-				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
-			}
+			float t = Curve;
+			Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
+			if(Curve < 0.0f) break;
 		}
+	}
+	return PowSum;
+}
+static void Block_Transform_ComputeMaskingPower(const float *Coef, float *MaskingPower, size_t BlockSize, float Nyquist_Hz) {
+	size_t i;
+	for(i=0;i<BlockSize;i+=2) {
+		float PowSum = 0.0f;
+		PowSum = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Nyquist_Hz, PowSum, Coef, -1);
+		PowSum = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Nyquist_Hz, PowSum, Coef, +1);
 		MaskingPower[i/2] = PowSum;
 	}
 }
@@ -187,7 +192,7 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 		if(v2 >= SQR(0.5f)) {
 #if USE_PSYHOACOUSTICS
 			//! Get flatness
-			float Flat = SplineCurve(Flat_mu);
+			float Flat = SmoothStep(Flat_mu);
 			      Flat = Flat_Cur*(1.0f - Flat) + Flat_Nxt*Flat;
 #endif
 			//! Build and insert key
