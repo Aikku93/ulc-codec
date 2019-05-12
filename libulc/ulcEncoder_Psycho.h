@@ -25,7 +25,7 @@ static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, 
 }
 
 //! Estimate masking for each band
-static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_CurveParam(float BandsPerHz, float Fc, float CurveSpread) {
+static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_CurveParam(float Fc, float BandsPerHz, float CurveSpread) {
 	float k;
 	     if(Fc <  1000.0f) k =  50.0f + 200.0f*SmoothStep( Fc          * (1.0f/ 1000.0f)); //! 50..250Hz
 	else if(Fc < 20000.0f) k = 250.0f - 225.0f*SmoothStep((Fc-1000.0f) * (1.0f/19000.0f)); //! -250..25Hz
@@ -52,8 +52,13 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 	if(Direction == -1) { Coef += Band-1; N = Band-1; }
 	if(Direction == +1) { Coef += Band+2; N = BlockSize - (Band+2); } //! {Coef[n..n+1]} are the 'center of interest' bands, so skip them
 	if(N > 0 && N < BlockSize) { //! NOTE: (N < BlockSize) relies on unsigned overflow behaviour
-		float Band_Norm = (Band+1.0f) / BlockSize;
-		float Spread = (Direction == +1) ? 1.0f : (0.3f + 0.7f*Band_Norm);
+		float Fc     = (Band+1.0f) * Nyquist_Hz / BlockSize;
+		float Spread = 1.0f;
+		if(Direction == -1) {
+			//! Back-masking becomes about equal to forward-masking at ~16kHz
+			Spread = 0.3f + (0.7f/16000.0f)*Fc;
+			if(Spread > 1.0f) Spread = 1.0f;
+		}
 
 		//! Get oscillator parameters (for linear prediction)
 		//! PONDER: Not sure why scaling is needed here;
@@ -61,7 +66,7 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 		//! Maybe it's got to do with combining two
 		//! spectral bands per masking band?
 		const float CURVE_SCALE = 1.0f/2.0f;
-		float CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(BlockSize / Nyquist_Hz, Band_Norm * Nyquist_Hz, Spread);
+		float CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(Fc, BlockSize / Nyquist_Hz, Spread);
 		float CurveOld = 1.0f * CURVE_SCALE;
 		float Curve    = 0.5f * CURVE_SCALE * CurveOmg;
 
