@@ -49,7 +49,7 @@ static int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
 }
 
 //! Build quantizer bands
-static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize) {
+static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize, float NyquistHz) {
 	size_t Band;
 	size_t BandsRem = BlockSize;
 	size_t nQBands = 0;
@@ -61,11 +61,11 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 		if(vNew >= SQR(0.5)) {
 			//! Enough bands to decide on a split?
 			//! NOTE: Somewhat arbitrary and less sensitive at high freq
-			size_t QBandBwThres = 1 + Band/32;
-			if(QBandNzBw > QBandBwThres) {
+			size_t QBandBwThres = (size_t)(1.99f + Band*NyquistHz*0.0000022f);
+			if(QBandNzBw > (QBandBwThres >> 8)) {
 				//! Coefficient not in range?
 				//! NOTE: Somewhat arbitrary (though tuned) thresholds
-				double t = vNew*QBandBw;
+				double t = vNew*QBandNzBw;
 				if(t < SQR(1.0/8.0)*SumSqr || t > SQR(4.0)*SumSqr) {
 					//! Create a split point
 					//! NOTE: Last band is built from remaining coefficients
@@ -126,7 +126,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 			QuantsAbs[Chan][QBand] = 0.0;
 			//Quants   [Chan][QBand] = 0; //! <- Will be set during first pass below
 		}
-		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize);
+		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize, State->RateHz * 0.5f);
 	}
 
 	//! Clip to maximum available keys
