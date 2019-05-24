@@ -62,7 +62,7 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 			//! Enough bands to decide on a split?
 			//! NOTE: Somewhat arbitrary and less sensitive at high freq
 			size_t QBandBwThres = (size_t)(1.99f + Band*NyquistHz*0.0000022f);
-			if(QBandNzBw > (QBandBwThres >> 8)) {
+			if(QBandNzBw > QBandBwThres) {
 				//! Coefficient not in range?
 				//! NOTE: Somewhat arbitrary (though tuned) thresholds
 				double t = vNew*QBandNzBw;
