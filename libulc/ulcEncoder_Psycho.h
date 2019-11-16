@@ -25,20 +25,13 @@ static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, 
 }
 
 //! Estimate masking for each band
-static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_CurveParam(float Fc, float BandsPerHz, float CurveSpread) {
+static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Bandwidth(float Fc, float BandsPerHz, float CurveSpread) {
+	//! Based on ERB scale (Moore and Glasberg, 1990; with the assumption of being symmetric), then tapered at the end
 	float k;
-	     if(Fc <  1000.0f) k =  50.0f + 200.0f*SmoothStep( Fc          * (1.0f/ 1000.0f)); //! 50..250Hz
-	else if(Fc < 20000.0f) k = 250.0f - 225.0f*SmoothStep((Fc-1000.0f) * (1.0f/19000.0f)); //! -250..25Hz
-	else                   k =  25.0f;
-	k *= CurveSpread;
-
-	//! Rescale to bands. If outside of limits, just return 0, as the
-	//! cosine approximation breaks outside of the x=[0,2] range
-	k *= BandsPerHz;
-	if(k <= 1.0f) return 0.0f;
-
-	//! Return oscillator parameter for differential equation
-	return 2.0f*cosf((float)M_PI_2 / k);
+	     if(Fc < 10000.0f) k = 12.35f + 0.0539695f*Fc;
+	else if(Fc < 20000.0f) k = 1091.74f - Fc*0.0539695f;
+	else                   k = 12.35f;
+	return k*CurveSpread*BandsPerHz;
 }
 static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Convolve(
 	size_t Band,
@@ -60,28 +53,32 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 			if(Spread > 1.0f) Spread = 1.0f;
 		}
 
-		//! Get oscillator parameters (for linear prediction)
-		//! PONDER: Not sure why scaling is needed here;
-		//! it becomes approximately 1/4 after squaring.
-		//! Maybe it's got to do with combining two
-		//! spectral bands per masking band?
-		const float CURVE_SCALE = 1.0f/2.0f;
-		float CurveOmg = Block_Transform_ComputeMaskingPower_CurveParam(Fc, BlockSize / Nyquist_Hz, Spread);
-		float CurveOld = 1.0f * CURVE_SCALE;
-		float Curve    = 0.5f * CURVE_SCALE * CurveOmg;
+		//! Determine if it's worth computing masking
+		float MaskingBw = Block_Transform_ComputeMaskingPower_Bandwidth(Fc, BlockSize / Nyquist_Hz, Spread);
+		if(MaskingBw > 1.0f) {
+			//! Get oscillator parameters (using linear prediction)
+			//! NOTE: Only approximating the area under the curve, but it
+			//! is extremely close for MaskingBw < 8. The square root is
+			//! to account for squaring in the sum inside the loop
+			float InvMaskingBw = 1.0f / MaskingBw;
+			float CurveMul = sqrtf(InvMaskingBw);
+			float CurveOmg = 2.0f*cosf((float)M_PI_2 * InvMaskingBw);
+			float CurveOld = 1.0f * CurveMul;
+			float Curve    = 0.5f * CurveMul * CurveOmg;
 
-		//! Begin convolution
-		//! Most of the processing time for this computation will
-		//! be spent in this loop, so tried to optimize as best
-		//! as possible for the compiler
-		if(Curve > 0.0f) for(Coef -= Direction;;) {
-			Coef   += Direction;
-			PowSum += SQR(Curve * (*Coef));
-			if(!--N) break;
+			//! Begin convolution
+			//! Most of the processing time for this computation will
+			//! be spent in this loop, so tried to optimize as best
+			//! as possible for the compiler
+			for(Coef -= Direction;;) {
+				Coef   += Direction;
+				PowSum += SQR(Curve * (*Coef));
+				if(!--N) break;
 
-			float t = Curve;
-			Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
-			if(Curve < 0.0f) break;
+				float t = Curve;
+				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
+				if(Curve < 0.005f) break; //! Sqrt[2^-15]
+			}
 		}
 	}
 	return PowSum;
@@ -101,7 +98,7 @@ static void Block_Transform_ComputeMaskingPower(const float *Coef, float *Maskin
 		float PowSum = 0.0f;
 		PowSum = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Nyquist_Hz, PowSum, Coef, -1);
 		PowSum = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Nyquist_Hz, PowSum, Coef, +1);
-		MaskingPower[i/2] = Flat*PowSum;
+		MaskingPower[i/2] = PowSum*Flat;
 
 		//! Step flatness
 		Flat_mu += Flat_Step;
