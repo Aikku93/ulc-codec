@@ -52,6 +52,14 @@ $(OBJDIR)/%.o : %.c
 	@$(CC) $(CCFLAGS) -c -o $@ $<
 
 #----------------------------#
+# make all
+#----------------------------#
+
+all : common encodetool decodetool
+
+$(OBJDIR) $(RELDIR) :; mkdir -p $@
+
+#----------------------------#
 # make common
 #----------------------------#
 
@@ -83,14 +91,6 @@ $(DECODETOOL_OBJ) : $(DECODETOOL_SRC) | $(OBJDIR)
 
 $(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
 	$(LD) -o $(RELDIR)/$@ $^ $(LDFLAGS)
-
-#----------------------------#
-# make all
-#----------------------------#
-
-all : common encodetool decodetool
-
-$(OBJDIR) $(RELDIR) :; mkdir -p $@
 
 #----------------------------#
 # make clean
