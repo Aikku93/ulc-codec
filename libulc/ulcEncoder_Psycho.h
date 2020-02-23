@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -13,7 +13,7 @@
 /**************************************/
 
 //! Number of spectral flatness bands
-#define FLATNESS_COUNT 64
+#define FLATNESS_COUNT 32
 
 /**************************************/
 
@@ -24,89 +24,71 @@ static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, 
 	*Flatness = Flatness[-1]; //! Interpolation
 }
 
-//! Estimate masking for each band
-static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Bandwidth(float Fc, float BandsPerHz, float CurveSpread) {
-	//! Based on ERB scale (Moore and Glasberg, 1990; with the assumption of being symmetric), then tapered at the end
-	float k;
-	     if(Fc < 10000.0f) k = 12.35f + 0.0539695f*Fc;
-	else if(Fc < 20000.0f) k = 1091.74f - Fc*0.0539695f;
-	else                   k = 12.35f;
-	return k*CurveSpread*BandsPerHz;
+//! Masking bandwidth estimation
+//! Based on ERB scale (Moore and Glasberg, 1990), but made into an exponential curve
+static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Bandwidth(float Fc, float BandsPerHz) {
+#if 1 //! Trial-and-error; lowers the masking bandwidth of higher freqs to give them more importance
+	float k = 1100.0f * expf((float)(-2.0*M_PI/SQR(16000.0f)) * SQR(Fc-11000.0f));
+#else //! Stable; muffled
+	float k = 1200.0f * (1.0f - expf((float)(-2.0*M_PI/SQR(16000.0f)) * SQR(Fc)));
+#endif
+	return k*BandsPerHz;
 }
+
+/**************************************/
+
 static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Convolve(
 	size_t Band,
 	size_t BlockSize,
-	float  Nyquist_Hz,
-	float  PowSum,
 	const float *Coef,
-	int Direction
+	float NyquistHz
 ) {
-	size_t N;
-	if(Direction == -1) { Coef += Band-1; N = Band-1; }
-	if(Direction == +1) { Coef += Band+2; N = BlockSize - (Band+2); } //! {Coef[n..n+1]} are the 'center of interest' bands, so skip them
-	if(N > 0 && N < BlockSize) { //! NOTE: (N < BlockSize) relies on unsigned overflow behaviour
-		float Fc     = (Band+1.0f) * Nyquist_Hz / BlockSize;
-		float Spread = 1.0f;
-		if(Direction == -1) {
-			//! Back-masking becomes about equal to forward-masking at ~16kHz
-			Spread = 0.3f + (0.7f/16000.0f)*Fc;
-			if(Spread > 1.0f) Spread = 1.0f;
-		}
+	//! These settings are mostly based on trial and error
+	float Bw = Block_Transform_ComputeMaskingPower_Bandwidth((Band+1.0f)*NyquistHz/BlockSize, BlockSize / NyquistHz);
+	float BandPow = sqrtf(SQR(Coef[Band]) + SQR(Coef[Band+1])) / (float)(M_SQRT2 * 32768.0);
+	float MaskFW  = 1.0f - BandPow;
+	float MaskBW  = sqrtf(1.0f - MaskFW);
+	size_t BwFW   = (size_t)(Bw * MaskFW); if(Band+2+BwFW > BlockSize) BwFW = BlockSize - (Band+2);
+	size_t BwBW   = (size_t)(Bw * MaskBW); if(Band        < BwBW)      BwBW = Band;
+	if(!BwFW && !BwBW) return 0.0f;
 
-		//! Determine if it's worth computing masking
-		float MaskingBw = Block_Transform_ComputeMaskingPower_Bandwidth(Fc, BlockSize / Nyquist_Hz, Spread);
-		if(MaskingBw > 1.0f) {
-			//! Get oscillator parameters (using linear prediction)
-			//! NOTE: Only approximating the area under the curve, but it
-			//! is extremely close for MaskingBw < 8. The square root is
-			//! to account for squaring in the sum inside the loop
-			float InvMaskingBw = 1.0f / MaskingBw;
-			float CurveMul = sqrtf(InvMaskingBw);
-			float CurveOmg = 2.0f*cosf((float)M_PI_2 * InvMaskingBw);
-			float CurveOld = 1.0f * CurveMul;
-			float Curve    = 0.5f * CurveMul * CurveOmg;
-
-			//! Begin convolution
-			//! Most of the processing time for this computation will
-			//! be spent in this loop, so tried to optimize as best
-			//! as possible for the compiler
-			for(Coef -= Direction;;) {
-				Coef   += Direction;
-				PowSum += SQR(Curve * (*Coef));
-				if(!--N) break;
-
-				float t = Curve;
-				Curve = Curve*CurveOmg - CurveOld, CurveOld = t;
-				if(Curve < 0.005f) break; //! Sqrt[2^-15]
-			}
-		}
-	}
-	return PowSum;
+	//! At this point, the coefficients are scaled by 0.5 in preparation for
+	//! the upcoming sum/difference transform, so as to normalize the final
+	//! coefficients. However, masking energy is subtracted /after/ that
+	//! transform, so it must be scaled by 2.0 here since it was calculated
+	//! when the coefficients were still scaled by 0.5.
+	float Sum = 0.0f, Scale = 2.0f / (BwFW + BwBW);
+	if(BwFW) do Sum += SQR(Coef[Band+BwFW+1]); while(--BwFW);
+	if(BwBW) do Sum += SQR(Coef[Band-BwBW  ]); while(--BwBW);
+	return Sum*Scale;
 }
-static void Block_Transform_ComputeMaskingPower(const float *Coef, float *MaskingPower, const float *Flatness, size_t BlockSize, float Nyquist_Hz) {
+static void Block_Transform_ComputeMaskingPower(
+	const float *Coef,
+	float *MaskingPower,
+	const float *Flatness,
+	size_t BlockSize,
+	float NyquistHz
+) {
 	size_t i;
 	float Flat_mu   = 0.0f;
 	float Flat_Step = (2.0f*FLATNESS_COUNT) / BlockSize;
 	float Flat_Cur  = *Flatness++;
 	float Flat_Nxt  = *Flatness++;
 	for(i=0;i<BlockSize;i+=2) {
-		//! Get flatness
-		float Flat = SmoothStep(Flat_mu);
-		      Flat = Flat_Cur*(1.0f - Flat) + Flat_Nxt*Flat;
-
-		//! Convolve masking power
-		float PowSum = 0.0f;
-		PowSum = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Nyquist_Hz, PowSum, Coef, -1);
-		PowSum = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Nyquist_Hz, PowSum, Coef, +1);
-		MaskingPower[i/2] = PowSum*Flat;
-
-		//! Step flatness
+		//! Get flatness and step
+		//! Mapping flatness through an inverse exponential curve seems to give better results
+		float Flat = Flat_Cur*(1.0f - Flat_mu) + Flat_Nxt*Flat_mu;
+		      Flat = 1.0f - expf(-2.0f*(float)M_PI * Flat);
 		Flat_mu += Flat_Step;
 		if(Flat_mu >= 1.0f) {
 			Flat_mu -= 1.0f;
 			Flat_Cur = Flat_Nxt;
 			Flat_Nxt = *Flatness++;
 		}
+
+		//! Convolve masking power
+		//! Flatter (noisy) bands contribute more masking than sharper (tonal) ones
+		MaskingPower[i/2] = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Coef, NyquistHz)*Flat;
 	}
 }
 
