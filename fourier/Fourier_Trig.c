@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #if defined(__AVX__) || defined(__FMA__)
@@ -13,7 +13,7 @@
 /*!
 
 8th order cosine approximation
-Estimates Cos[x*Pi/2], x=[0,1]
+Estimates Cos[x*Pi/2], x=[-1,1]
 RMSE=0.000000040504495 (PSNR=147.9dB)
 ------------------------------
 
