@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -17,30 +17,25 @@ static inline size_t IntLog2(unsigned int x) {
 	return sizeof(unsigned int)*8-1 - __builtin_clz(x);
 }
 
-//! Smoothstep curve
-static inline float SmoothStep(float x) {
-	return (3.0f - 2.0f*x)*x*x;
-}
-
 //! Spectral flatness measure
 //! Adapted from "Note on measures for spectral flatness"
 //! DOI: 10.1049/el.2009.1977
-static inline double SpectralFlatness(const float *Buf, size_t N) {
+static inline float SpectralFlatness(const float *Buf, size_t N) {
 	size_t i;
 
 	//! Get normalization factor
-	double Nrm = 0.0;
-	for(i=0;i<N;i++) Nrm += SQR((double)Buf[i]);
-	if(Nrm == 0.0) return 0.0;
-	Nrm = 1.0 / Nrm;
+	float Nrm = 0.0f;
+	for(i=0;i<N;i++) Nrm += SQR(Buf[i]);
+	if(Nrm == 0.0f) return 1.0f;
+	Nrm = 1.0f / Nrm;
 
 	//! Measure
-	double Sum = 0.0;
+	float Sum = 0.0f;
 	for(i=0;i<N;i++) {
-		double v = SQR((double)Buf[i]) * Nrm;
-		if(v != 0.0) Sum += v*log(v);
+		float v = SQR(Buf[i]) * Nrm;
+		if(v != 0.0f) Sum += v*logf(v);
 	}
-	return pow(2.0, -Sum/log(N)) - 1.0;
+	return powf(2.0f, -Sum/logf(N)) - 1.0f;
 }
 
 /**************************************/
