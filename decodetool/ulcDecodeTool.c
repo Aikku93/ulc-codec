@@ -44,9 +44,9 @@ struct FileHeader_t {
 };
 
 //! Decoding state
-#define MAX_BLOCK_SIZE 4096
+#define MAX_BLOCK_SIZE 8192
 #define MAX_CHANS         4
-static const size_t CacheSize = 256*1024;
+static const size_t CacheSize = 512*1024;
 struct DecodeState_t {
 	//! These need to be cleared to NULL
 	FILE *FileIn;
