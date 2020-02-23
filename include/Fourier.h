@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -16,7 +16,7 @@
 /**************************************/
 
 //! Sine/Cosine approximations
-//! Approximates {Sin,Cos}[x*Pi/2] (with x in range [0,1])
+//! Approximates {Sin,Cos}[x*Pi/2] (with x in range [-1,1])
 #if defined(__AVX__)
 void Fourier_SinCosAVX(__m256 x, __m256 *Sin, __m256 *Cos);
 #endif
