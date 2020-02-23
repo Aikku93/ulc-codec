@@ -36,12 +36,12 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * Build tools compile with SSE+SSE2/AVX+AVX2/FMA enabled by default. If the encoder crashes/doesn't work, change these flags in the ```Makefile```.
 
 ## Technical details
-* Target bitrate: 16..256kbps+ (44.1kHz, M/S stereo)
+* Target bitrate: 32..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
-    * Encoding/decoding tools use N=4096 (2048 coefficients) with 37.5% overlap, but can use any sensible N=2<sup>n</sup> with any overlap (provided that the number of overlap samples is a multiple of 16)
+    * The encoding tool accepts any N=2<sup>n</sup> (as long as N<16384; 8192 coefficients) with any overlap (provided that the number of overlap samples is a multiple of 16). The decoding tool reads these parameters from the file created by the encoder.
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
-* Transient pre-echo reduction formula (more important at ultra-low bitrates)
+* Rudimentary transient pre-echo reduction formula (more important at ultra-low bitrates)
 
 ## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
@@ -50,7 +50,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 ulc-codec is released under the GPLv3 license. See the LICENSE file for full terms.
 
 ## Acknowledgements
-* Huge thanks to Dennis K (DekuTree64) for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design
+* Huge thanks to Dennis K (`DekuTree64`) and `musicalman` for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design
 
 ## Gameboy Advance player
 
