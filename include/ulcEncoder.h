@@ -1,12 +1,18 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
 /**************************************/
 #include <stddef.h>
 #include <stdint.h>
+/**************************************/
+
+//! 0 == No psychoacoustic optimizations
+//! 1 == Use psychoacoustic model
+#define ULC_USE_PSYHOACOUSTICS 1
+
 /**************************************/
 
 //! Encoder state structure
