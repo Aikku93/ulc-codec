@@ -19,11 +19,6 @@
 //! Header magic value
 #define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'c'<<24)
 
-//! Transform block size
-//! Feel free to change this; the decoder doesn't care
-#define BLOCK_SIZE    2048
-#define BLOCK_OVERLAP 1536
-
 /**************************************/
 
 //! Cache memory
@@ -36,22 +31,54 @@ static uint8_t CacheMem[CACHE_SIZE];
 
 int main(int argc, const char *argv[]) {
 	//! Check arguments
-	int MidSideXfm = 1;
-	if(argc > 6) MidSideXfm = (!strcmp(argv[6], "-nomidside")) ? 0 : (-1);
-	if(argc < 5 || argc > 7) {
+	if(argc < 5) {
 		printf(
 			"ulcEncodeTool - Ultra-Low Complexity Codec Encoding Tool\n"
-			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [nChan=1 [-nomidside]]\n"
+			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [Options]\n"
+			"Options:\n"
+			" -nc:1              - Set number of channels.\n"
+			" -nomidside         - Disable M/S stereo coding.\n"
+			" -blocksize:2048    - Set number of coefficients per block (must be a power of 2).\n"
+			" -blockoverlap:1536 - Set number of overlap samples (must be a multiple of 16).\n"
 			"Multi-channel data must be interleaved.\n"
-			"-nomidside disables M/S stereo.\n"
 		);
 		return 1;
 	}
 
 	//! Parse parameters
+	int    MidSideXfm   = 1;
+	size_t BlockSize    = 2048;
+	size_t BlockOverlap = 1536;
+	size_t nChan        = 1;
 	size_t RateHz   = atoi(argv[3]);
-	size_t RateKbps = atoi(argv[4]);
-	size_t nChan    = (argc > 5) ? atoi(argv[5]) : 1;
+	size_t RateKbps = atoi(argv[4]); {
+		int n;
+		for(n=5;n<argc;n++) {
+			if(!memcmp(argv[n], "-nc:", 4)) {
+				int x = atoi(argv[n] + 4);
+				if(n > 0 && n < 65535) nChan = x;
+				else printf("WARNING: Ignoring invalid parameter to number of channels (%d)\n", x);
+			}
+
+			else if(!memcmp(argv[n], "-nomidside", 11)) {
+				MidSideXfm = 0;
+			}
+
+			else if(!memcmp(argv[n], "-blocksize:", 11)) {
+				int x = atoi(argv[n] + 11);
+				if(x >= 64 && x <= 8192 && (x & (-x)) == x) BlockSize = x;
+				else printf("WARNING: Ignoring invalid parameter to block size (%d)\n", x);
+			}
+
+			else if(!memcmp(argv[n], "-blockoverlap:", 14)) {
+				int x = atoi(argv[n] + 14);
+				if(x >= 0 && (x%16) == 0) BlockOverlap = x;
+				else printf("WARNING: Ignoring invalid parameter to block overlap (%d)\n", x);
+			}
+
+			else printf("WARNING: Ignoring unknown argument (%s)\n", argv[n]);
+		}
+	}
 
 	//! Verify parameters
 	if(RateHz < 1 || RateHz > 0xFFFFFFFFu) {
@@ -68,8 +95,8 @@ int main(int argc, const char *argv[]) {
 	}
 
 	//! Allocate buffers
-	int16_t *BlockFetch   = malloc(sizeof(int16_t) * nChan*BLOCK_SIZE);
-	char    *_BlockBuffer = malloc(sizeof(float)   * nChan*BLOCK_SIZE + BUFFER_ALIGNMENT-1);
+	int16_t *BlockFetch   = malloc(sizeof(int16_t) * nChan*BlockSize);
+	char    *_BlockBuffer = malloc(sizeof(float)   * nChan*BlockSize + BUFFER_ALIGNMENT-1);
 	if(!BlockFetch || !_BlockBuffer) {
 		printf("ERROR: Out of memory.\n");
 		free(_BlockBuffer);
@@ -117,8 +144,8 @@ int main(int argc, const char *argv[]) {
 		0, //! MaxBlockSize filled later
 		nSamp,
 		RateHz,
-		BLOCK_SIZE,
-		BLOCK_OVERLAP,
+		BlockSize,
+		BlockOverlap,
 		(uint16_t)nChan,
 		(uint16_t)RateKbps,
 	};
@@ -129,13 +156,13 @@ int main(int argc, const char *argv[]) {
 	struct ULC_EncoderState_t Encoder = {
 		.RateHz       = RateHz,
 		.nChan        = nChan,
-		.BlockSize    = BLOCK_SIZE,
-		.BlockOverlap = BLOCK_OVERLAP,
+		.BlockSize    = BlockSize,
+		.BlockOverlap = BlockOverlap,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		//! Process blocks
 		size_t n, Chan;
-		size_t Blk, nBlk = (nSamp + BLOCK_SIZE-1) / BLOCK_SIZE;
+		size_t Blk, nBlk = (nSamp + BlockSize-1) / BlockSize;
 		uint64_t TotalSize = 0;
 		size_t CacheIdx = 0;
 		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
@@ -145,15 +172,15 @@ int main(int argc, const char *argv[]) {
 
 			//! Fill buffer data
 			//! BlockFetch[] is free after this
-			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BLOCK_SIZE, InFile);
-			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BLOCK_SIZE;n++) {
-				BlockBuffer[Chan*BLOCK_SIZE+n] = (n < nMax) ? BlockFetch[n*nChan+Chan] : 0.0f;
+			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BlockSize, InFile);
+			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
+				BlockBuffer[Chan*BlockSize+n] = (n < nMax) ? BlockFetch[n*nChan+Chan] : 0.0f;
 			}
 
 			//! Apply M/S transform
-			if(MidSideXfm && nChan == 2) for(n=0;n<BLOCK_SIZE;n++) {
-				float *a = &BlockBuffer[0*BLOCK_SIZE+n], va = *a;
-				float *b = &BlockBuffer[1*BLOCK_SIZE+n], vb = *b;
+			if(MidSideXfm && nChan == 2) for(n=0;n<BlockSize;n++) {
+				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
+				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
 				*a = (va + vb) * 0.5f;
 				*b = (va - vb) * 0.5f;
 			}
@@ -161,7 +188,7 @@ int main(int argc, const char *argv[]) {
 			//! Encode block
 			//! Reuse BlockFetch[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockFetch;
-			size_t Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? 0x1.6A09E6p-1f : 1.0f); //! 1/sqrt[2]);
+			size_t Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? 0.9f : 1.0f);
 			TotalSize += Size;
 
 			//! Copy what we can into the cache
