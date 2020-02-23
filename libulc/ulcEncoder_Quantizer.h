@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -20,7 +20,7 @@
 
 //! Maximum allowed quantizer optimization passes
 //! More passes should give better results at the cost of increased complexity
-#define MAX_QUANTIZER_PASSES 8
+#define MAX_QUANTIZER_PASSES 16
 
 /**************************************/
 
@@ -50,6 +50,7 @@ static int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
 
 //! Build quantizer bands
 static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize, float NyquistHz) {
+#if 0
 	size_t Band;
 	size_t BandsRem = BlockSize;
 	size_t nQBands = 0;
@@ -87,6 +88,53 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 		//! Increase bandwidth
 		QBandBw++;
 	}
+#else
+#define ERB_HZ(Freq) (24.7f + 0.107939f*(Freq))
+#define COEF2LOG(Coef) log2f(ABS(Coef) + 1.0f)
+	size_t Band;
+	size_t BandsRem = BlockSize;
+	size_t nQBands = 0;
+	size_t QBandBw = 0;
+	float  vOld = COEF2LOG(Coefs[0]);
+	float  DifSum = 0.0f;
+	for(Band=0;Band<BlockSize;Band++) {
+		float BandHz = (Band+0.5f)*NyquistHz/BlockSize;
+		float Bw     = ERB_HZ(BandHz);
+
+		//! Integrate delta of log coefficients
+		float w    = expf(-2.0f*(float)M_PI * Bw/NyquistHz);
+		float vNew = COEF2LOG(Coefs[Band]);
+		float vDif = vNew - vOld; if(vDif < 0.0f) vDif *= 1.0f/3; //! Simulates masking
+		DifSum += vDif*w; vOld = vNew;
+
+		//! If the integrated difference has changed too much in either direction,
+		//! then a new quantizer band should be created, slightly earlier than the
+		//! band that triggered the change.
+		//! This threshold depends on frequency, as quantization artifacts at higher
+		//! frequencies matter much less than those at lower frequencies
+		float t = Bw * BlockSize/NyquistHz;
+		if(ABS(DifSum) > t/4.0f) {
+			size_t NewBw = (QBandBw+1)*7/8;
+			Band -= QBandBw - NewBw;
+
+			//! Create a split point
+			BandsRem -= NewBw;
+			QuantsBw[nQBands++] = NewBw;
+
+			//! NOTE: Last band is built from remaining coefficients
+			if(nQBands == MAX_QUANTS-1) break;
+
+			//! Reset state for a new band
+			QBandBw = 0;
+			DifSum  = 0.0f;
+		}
+
+		//! Increase bandwidth
+		QBandBw++;
+	}
+#undef COEF2LOG
+#undef ERB_HZ
+#endif
 	QuantsBw[nQBands++] = BandsRem;
 }
 
