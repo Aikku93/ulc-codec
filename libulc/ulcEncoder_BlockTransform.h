@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2019, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -20,12 +20,7 @@
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
-
-//! Use psychoacoustic model
-#define USE_PSYHOACOUSTICS 1
-
-/**************************************/
-#if USE_PSYHOACOUSTICS
+#if ULC_USE_PSYHOACOUSTICS
 # include "ulcEncoder_Psycho.h"
 #endif
 /**************************************/
@@ -113,7 +108,7 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 			//! Build and insert key
 			Keys[nKeys].Band = i;
 			Keys[nKeys].Chan = Chan;
-#if USE_PSYHOACOUSTICS
+#if ULC_USE_PSYHOACOUSTICS
 			Keys[nKeys].Val  = v2*AnalysisPower - MaskingPower[i/2];
 #else
 			Keys[nKeys].Val  = v2*AnalysisPower;
@@ -148,7 +143,9 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		float *BufferSample    = State->TransformTemp;
 		float *BufferTemp      = State->TransformTemp + BlockSize;
 		float *BufferMasking   = BufferTemp;
+#if ULC_USE_PSYHOACOUSTICS
 		float *BufferFlatness  = BufferTemp + BlockSize/2;
+#endif
 		float *BufferTransform = State->TransformBuffer[Chan];
 		float *BufferFwdLap    = State->TransformFwdLap[Chan];
 
@@ -159,9 +156,9 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		//! Apply transforms
 		//! NOTE: Masking power stored to BufferTemp
 		Fourier_MDCT(BufferTransform, BufferSample, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
-#if USE_PSYHOACOUSTICS
+#if ULC_USE_PSYHOACOUSTICS
 		Block_Transform_ComputeFlatness(BufferTransform, BufferFlatness, BlockSize);
-		Block_Transform_ComputeMaskingPower(BufferTransform, BufferMasking, BufferFlatness, BlockSize, State->RateHz*0.5f);
+		Block_Transform_ComputeMaskingPower(BufferTransform, BufferMasking, BufferFlatness, BlockSize, State->RateHz * 0.5f);
 #endif
 		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);
 
