@@ -35,7 +35,19 @@ static inline float SpectralFlatness(const float *Buf, size_t N) {
 		float v = SQR(Buf[i]) * Nrm;
 		if(v != 0.0f) Sum += v*logf(v);
 	}
-	return powf(2.0f, -Sum/logf(N)) - 1.0f;
+	return exp2f(-Sum/logf(N)) - 1.0f;
+}
+
+//! Masking bandwidth estimation
+//! The curve peaks at around 3000Hz, corresponding to human hearing
+static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
+	return 1500.0f * expf(-2.0f*(float)M_PI * SQR(Fc/16000.0f)) * (1.0f - expf(-2.0f*(float)M_PI * SQR((Fc + 80.0f)/5000.0f)));
+}
+
+//! NOTE: Unused, and mostly for reference
+//! ERB scale-based (Moore and Glasberg, 1990) masking bandwidth estimation, but made into an exponential curve
+static inline __attribute__((always_inline)) float MaskingBandwidth_ERB(float Fc) {
+	return 1200.0f * (1.0f - expf((float)(-2.0*M_PI/SQR(16000.0f)) * SQR(Fc)));
 }
 
 /**************************************/
