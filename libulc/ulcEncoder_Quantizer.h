@@ -49,20 +49,23 @@ static int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
 }
 
 //! Build quantizer bands
-static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize, float NyquistHz) {
-#if 0
+static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize, float NyquistHz, float RateKbps) {
 	size_t Band;
 	size_t BandsRem = BlockSize;
 	size_t nQBands = 0;
 	size_t QBandBw = 0, QBandNzBw = 0;
 	double SumSqr  = 0.0;
+
+	//! RateScale adjusts things based on the target bitrate
+	//! so as to avoid creating too many quantizer bands at
+	//! very low bitrates (eg. 32kbps, etc.)
+	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 1.0f) RateScale = 0.5f*exp2f(RateScale);
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Codeable?
 		double vNew = SQR((double)Coefs[Band]);
 		if(vNew >= SQR(0.5)) {
 			//! Enough bands to decide on a split?
-			//! NOTE: Somewhat arbitrary, but generally less sensitive at high freq
-			size_t QBandBwThres = (size_t)(1.99f + Band*NyquistHz*(1.0f / 22000.0f / 20.0f));
+			size_t QBandBwThres  = (size_t)(RateScale * MaskingBandwidth((Band | 1)*NyquistHz/BlockSize)*BlockSize/NyquistHz);
 			if(QBandNzBw > QBandBwThres) {
 				//! Coefficient not in range?
 				//! NOTE: Somewhat arbitrary (though tuned) thresholds
@@ -88,53 +91,6 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 		//! Increase bandwidth
 		QBandBw++;
 	}
-#else
-#define ERB_HZ(Freq) (24.7f + 0.107939f*(Freq))
-#define COEF2LOG(Coef) log2f(ABS(Coef) + 1.0f)
-	size_t Band;
-	size_t BandsRem = BlockSize;
-	size_t nQBands = 0;
-	size_t QBandBw = 0;
-	float  vOld = COEF2LOG(Coefs[0]);
-	float  DifSum = 0.0f;
-	for(Band=0;Band<BlockSize;Band++) {
-		float BandHz = (Band+0.5f)*NyquistHz/BlockSize;
-		float Bw     = ERB_HZ(BandHz);
-
-		//! Integrate delta of log coefficients
-		float w    = expf(-2.0f*(float)M_PI * Bw/NyquistHz);
-		float vNew = COEF2LOG(Coefs[Band]);
-		float vDif = vNew - vOld; if(vDif < 0.0f) vDif *= 1.0f/3; //! Simulates masking
-		DifSum += vDif*w; vOld = vNew;
-
-		//! If the integrated difference has changed too much in either direction,
-		//! then a new quantizer band should be created, slightly earlier than the
-		//! band that triggered the change.
-		//! This threshold depends on frequency, as quantization artifacts at higher
-		//! frequencies matter much less than those at lower frequencies
-		float t = Bw * BlockSize/NyquistHz;
-		if(ABS(DifSum) > t/4.0f) {
-			size_t NewBw = (QBandBw+1)*7/8;
-			Band -= QBandBw - NewBw;
-
-			//! Create a split point
-			BandsRem -= NewBw;
-			QuantsBw[nQBands++] = NewBw;
-
-			//! NOTE: Last band is built from remaining coefficients
-			if(nQBands == MAX_QUANTS-1) break;
-
-			//! Reset state for a new band
-			QBandBw = 0;
-			DifSum  = 0.0f;
-		}
-
-		//! Increase bandwidth
-		QBandBw++;
-	}
-#undef COEF2LOG
-#undef ERB_HZ
-#endif
 	QuantsBw[nQBands++] = BandsRem;
 }
 
@@ -142,7 +98,7 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 
 //! Process keys to work with and build quantizers
 //! Returns the number of keys to encode
-static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys) {
+static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys, float RateKbps) {
 	size_t Key;
 	size_t BlockSize = State->BlockSize;
 
@@ -174,7 +130,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 			QuantsAbs[Chan][QBand] = 0.0;
 			//Quants   [Chan][QBand] = 0; //! <- Will be set during first pass below
 		}
-		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize, State->RateHz * 0.5f);
+		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize, State->RateHz * 0.5f, RateKbps);
 	}
 
 	//! Clip to maximum available keys
