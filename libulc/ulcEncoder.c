@@ -148,7 +148,7 @@ size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, con
 
 	//! Encode block
 	size_t nNzCoded;
-	size_t BlockBits = Block_Encode(State, DstBuffer, nNzMax, nKeys, &nNzCoded);
+	size_t BlockBits = Block_Encode(State, DstBuffer, nNzMax, nKeys, &nNzCoded, RateKbps);
 
 	//! Update state
 	State->BitBudget -= BlockBits;
