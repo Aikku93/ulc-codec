@@ -59,12 +59,32 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 	//! RateScale adjusts things based on the target bitrate
 	//! so as to avoid creating too many quantizer bands at
 	//! very low bitrates (eg. 32kbps, etc.)
+	//! The expression is compacted from:
+	//!  0.5 * 5*(1 - (RateKbps - 64)/(320*NyquistHz/22050))
+	//! Key features:
+	//!  - Scale by 0.5: There are up to 48 quantizer bands,
+	//!    and there are approximately 24 critical bands in
+	//!    human hearing.
+	//!  - At 64kbps, we target 5x scaling relative to the
+	//!    'peak' rate of 320kbps. At 320kbps, RateScale is
+	//!    1.0 (or rather, 0.5 from scaling), corresponding
+	//!    to the rate at which the quantizer was tuned.
+	//!  - Below 64kbps, slowly ramp towards even larger
+	//!    quantizer bandwidths without exploding as would
+	//!    be the case if we used eg. 320/Rate.
+	//!  - Past 320kbps, scaling gets smaller than 1.0 so
+	//!    as to provide better quantization at high rates.
+	//!  - Scale the 'peak' rate of 320kbps according to
+	//!    the sampling rate of the audio (eg. 320kbps does
+	//!    not make sense for this codec at eg. 8000Hz).
 	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 1.0f) RateScale = 0.5f*exp2f(RateScale);
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Codeable?
 		double vNew = SQR((double)Coefs[Band]);
 		if(vNew >= SQR(0.5)) {
 			//! Enough bands to decide on a split?
+			//! NOTE: (Band | 1) because Band[2*n .. 2*n+1] are in the same
+			//! masking bands, owing to the sum/difference anti-pre-echo filter
 			size_t QBandBwThres  = (size_t)(RateScale * MaskingBandwidth((Band | 1)*NyquistHz/BlockSize)*BlockSize/NyquistHz);
 			if(QBandNzBw > QBandBwThres) {
 				//! Coefficient not in range?
