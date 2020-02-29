@@ -73,11 +73,11 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 	//!    quantizer bandwidths without exploding as would
 	//!    be the case if we used eg. 320/Rate.
 	//!  - Past 320kbps, scaling gets smaller than 1.0 so
-	//!    as to provide better quantization at high rates.
+	//!    as to provide finer quantization at high rates.
 	//!  - Scale the 'peak' rate of 320kbps according to
 	//!    the sampling rate of the audio (eg. 320kbps does
 	//!    not make sense for this codec at eg. 8000Hz).
-	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 1.0f) RateScale = 0.5f*exp2f(RateScale);
+	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 0.5f) RateScale = 0.25f*exp2f(RateScale);
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Codeable?
 		double vNew = SQR((double)Coefs[Band]);
