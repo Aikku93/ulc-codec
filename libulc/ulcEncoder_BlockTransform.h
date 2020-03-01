@@ -20,9 +20,7 @@
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
-#if ULC_USE_PSYHOACOUSTICS
-# include "ulcEncoder_Psycho.h"
-#endif
+#include "ulcEncoder_Psycho.h"
 /**************************************/
 
 //! Copy scaled samples to buffer
@@ -143,9 +141,7 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		float *BufferSample    = State->TransformTemp;
 		float *BufferTemp      = State->TransformTemp + BlockSize;
 		float *BufferMasking   = BufferTemp;
-#if ULC_USE_PSYHOACOUSTICS
-		float *BufferFlatness  = BufferTemp + BlockSize/2;
-#endif
+		float *BufferFlatness  = State->TransformFlatness[Chan];
 		float *BufferTransform = State->TransformBuffer[Chan];
 		float *BufferFwdLap    = State->TransformFwdLap[Chan];
 
@@ -156,8 +152,8 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		//! Apply transforms
 		//! NOTE: Masking power stored to BufferTemp
 		Fourier_MDCT(BufferTransform, BufferSample, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
-#if ULC_USE_PSYHOACOUSTICS
 		Block_Transform_ComputeFlatness(BufferTransform, BufferFlatness, BlockSize);
+#if ULC_USE_PSYHOACOUSTICS
 		Block_Transform_ComputeMaskingPower(BufferTransform, BufferMasking, BufferFlatness, BlockSize, State->RateHz * 0.5f);
 #endif
 		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);

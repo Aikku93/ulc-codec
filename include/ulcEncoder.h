@@ -35,26 +35,29 @@ struct ULC_EncoderState_t {
 	//! Buffer memory layout:
 	//!  Data:
 	//!   char          _Padding[];
-	//!   float         TransformBuffer[nChan][BlockSize]
-	//!   float         TransformTemp  [2*BlockSize]
-	//!   float         TransformFwdLap[nChan][BlockSize/2]
-	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
-	//!   double        QuantsPow      [nChan][MAX_QUANTS]
-	//!   double        QuantsAbs      [nChan][MAX_QUANTS]
-	//!   uint16_t      QuantsBw       [nChan][MAX_QUANTS]
-	//!   int16_t       Quants         [nChan][MAX_QUANTS]
-	//!  MD-array pointers:
-	//!   float    *_TransformBuffer[nChan]
-	//!   float    *_TransformFwdLap[nChan]
-	//!   double   *_QuantsPow      [nChan]
-	//!   double   *_QuantsAbs      [nChan]
-	//!   uint16_t *_QuantsBw       [nChan]
-	//!   int16_t  *_Quants         [nChan]
+	//!   float         TransformBuffer  [nChan][BlockSize]
+	//!   float         TransformTemp    [2*BlockSize]
+	//!   float         TransformFwdLap  [nChan][BlockSize/2]
+	//!   float         TransformFlatness[nChan][N_FLATNESS]
+	//!   AnalysisKey_t AnalysisKeys     [nChan*BlockSize]
+	//!   double        QuantsPow        [nChan][MAX_QUANTS]
+	//!   double        QuantsAbs        [nChan][MAX_QUANTS]
+	//!   uint16_t      QuantsBw         [nChan][MAX_QUANTS]
+	//!   int16_t       Quants           [nChan][MAX_QUANTS]
+	//!  Followed by MD-array pointers:
+	//!   float    *_TransformBuffer  [nChan]
+	//!   float    *_TransformFwdLap  [nChan]
+	//!   float    *_TransformFlatness[nChan]
+	//!   double   *_QuantsPow        [nChan]
+	//!   double   *_QuantsAbs        [nChan]
+	//!   uint16_t *_QuantsBw         [nChan]
+	//!   int16_t  *_Quants           [nChan]
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
 	float     *TransformTemp;
 	float    **TransformFwdLap;
+	float    **TransformFlatness;
 	void      *AnalysisKeys;
 	double   **QuantsPow;
 	double   **QuantsAbs;
