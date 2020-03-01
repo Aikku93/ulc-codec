@@ -47,18 +47,8 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 	//! transform, so it must be scaled by 2.0 here since it was calculated
 	//! when the coefficients were still scaled by 0.5.
 	float Sum = 0.0f, Scale = 2.0f / (BwFW + BwBW);
-#if 0 //! No intercarrier interference compensation; can result in rumbling and birdies
 	if(BwFW) do Sum += SQR(Coef[Band+BwFW+1]); while(--BwFW);
 	if(BwBW) do Sum += SQR(Coef[Band-BwBW  ]); while(--BwBW);
-#else //! Rudimentary protection
-	size_t i;
-	static const size_t N_PHASECOMPENSATION = 8;
-	static const float PhaseCompensation[] = { //! 4^-(n+1)
-		0.25, 0.0625, 0.015625, 0.00390625, 0.000976563, 0.000244141, 0.0000610352, 0.0000152588
-	};
-	for(i=0;i<BwFW;i++) Sum += SQR(Coef[Band+i+2]) - ((i < N_PHASECOMPENSATION) ? BandPow*PhaseCompensation[i] : 0.0f);
-	for(i=0;i<BwBW;i++) Sum += SQR(Coef[Band-i-1]) - ((i < N_PHASECOMPENSATION) ? BandPow*PhaseCompensation[i] : 0.0f);
-#endif
 	return Sum*Scale;
 }
 static void Block_Transform_ComputeMaskingPower(
