@@ -76,7 +76,7 @@ static void Block_Transform_ComputeMaskingPower(
 		}
 
 		//! Convolve masking power
-		//! Flatter (noisy) bands contribute more masking than sharper (tonal) ones
+		//! Flatter bands contribute more masking than diffuse ones
 		MaskingPower[i/2] = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Coef, NyquistHz)*Flat;
 	}
 }
