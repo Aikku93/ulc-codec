@@ -49,7 +49,7 @@ static int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
 }
 
 //! Build quantizer bands
-static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, size_t BlockSize, float NyquistHz, float RateKbps) {
+static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, const float *Flatness, size_t BlockSize, float NyquistHz, float RateKbps) {
 	size_t Band;
 	size_t BandsRem = BlockSize;
 	size_t nQBands = 0;
@@ -78,6 +78,10 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 	//!    the sampling rate of the audio (eg. 320kbps does
 	//!    not make sense for this codec at eg. 8000Hz).
 	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 0.5f) RateScale = 0.25f*exp2f(RateScale);
+	float Flat_mu   = 0.0f;
+	float Flat_Step = (2.0f*FLATNESS_COUNT) / BlockSize;
+	float Flat_Cur  = *Flatness++;
+	float Flat_Nxt  = *Flatness++;
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Codeable?
 		double vNew = SQR((double)Coefs[Band]);
@@ -85,7 +89,9 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 			//! Enough bands to decide on a split?
 			//! NOTE: (Band | 1) because Band[2*n .. 2*n+1] are in the same
 			//! masking bands, owing to the sum/difference anti-pre-echo filter
-			size_t QBandBwThres  = (size_t)(RateScale * MaskingBandwidth((Band | 1)*NyquistHz/BlockSize)*BlockSize/NyquistHz);
+			//! NOTE: Adjust for flatness; 'flatter' bands don't need fine quantization
+			float Flat = Flat_Cur*(1.0f - Flat_mu) + Flat_Nxt*Flat_mu;
+			size_t QBandBwThres = (size_t)((0.25f + 0.75f*Flat) * RateScale * MaskingBandwidth((Band | 1)*NyquistHz/BlockSize)*BlockSize/NyquistHz);
 			if(QBandNzBw > QBandBwThres) {
 				//! Coefficient not in range?
 				//! NOTE: Somewhat arbitrary (though tuned) thresholds
@@ -110,6 +116,16 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, siz
 
 		//! Increase bandwidth
 		QBandBw++;
+
+		//! Step through flatness
+		if(Band%2 == 1) {
+			Flat_mu += Flat_Step;
+			if(Flat_mu >= 1.0f) {
+				Flat_mu -= 1.0f;
+				Flat_Cur = Flat_Nxt;
+				Flat_Nxt = *Flatness++;
+			}
+		}
 	}
 	QuantsBw[nQBands++] = BandsRem;
 }
@@ -150,7 +166,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 			QuantsAbs[Chan][QBand] = 0.0;
 			//Quants   [Chan][QBand] = 0; //! <- Will be set during first pass below
 		}
-		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], BlockSize, State->RateHz * 0.5f, RateKbps);
+		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], State->TransformFlatness[Chan], BlockSize, State->RateHz * 0.5f, RateKbps);
 	}
 
 	//! Clip to maximum available keys
