@@ -30,10 +30,12 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 	size_t Band,
 	size_t BlockSize,
 	const float *Coef,
-	float NyquistHz
+	float NyquistHz,
+	float Flat
 ) {
 	//! These settings are mostly based on trial and error
-	float Bw = MaskingBandwidth((Band+1.0f) * NyquistHz/BlockSize) * BlockSize/NyquistHz;
+	//! Flatter bands have a wider masking bandwidth than diffuse ones
+	float Bw = Flat*MaskingBandwidth((Band+1.0f) * NyquistHz/BlockSize) * BlockSize/NyquistHz;
 	float BandPow = sqrtf(SQR(Coef[Band]) + SQR(Coef[Band+1])) / (float)(M_SQRT2 * 32768.0);
 	float MaskFW  = 1.0f - BandPow;
 	float MaskBW  = sqrtf(1.0f - MaskFW);
@@ -65,9 +67,7 @@ static void Block_Transform_ComputeMaskingPower(
 	float Flat_Nxt  = *Flatness++;
 	for(i=0;i<BlockSize;i+=2) {
 		//! Get flatness and step through
-		//! Mapping flatness through an inverse exponential curve seems to give better results
 		float Flat = Flat_Cur*(1.0f - Flat_mu) + Flat_Nxt*Flat_mu;
-		      Flat = 1.0f - expf(-2.0f*(float)M_PI * Flat);
 		Flat_mu += Flat_Step;
 		if(Flat_mu >= 1.0f) {
 			Flat_mu -= 1.0f;
@@ -76,8 +76,7 @@ static void Block_Transform_ComputeMaskingPower(
 		}
 
 		//! Convolve masking power
-		//! Flatter bands contribute more masking than diffuse ones
-		MaskingPower[i/2] = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Coef, NyquistHz)*Flat;
+		MaskingPower[i/2] = Block_Transform_ComputeMaskingPower_Convolve(i, BlockSize, Coef, NyquistHz, Flat);
 	}
 }
 
