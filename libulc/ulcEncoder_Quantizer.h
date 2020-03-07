@@ -37,15 +37,15 @@ static size_t Block_Encode_BuildQuants_GetQBand(size_t Band, const uint16_t *Qua
 //! Build quantizer from sum of raised-power values and sum of absolutes
 //! NOTE: Currently using Sum[x^2]/Sum[x]. This somewhat favours larger
 //!       values which mask lower-power values anyway so it works out better.
-//! NOTE: Biased by -2 because 2^2=4 which is the 'middle' value between 1..7
-//!       for quantized coefficients
-static int16_t Block_Encode_BuildQuantizer(double Pow, double Abs) {
-	if(Abs == 0.0) return 0;
+//! NOTE: Biased by the mean of possible quantized values (ie. x^2, with x = {1..7}),
+//!       and the maximum range is extended by 4 bits for the same reason.
+static float Block_Encode_BuildQuantizer(double Pow, double Abs) {
+	if(Abs == 0.0) return 0.0f;
 
-	long int sd = lrint(log(Pow / Abs) * 0x1.71547652B82FEp0) - 2; //! Log2[x^(1/m)]=Log[x]/Log[2^m]
-	if(sd <  0) sd =  0;
-	if(sd > 14) sd = 14; //! Fh is reserved
-	return 1 << sd;
+	//! `sd` will always be greater than 4 (due to the bias)
+	long int sd = lrint(0x1.149A784BCD1B9p2 - log2(Pow / Abs));
+	if(sd > 4 + 0xE + 15) sd = 4 + 0xE + 15; //! 4+Eh+15 = Maximum extended-precision quantizer value (plus a bias of 4)
+	return exp2f(sd);
 }
 
 //! Build quantizer bands
@@ -85,13 +85,11 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, con
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Codeable?
 		double vNew = SQR((double)Coefs[Band]);
-		if(vNew >= SQR(0.5)) {
+		if(vNew >= SQR(0.5*ULC_COEF_EPS)) {
 			//! Enough bands to decide on a split?
-			//! NOTE: (Band | 1) because Band[2*n .. 2*n+1] are in the same
-			//! masking bands, owing to the sum/difference anti-pre-echo filter
 			//! NOTE: Adjust for flatness; 'flatter' bands don't need fine quantization
 			float Flat = Flat_Cur*(1.0f - Flat_mu) + Flat_Nxt*Flat_mu;
-			size_t QBandBwThres = (size_t)((0.25f + 0.75f*Flat) * RateScale * MaskingBandwidth((Band | 1)*NyquistHz/BlockSize)*BlockSize/NyquistHz);
+			size_t QBandBwThres = (size_t)((0.25f + 0.75f*Flat) * RateScale * MaskingBandwidth(Band*NyquistHz/BlockSize)*BlockSize/NyquistHz);
 			if(QBandNzBw > QBandBwThres) {
 				//! Coefficient not in range?
 				//! NOTE: Somewhat arbitrary (though tuned) thresholds
@@ -154,7 +152,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 	size_t nChan          = State->nChan;
 	float    **CoefBuffer = State->TransformBuffer;
 	uint16_t **QuantsBw   = State->QuantsBw;
-	int16_t  **Quants     = State->Quants;
+	float    **Quants     = State->Quants;
 	double   **QuantsPow  = State->QuantsPow;
 	double   **QuantsAbs  = State->QuantsAbs;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
@@ -164,7 +162,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 		for(QBand=0;QBand<MAX_QUANTS;QBand++) {
 			QuantsPow[Chan][QBand] = 0.0;
 			QuantsAbs[Chan][QBand] = 0.0;
-			//Quants   [Chan][QBand] = 0; //! <- Will be set during first pass below
+			//Quants   [Chan][QBand] = 0.0f; //! <- Will be set during first pass below
 		}
 		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], State->TransformFlatness[Chan], BlockSize, State->RateHz * 0.5f, RateKbps);
 	}
@@ -200,8 +198,8 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 			FETCH_KEY_DATA(nKeysEncode);
 
 			//! Collapse?
-			int16_t Qnt = Quants[Chan][QBand];
-			if(Val < 0.5f*Qnt) {
+			float Qnt = Quants[Chan][QBand];
+			if(Val*Qnt < 0.5f) {
 				//! Key still present in quantizer?
 				if(Keys[nKeysEncode].Val >= 0.0f) {
 					//! Remove key from analysis (DON'T rebuild the quantizer)
@@ -226,12 +224,12 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 		//! Rebuild the quantizers
 		size_t nQuantChanges = 0;
 		for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<MAX_QUANTS;QBand++) {
-			int16_t QntOld = Quants[Chan][QBand];
-			int16_t QntNew = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
+			float QntOld = Quants[Chan][QBand];
+			float QntNew = Block_Encode_BuildQuantizer(QuantsPow[Chan][QBand], QuantsAbs[Chan][QBand]);
 			if(QntNew != QntOld) {
 				//! Don't count creating or destroying a quantizer
 				Quants[Chan][QBand] = QntNew;
-				if(QntOld != 0 && QntNew != 0) nQuantChanges++;
+				if(QntOld != 0.0f && QntNew != 0.0f) nQuantChanges++;
 			}
 		}
 
@@ -247,8 +245,8 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 		FETCH_KEY_DATA(nKeysEncode);
 
 		//! Collapse?
-		int16_t Qnt = Quants[Chan][QBand];
-		if(Val < 0.5f*Qnt) {
+		float Qnt = Quants[Chan][QBand];
+		if(Val*Qnt < 0.5f) {
 			//! Mark key unused and increase number of keys to analyze
 			MARK_KEY_UNUSED(nKeysEncode);
 			nDeadKeys++;

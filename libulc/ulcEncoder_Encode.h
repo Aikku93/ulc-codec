@@ -9,7 +9,6 @@
 /**************************************/
 #include "Fourier.h"
 #include "ulcEncoder.h"
-#include "ulcUtility.h"
 /**************************************/
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Quantizer.h"
@@ -17,7 +16,8 @@
 
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
 static inline int32_t Block_Encode_Quantize(float v, float q) {
-	return lrint(v/q);
+	int32_t vq = lrint(sqrtf(fabsf(v*q)));
+	return (v < 0.0f) ? (-vq) : (+vq);
 }
 static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, size_t *Size) {
 	//! Push nybble
@@ -27,6 +27,20 @@ static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, size_t *Si
 
 	//! Next byte?
 	if((*Size)%8u == 0) (*Dst)++;
+}
+static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer, size_t *Size, int Lead) {
+	//! 8h,0h,0h..Eh: Quantizer change
+	size_t s = log2f(Quant) - 4;
+	if(Lead) {
+		Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
+	}
+	if(s < 0xE) Block_Encode_WriteNybble(s, DstBuffer, Size);
+	else {
+		//! 8h,0h,Eh,Xh: Extended-precision quantizer
+		Block_Encode_WriteNybble(  0xE, DstBuffer, Size);
+		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
+	}
 }
 static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, size_t nNzMax, size_t nKeys, size_t *_nNzCoded, float RateKbps) {
 	//! Process the keys and determine how many we're working with
@@ -52,9 +66,9 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 		//!  Check Key.Chan==Chan: This correctly codes silent channels
 		if(Key < nKeysEncode && Keys[Key].Chan == Chan) {
 			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
-			size_t  NextBand  = 0;
-			int16_t LastQuant = Keys[Key].Quant;
-			Block_Encode_WriteNybble(IntLog2(LastQuant), &DstBuffer, &Size);
+			size_t NextBand  = 0;
+			float  LastQuant = Keys[Key].Quant;
+			Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 0);
 			do {
 				//! Unpack key data
 				//! If we cross to the next channel, break out
@@ -98,12 +112,7 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 				//! Update quantizer?
 				if(Keys[Key].Quant != LastQuant) {
 					LastQuant = Keys[Key].Quant;
-
-					//! 8h,0h,0h..Eh: Quantizer change
-					size_t s = IntLog2(LastQuant);
-					Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
-					Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
-					Block_Encode_WriteNybble(s,   &DstBuffer, &Size);
+					Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 1);
 				}
 
 				//! Insert coded coefficients

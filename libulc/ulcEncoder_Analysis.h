@@ -22,8 +22,8 @@ struct AnalysisKey_t {
 		uint32_t Key; //! Band | Chan<<16
 	};
 	union {
-		float   Val;   //! Sorting value (ie. Coef^2 * Importance; for biased preferencing)
-		int16_t Quant; //! Quantizer (set after calling Block_Encode_BuildQuants() in ulcEncoder_Quantizer.h)
+		float Val;   //! Sorting value (ie. Coef^2 * Importance; for biased preferencing)
+		float Quant; //! Quantizer (set after calling Block_Encode_BuildQuants() in ulcEncoder_Quantizer.h)
 	};
 };
 

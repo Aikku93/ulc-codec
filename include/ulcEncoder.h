@@ -13,6 +13,9 @@
 //! 1 == Use psychoacoustic model
 #define ULC_USE_PSYHOACOUSTICS 1
 
+//! Lowest possible coefficient value
+#define ULC_COEF_EPS (0x1.0p-33) //! 4+0xE+15 = Maximum extended-precision quantizer
+
 /**************************************/
 
 //! Encoder state structure
@@ -42,16 +45,16 @@ struct ULC_EncoderState_t {
 	//!   AnalysisKey_t AnalysisKeys     [nChan*BlockSize]
 	//!   double        QuantsPow        [nChan][MAX_QUANTS]
 	//!   double        QuantsAbs        [nChan][MAX_QUANTS]
+	//!   float         Quants           [nChan][MAX_QUANTS]
 	//!   uint16_t      QuantsBw         [nChan][MAX_QUANTS]
-	//!   int16_t       Quants           [nChan][MAX_QUANTS]
 	//!  Followed by MD-array pointers:
 	//!   float    *_TransformBuffer  [nChan]
 	//!   float    *_TransformFwdLap  [nChan]
 	//!   float    *_TransformFlatness[nChan]
 	//!   double   *_QuantsPow        [nChan]
 	//!   double   *_QuantsAbs        [nChan]
+	//!   float    *_Quants           [nChan]
 	//!   uint16_t *_QuantsBw         [nChan]
-	//!   int16_t  *_Quants           [nChan]
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
@@ -61,8 +64,8 @@ struct ULC_EncoderState_t {
 	void      *AnalysisKeys;
 	double   **QuantsPow;
 	double   **QuantsAbs;
+	float    **Quants;
 	uint16_t **QuantsBw;
-	int16_t  **Quants;
 };
 
 /**************************************/
