@@ -26,6 +26,8 @@ static void Block_Transform_ComputeFlatness(const float *Coef, float *Flatness, 
 
 /**************************************/
 
+//! Compute masking energy estimation
+//! NOTE: Masking is only computed for every 2 coefficients to save processing time
 static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskingPower_Convolve(
 	size_t Band,
 	size_t BlockSize,
@@ -36,19 +38,16 @@ static inline __attribute__((always_inline)) float Block_Transform_ComputeMaskin
 	//! These settings are mostly based on trial and error
 	//! Flatter bands have a wider masking bandwidth than diffuse ones
 	float Bw = Flat*MaskingBandwidth((Band+1.0f) * NyquistHz/BlockSize) * BlockSize/NyquistHz;
-	float BandPow = sqrtf(SQR(Coef[Band]) + SQR(Coef[Band+1])) / (float)(M_SQRT2 * 32768.0);
+	float BandPow = sqrtf(SQR(Coef[Band]) + SQR(Coef[Band+1])) * (float)M_SQRT1_2;
 	float MaskFW  = 1.0f - BandPow;
 	float MaskBW  = sqrtf(1.0f - MaskFW);
 	size_t BwFW   = (size_t)(Bw * MaskFW); if(Band+2+BwFW > BlockSize) BwFW = BlockSize - (Band+2);
 	size_t BwBW   = (size_t)(Bw * MaskBW); if(Band        < BwBW)      BwBW = Band;
 	if(!BwFW && !BwBW) return 0.0f;
 
-	//! At this point, the coefficients are scaled by 0.5 in preparation for
-	//! the upcoming sum/difference transform, so as to normalize the final
-	//! coefficients. However, masking energy is subtracted /after/ that
-	//! transform, so it must be scaled by 2.0 here since it was calculated
-	//! when the coefficients were still scaled by 0.5.
-	float Sum = 0.0f, Scale = 2.0f / (BwFW + BwBW);
+	//! Perform convolution
+	//! Scaling by 1+Flatness seems to give better results
+	float Sum = 0.0f, Scale = (1.0f+Flat) / (BwFW + BwBW);
 	if(BwFW) do Sum += SQR(Coef[Band+BwFW+1]); while(--BwFW);
 	if(BwBW) do Sum += SQR(Coef[Band-BwBW  ]); while(--BwBW);
 	return Sum*Scale;

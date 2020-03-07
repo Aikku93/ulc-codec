@@ -17,7 +17,7 @@
 #endif
 /**************************************/
 
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'c'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'd'<<24)
 #define MAX_QUANTS 48
 
 /**************************************/
@@ -188,7 +188,7 @@ int main(int argc, const char *argv[]) {
 
 			//! Interleave to output buffer
 			for(size_t Chan=0;Chan<nChan;Chan++) for(size_t n=0;n<BlockSize;n++) {
-				BlockOutput[n*nChan+Chan] = (int16_t)Clip16(round(BlockBuffer[Chan*BlockSize+n]));
+				BlockOutput[n*nChan+Chan] = (int16_t)Clip16(lrintf(32768.0f * BlockBuffer[Chan*BlockSize+n]));
 			}
 
 			//! Write to file

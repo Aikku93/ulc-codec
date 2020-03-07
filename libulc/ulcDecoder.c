@@ -3,13 +3,13 @@
 //! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 /**************************************/
 #include "Fourier.h"
 #include "ulcDecoder.h"
-#include "ulcUtility.h"
 /**************************************/
 #if defined(__AVX__)
 # define BUFFER_ALIGNMENT 32u //! __mm256
@@ -88,7 +88,12 @@ static inline uint8_t Block_Decode_ReadNybble(const uint8_t **Src, size_t *Size)
 	uint8_t x = *(*Src);
 	*Size += 4;
 	if((*Size)%8u == 0) x >>= 4, (*Src)++;
-	return x;
+	return x; //! NOTE: Unmasked return value
+}
+static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, size_t *Size) {
+	int8_t        qi  = Block_Decode_ReadNybble(Src, Size) & 0xF; if(qi == 0xF) return 0.0f;
+	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,Xh: Extended-precision quantizer
+	return exp2f(-qi-4);
 }
 size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
 	//! Spill state to local variables to make things easier to read
@@ -107,16 +112,17 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 		int32_t v;
 		float *CoefDst = TransformBuffer;
 		size_t CoefRem = BlockSize;
-		uint8_t Quant  = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-		if(Quant == 0xF) {
+		float  Quant   = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
+		if(Quant == 0.0f) {
 			//! [8h,0h,]Fh: Stop
 			do *CoefDst++ = 0.0f; while(--CoefRem);
 		} else for(;;) {
 			//! -7h..+7h: Normal
 			v = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
 			if(v != -0x8) {
-				//! Store dequantized
-				*CoefDst++ = (float)(v << Quant);
+				//! Store linearized, dequantized coefficient
+				v = (v < 0) ? (-v*v) : (+v*v);
+				*CoefDst++ = v * Quant;
 				if(--CoefRem == 0) break;
 				continue;
 			}
@@ -143,8 +149,8 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 			} else {
 				//! 8h,0h,0h..Eh: Quantizer change
 				//! 8h,0h,Fh:     Stop
-				Quant = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-				if(Quant == 0xF) {
+				Quant = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
+				if(Quant == 0.0f) {
 					do *CoefDst++ = 0.0f; while(--CoefRem);
 					break;
 				}
@@ -152,7 +158,7 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 		}
 
 		//! Inverse transform block
-		ULC_Transform_AntiPreEcho(TransformBuffer, BlockSize);
+		//ULC_Transform_AntiPreEcho(TransformBuffer, BlockSize);
 		Fourier_IMDCT(DstData + Chan*BlockSize, TransformBuffer, TransformInvLap[Chan], TransformTemp, BlockSize, State->BlockOverlap);
 	}
 	return Size;

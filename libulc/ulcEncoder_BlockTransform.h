@@ -15,8 +15,6 @@
 #include <stddef.h>
 #include <stdint.h>
 /**************************************/
-#include "ulcUtility.h"
-/**************************************/
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
@@ -102,7 +100,7 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 	for(i=0;i<BlockSize;i++) {
 		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
 		float v2 = SQR(Coef[i]);
-		if(v2 >= SQR(0.5f)) {
+		if(v2 >= SQR(0.5f*ULC_COEF_EPS)) {
 			//! Build and insert key
 			Keys[nKeys].Band = i;
 			Keys[nKeys].Chan = Chan;
@@ -122,7 +120,6 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 //! Apply block transform
 //!  -Fetches data
 //!  -Applies MDCT
-//!  -Applies anti-pre-echo formula
 //!  -Stores keys for block coefficients
 //! Returns the number of keys stored
 static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
@@ -146,8 +143,8 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		float *BufferFwdLap    = State->TransformFwdLap[Chan];
 
 		//! Fetch sample data
-		//! Pre-scale for scaled IMDCT(*2.0/BlockSize) and SumDif transform(*0.5)
-		Block_Transform_CopySamples(BufferSample, Data + Chan*BlockSize, BlockSize, 2.0f/BlockSize * 0.5f);
+		//! Pre-scale for scaled IMDCT(*2.0/BlockSize)
+		Block_Transform_CopySamples(BufferSample, Data + Chan*BlockSize, BlockSize, 2.0f/BlockSize);
 
 		//! Apply transforms
 		//! NOTE: Masking power stored to BufferTemp
@@ -156,8 +153,6 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 #if ULC_USE_PSYHOACOUSTICS
 		Block_Transform_ComputeMaskingPower(BufferTransform, BufferMasking, BufferFlatness, BlockSize, State->RateHz * 0.5f);
 #endif
-		ULC_Transform_AntiPreEcho(BufferTransform, BlockSize);
-
 		//! Insert coefficient keys
 		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, BufferMasking);
 		AnalysisPower *= PowerDecay;

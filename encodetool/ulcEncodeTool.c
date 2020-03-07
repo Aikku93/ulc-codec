@@ -17,7 +17,7 @@
 /**************************************/
 
 //! Header magic value
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'c'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'd'<<24)
 
 /**************************************/
 
@@ -174,7 +174,7 @@ int main(int argc, const char *argv[]) {
 			//! BlockFetch[] is free after this
 			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BlockSize, InFile);
 			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-				BlockBuffer[Chan*BlockSize+n] = (n < nMax) ? BlockFetch[n*nChan+Chan] : 0.0f;
+				BlockBuffer[Chan*BlockSize+n] = (n < nMax) ? (BlockFetch[n*nChan+Chan] * 1.0f/32768.0f) : 0.0f;
 			}
 
 			//! Apply M/S transform
