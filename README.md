@@ -40,8 +40,8 @@ This will take ```Input.ulc``` and output ```Output.raw```.
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
     * The encoding tool accepts any N=2<sup>n</sup> (as long as N<16384; 8192 coefficients) with any overlap (provided that the number of overlap samples is a multiple of 16). The decoding tool reads these parameters from the file created by the encoder.
+* Non-linear coefficient quantization for greater control over dynamic range
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
-* Rudimentary transient pre-echo reduction formula (more important at ultra-low bitrates)
 
 ## Authors
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
