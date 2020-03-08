@@ -7,34 +7,45 @@ Each block is coded sequentially, with each channel also coded sequentially. For
 
 The encoding tools align each block (that is, including all channels) to byte boundaries, but this is not strictly necessary; any alignment will do.
 
-These blocks code MDCT coefficients that have been pre-filtered with a pre-echo reduction formula. Therefore, to decode, we simply apply the inverse of said formula and then perform an IMDCT.
+These blocks code MDCT coefficients that have been pre-normalized. So to decode, one must simply apply an unnormalized IMDCT to return the decoded PCM stream.
 
 NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization).
 
 ### Syntax
 ***
 
-| Nybble sequence    | Explanation        | Effect                                      |
-| ------------------ | ------------------ | ------------------------------------------- |
-| ```-7h..+7h```     | Normal coefficient | Insert ```Coef[n++] = Nybble * Quantizer``` |
-| ```8h,0h,0h..Eh``` | Quantizer change   | Set ```Quantizer = 2^X```                   |
-| ```8h,0h,Fh```     | Stop               | Stop reading coefficients; fill rest with 0 |
-| ```8h,1h..Bh```    | Zeros run (short)  | Insert zeros                                |
-| ```8h,Ch..Fh,Xh``` | Zeros run (long)   | Insert zeros                                |
+| Nybble sequence    | Explanation        | Effect                                       |
+| ------------------ | ------------------ | -------------------------------------------- |
+| ```-7h..+7h```     | Normal coefficient | Insert ```Coef[n++] = Sign[Nybble]*Nybble^2 * Quantizer``` |
+| ```8h,0h,0h..Dh``` | Quantizer change   | Set ```Quantizer = 2^-(4+X)```               |
+| ```8h,0h,Eh,Xh```  | Quantizer change   | Set ```Quantizer = 2^-(4+14+X)```            |
+| ```8h,0h,Fh```     | Stop               | Stop reading coefficients; fill rest with 0  |
+| ```8h,1h..Bh```    | Zeros run (short)  | Insert zeros                                 |
+| ```8h,Ch..Fh,Xh``` | Zeros run (long)   | Insert zeros                                 |
 
 #### ```-7h..+7h```: Normal coefficient
 
-This is a quantized coefficient. To unpack, just scale by the current quantizer, and move to the next coefficient.
+This is a quantized coefficient. To unpack, take the (signed) squared value, scale by the current quantizer, and move to the next coefficient.
 
 If we've received as many coefficients as there are in a transform block (eg. 2048 coefficients), this channel's coefficients are finished, and we can move on to inverse transforming.
 
-#### ```8h,0h,0h..Eh```: Quantizer change
+#### ```8h,0h,0h..Dh```, ```8h,0h,Eh,Xh```: Quantizer change
 
-This modifies the current quantizer. Simple enough.
+This modifies the current quantizer.
 
-```Quantizer = 2^[third nybble]```
+When the third nybble is between ```0h..Dh```, this signals a normal quantizer change; at average audio levels, these are the most common quantization scalers.
 
-Each channel begins with a nybble specifying the initial quantizer, akin to a silent ```8h,0h``` at the start.
+```Quantizer = 2^-(4 + [third nybble])```
+
+(Note the bias of 4: This is because no coefficient can be larger than 1.0, and the possibly (non-zero) quantized coefficients are ```{1,4,9,16,25,36,49}```, the log2 of the mean of which is approximately 4. If the bias wasn't used, there would be quantizer values that would never be used by the encoding tools, representing loss of efficiency)
+
+When the nybble is ```Eh```, however, this signals that the quantizer needs to be smaller still, and so is followed by an extra nybble to afford a so-called 'extended-precision quantizer', allowing a maximum quantization scale of 2^-(4 + 14 + 15).
+
+```Quantizer = 2^-(4 + 14 + [fourth nybble])```
+
+This can be considered to result in a floating-point value containing a sign bit, 3 bits of mantissa, and circa 5 bits of exponent, with the minimum possible coefficient value being ±1.0×2^-33 (approximately 0.00000000012).
+
+Each channel begins with a nybble specifying the initial quantizer, akin to a silent ```8h,0h``` at the start (extended-precision quantizers are also allowed for this first quantizer band).
 
 #### ```8h,0h,Fh```: Stop
 
@@ -63,21 +74,14 @@ To unpack: ```n = (([second nybble] - Ch)<<4 | [third nybble]) * 2 + 26```
 ### Inverse transform process
 ***
 
-Inverse transform takes the above-decoded coefficients and applies the inverse of a pre-echo reduction formula, followed by IMDCT.
+Inverse transform takes the above-decoded coefficients and applies the IMDCT to give the output stream.
 
-#### Pre-echo reduction formula
-
-The pre-echo reduction formula used in this codec is a basic sum/difference transform.
-
-The transform (and its inverse, due to its involutive nature) is as follows:
-
-    X[2*n+0] = x[2*n+0] + x[2*n+1]
-    X[2*n+1] = x[2*n+0] - x[2*n+1]
-    
 #### IMDCT
 
 The IMDCT used in this codec follows the normal IMDCT formula found on any maths book, but without any scaling factor in front (as it is moved to the MDCT in the encoder), ie.
 
     y[n] = Sum[X[k]*Cos[(n+1/2 + N/2)(k+1/2)*Pi/N], {k,0,N-1}]
     
-The windowing function used is a sine window with 50% overlap, resulting in what is known as the modulated lapped transform (MLT).
+The windowing function used is a sine window. To use a different window, the MDCT and IMDCT functions of the source code must be changed.
+
+Note that when using less than 50% overlap, the MDCT/IMDCT transforms can be slightly improved in efficiency by offsetting the basis functions by -1 in ```n``` and ```k``` (ie. ```n-1/2``` and ```k-1/2```), as this avoids having to negate coefficients in the non-overlap region (for the overlapping region, this simply involves changing the quadrature oscillator signs). Note that while this results in negated MDCT coefficients as output, the phase-inversion is corrected in the IMDCT stage so long as both MDCT and IMDCT use the same shifted basis.
