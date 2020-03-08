@@ -79,7 +79,7 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, con
 	//!    not make sense for this codec at eg. 8000Hz).
 	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 0.5f) RateScale = 0.25f*exp2f(RateScale);
 	float Flat_mu   = 0.0f;
-	float Flat_Step = (2.0f*FLATNESS_COUNT) / BlockSize;
+	float Flat_Step = (float)FLATNESS_COUNT / BlockSize;
 	float Flat_Cur  = *Flatness++;
 	float Flat_Nxt  = *Flatness++;
 	for(Band=0;Band<BlockSize;Band++) {
@@ -116,13 +116,11 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, con
 		QBandBw++;
 
 		//! Step through flatness
-		if(Band%2 == 1) {
-			Flat_mu += Flat_Step;
-			if(Flat_mu >= 1.0f) {
-				Flat_mu -= 1.0f;
-				Flat_Cur = Flat_Nxt;
-				Flat_Nxt = *Flatness++;
-			}
+		Flat_mu += Flat_Step;
+		if(Flat_mu >= 1.0f) {
+			Flat_mu -= 1.0f;
+			Flat_Cur = Flat_Nxt;
+			Flat_Nxt = *Flatness++;
 		}
 	}
 	QuantsBw[nQBands++] = BandsRem;
