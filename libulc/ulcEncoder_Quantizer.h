@@ -92,9 +92,9 @@ static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, con
 			size_t QBandBwThres = (size_t)((0.25f + 0.75f*Flat) * RateScale * MaskingBandwidth(Band*NyquistHz/BlockSize)*BlockSize/NyquistHz);
 			if(QBandNzBw > QBandBwThres) {
 				//! Coefficient not in range?
-				//! NOTE: Somewhat arbitrary (though tuned) thresholds
+				//! NOTE: Somewhat arbitrary (though tuned) thresholds (derived from 1/(2*RMS[{1..7}]) and RMS[{1..7}])
 				double t = vNew*QBandNzBw;
-				if(t < SQR(1.0/8.0)*SumSqr || t > SQR(4.0)*SumSqr) {
+				if(t < 0x1.3CF53F3A97312p-6*SumSqr || t > 0x1.9D87F87E71422p4*SumSqr) {
 					//! Create a split point
 					//! NOTE: Last band is built from remaining coefficients
 					BandsRem -= QBandBw;
