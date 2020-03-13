@@ -144,7 +144,7 @@ static inline void Block_Transform_ToNepers(float *Dst, float *Src, size_t Block
 	for(Band=0;Band<BlockSize;Band++) {
 		float v = ABS(Src[Band]);
 		      v = (v < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(v);
-		Dst[Band] = v - ULC_COEF_EPS*(v == 0.0f);
+		Dst[Band] = v;
 	}
 }
 static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
