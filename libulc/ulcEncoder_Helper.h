@@ -19,29 +19,26 @@ static inline size_t IntLog2(unsigned int x) {
 
 //! Spectral flatness measure
 //! Adapted from "Note on measures for spectral flatness"
+//! and then optimized, and slightly tweaked (specifically,
+//! normalization was factored out to perform a single pass;
+//! this is not technically the same, but the results are
+//! extremely close, and so it's worth optimizing like this)
 //! DOI: 10.1049/el.2009.1977
 static inline float SpectralFlatness(const float *Buf, size_t N) {
 	size_t i;
-
-	//! Get normalization factor
-	float Nrm = 0.0f;
-	for(i=0;i<N;i++) Nrm += SQR(Buf[i]);
-	if(Nrm == 0.0f) return 1.0f;
-	Nrm = 1.0f / Nrm;
-
-	//! Measure
 	float Sum = 0.0f;
+	float Nrm = 0.0f;
 	for(i=0;i<N;i++) {
-		float v = SQR(Buf[i]) * Nrm;
-		if(v != 0.0f) Sum += v*logf(v);
+		float v = SQR(Buf[i]);
+		Nrm += v; if(v != 0.0f) Sum += v*logf(v);
 	}
-	return exp2f(-Sum/logf(N)) - 1.0f;
+	return exp2f((Nrm*logf(Nrm) - Sum) / (Nrm * logf(N))) - 1.0f;
 }
 
 //! Masking bandwidth estimation
 //! The curve peaks at around 3000Hz, corresponding to human hearing
 static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
-	return 1500.0f * expf(-2.0f*(float)M_PI * SQR(Fc/16000.0f)) * (1.0f - expf(-2.0f*(float)M_PI * SQR((Fc + 80.0f)/5000.0f)));
+	return 1000.0f * expf(-2.0f*(float)M_PI * SQR(Fc/16000.0f)) * (1.0f - expf(-2.0f*(float)M_PI * SQR((Fc + 80.0f)/5000.0f)));
 }
 
 //! NOTE: Unused, and mostly for reference
