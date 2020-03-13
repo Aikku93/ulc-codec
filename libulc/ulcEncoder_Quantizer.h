@@ -35,8 +35,6 @@ static size_t Block_Encode_BuildQuants_GetQBand(size_t Band, const uint16_t *Qua
 }
 
 //! Build quantizer from sum of raised-power values and sum of absolutes
-//! NOTE: Currently using Sum[x^2]/Sum[x]. This somewhat favours larger
-//!       values which mask lower-power values anyway so it works out better.
 //! NOTE: Biased by the mean of possible quantized values (ie. x^2, with x = {1..7}),
 //!       and the maximum range is extended by 4 bits for the same reason.
 static float Block_Encode_BuildQuantizer(double Pow, double Abs) {
@@ -44,93 +42,75 @@ static float Block_Encode_BuildQuantizer(double Pow, double Abs) {
 
 	//! `sd` will always be greater than 4 (due to the bias)
 	long int sd = lrint(0x1.149A784BCD1B9p2 - log2(Pow / Abs));
-	if(sd > 4 + 0xE + 15) sd = 4 + 0xE + 15; //! 4+Eh+15 = Maximum extended-precision quantizer value (plus a bias of 4)
+	if(sd > 4 + 0xE + 15) sd = 4 + 0xE + 15; //! 4+Eh+15 = Maximum extended-precision quantizer value (including a bias of 4)
 	return exp2f(sd);
 }
 
 //! Build quantizer bands
-static void Block_Encode_BuildQBands(const float *Coefs, uint16_t *QuantsBw, const float *Flatness, size_t BlockSize, float NyquistHz, float RateKbps) {
-	size_t Band;
-	size_t BandsRem = BlockSize;
-	size_t nQBands = 0;
-	size_t QBandBw = 0, QBandNzBw = 0;
-	double SumSqr  = 0.0;
+static void Block_Encode_BuildQBands(const float *CoefsNp, uint16_t *QuantsBw, size_t BlockSize) {
+	//! Average step size of quantized values, in Nepers (ie. -Ln[7])
+	const float AvgMaxRange = 0x1.F2272Bp0;
 
-	//! RateScale adjusts things based on the target bitrate
-	//! so as to avoid creating too many quantizer bands at
-	//! very low bitrates (eg. 32kbps, etc.)
-	//! The expression is compacted from:
-	//!  0.5 * 5*(1 - (RateKbps - 64)/(320*NyquistHz/22050))
-	//! Key features:
-	//!  - Scale by 0.5: There are up to 48 quantizer bands,
-	//!    and there are approximately 24 critical bands in
-	//!    human hearing.
-	//!  - At 64kbps, we target 5x scaling relative to the
-	//!    'peak' rate of 320kbps. At 320kbps, RateScale is
-	//!    1.0 (or rather, 0.5 from scaling), corresponding
-	//!    to the rate at which the quantizer was tuned.
-	//!  - Below 64kbps, slowly ramp towards even larger
-	//!    quantizer bandwidths without exploding as would
-	//!    be the case if we used eg. 320/Rate.
-	//!  - Past 320kbps, scaling gets smaller than 1.0 so
-	//!    as to provide finer quantization at high rates.
-	//!  - Scale the 'peak' rate of 320kbps according to
-	//!    the sampling rate of the audio (eg. 320kbps does
-	//!    not make sense for this codec at eg. 8000Hz).
-	float RateScale = 2.5f - 172.265625f*(RateKbps-64.0f)/NyquistHz; if(RateScale < 0.5f) RateScale = 0.25f*exp2f(RateScale);
-	float Flat_mu   = 0.0f;
-	float Flat_Step = (float)FLATNESS_COUNT / BlockSize;
-	float Flat_Cur  = *Flatness++;
-	float Flat_Nxt  = *Flatness++;
+	//! Split into quantizer bands based on range distortion
+	//! For some reason, it works better to average in the log domain
+	//! here, while just use a weighted average in the linear domain
+	//! when calculating the actual quantizer values
+	float  Avg   = 0.0f, nAvg   = 0.0f; //! Initializing all these shuts gcc up
+	float  AvgLo = 0.0f, nAvgLo = 0.0f;
+	float  AvgHi = 0.0f, nAvgHi = 0.0f;
+	size_t Band, nQBands = 0, LastQBandOfs = 0;
 	for(Band=0;Band<BlockSize;Band++) {
-		//! Codeable?
-		double vNew = SQR((double)Coefs[Band]);
-		if(vNew >= SQR(0.5*ULC_COEF_EPS)) {
-			//! Enough bands to decide on a split?
-			//! NOTE: Adjust for flatness; 'flatter' bands don't need fine quantization
-			float Flat = Flat_Cur*(1.0f - Flat_mu) + Flat_Nxt*Flat_mu;
-			size_t QBandBwThres = (size_t)((0.25f + 0.75f*Flat) * RateScale * MaskingBandwidth(Band*NyquistHz/BlockSize)*BlockSize/NyquistHz);
-			if(QBandNzBw > QBandBwThres) {
-				//! Coefficient not in range?
-				//! NOTE: Somewhat arbitrary (though tuned) thresholds (derived from 1/(2*RMS[{1..7}]) and RMS[{1..7}])
-				double t = vNew*QBandNzBw;
-				if(t < 0x1.3CF53F3A97312p-6*SumSqr || t > 0x1.9D87F87E71422p4*SumSqr) {
-					//! Create a split point
-					//! NOTE: Last band is built from remaining coefficients
-					BandsRem -= QBandBw;
-					QuantsBw[nQBands++] = QBandBw;
-					if(nQBands == MAX_QUANTS-1) break;
+		float vNp = CoefsNp[Band]; if(vNp == ULC_COEF_NEPER_OUT_OF_RANGE) continue;
 
-					//! Reset state for a new band
-					QBandBw = QBandNzBw = 0;
-					SumSqr  = 0.0;
+		//! New quantizer band?
+		if(Avg == 0.0f) {
+			Avg   = vNp, nAvg   = 1.0f;
+			AvgLo = Avg, nAvgLo = 1.0f;
+			AvgHi = Avg, nAvgHi = 1.0f;
+		} else {
+			//! Sum to lower-/higher-than-average parts
+#if 0
+			if(vNp < Avg/nAvg) AvgLo += vNp, nAvgLo += 1.0f;
+			else               AvgHi += vNp, nAvgHi += 1.0f;
+#else //! Math optimization (avoid division)
+			if(vNp*nAvg < Avg) AvgLo += vNp, nAvgLo += 1.0f;
+			else               AvgHi += vNp, nAvgHi += 1.0f;
+#endif
+			Avg += vNp, nAvg += 1.0f;
+
+			//! Check range against threshold
+#if 0
+			float r = ABS(AvgHi/nAvgHi - AvgLo/nAvgLo);
+			if(r > AvgMaxRange) {
+#else //! Math optimization (avoid division)
+			float r = ABS(AvgHi*nAvgLo - AvgLo*nAvgHi);
+			if(r > AvgMaxRange*nAvgLo*nAvgHi) {
+#endif
+				//! A very sharp transient inside a small bandwidth
+				//! is likely to be a statistical anomaly, so ignore it
+				//! and let it stabilize on its own
+				size_t Bw = Band-1 - LastQBandOfs;
+				if(Bw > 4) {
+					//! Create quantizer band
+					LastQBandOfs = Band;
+					QuantsBw[nQBands] = Bw;
+					if(++nQBands == MAX_QUANTS-1) break;
+
+					//! Reset for a new band starting from the transient band
+					Avg = 0.0f;
+					Band--;
 				}
 			}
-
-			//! Add to quantizer band
-			SumSqr += vNew;
-			QBandNzBw++;
-		}
-
-		//! Increase bandwidth
-		QBandBw++;
-
-		//! Step through flatness
-		Flat_mu += Flat_Step;
-		if(Flat_mu >= 1.0f) {
-			Flat_mu -= 1.0f;
-			Flat_Cur = Flat_Nxt;
-			Flat_Nxt = *Flatness++;
 		}
 	}
-	QuantsBw[nQBands++] = BandsRem;
+	QuantsBw[nQBands++] = BlockSize - LastQBandOfs;
 }
 
 /**************************************/
 
 //! Process keys to work with and build quantizers
 //! Returns the number of keys to encode
-static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys, float RateKbps) {
+static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, size_t nNzMax, size_t nKeys) {
 	size_t Key;
 	size_t BlockSize = State->BlockSize;
 
@@ -162,7 +142,7 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 			QuantsAbs[Chan][QBand] = 0.0;
 			//Quants   [Chan][QBand] = 0.0f; //! <- Will be set during first pass below
 		}
-		Block_Encode_BuildQBands(CoefBuffer[Chan], QuantsBw[Chan], State->TransformFlatness[Chan], BlockSize, State->RateHz * 0.5f, RateKbps);
+		Block_Encode_BuildQBands(State->TransformNepers[Chan], QuantsBw[Chan], BlockSize);
 	}
 
 	//! Clip to maximum available keys
@@ -170,8 +150,8 @@ static size_t Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, s
 	//! non-zero bands than are actually present for this block
 	if(nNzMax > nKeys) nNzMax = nKeys;
 
-	//! Build initial quantizers by considering
-	//! all available keys (ie. the 'first pass')
+	//! Build initial quantizers by considering all available keys (ie. the 'first pass')
+	//! Note that this is a weighted average, with the weights being the absolute of the value
 	for(Key=0;Key<nNzMax;Key++) {
 		FETCH_KEY_DATA(Key);
 
