@@ -42,9 +42,9 @@ static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer,
 		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
 	}
 }
-static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, size_t nNzMax, size_t nKeys, size_t *_nNzCoded, float RateKbps) {
+static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, size_t nNzMax, size_t nKeys, size_t *_nNzCoded) {
 	//! Process the keys and determine how many we're working with
-	size_t nKeysEncode = Block_Encode_ProcessKeys(State, nNzMax, nKeys, RateKbps);
+	size_t nKeysEncode = Block_Encode_ProcessKeys(State, nNzMax, nKeys);
 
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
