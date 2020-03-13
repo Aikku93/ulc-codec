@@ -158,7 +158,6 @@ size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, c
 		}
 
 		//! Inverse transform block
-		//ULC_Transform_AntiPreEcho(TransformBuffer, BlockSize);
 		Fourier_IMDCT(DstData + Chan*BlockSize, TransformBuffer, TransformInvLap[Chan], TransformTemp, BlockSize, State->BlockOverlap);
 	}
 	return Size;
