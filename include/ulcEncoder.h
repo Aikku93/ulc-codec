@@ -16,6 +16,11 @@
 //! Lowest possible coefficient value
 #define ULC_COEF_EPS (0x1.0p-33) //! 4+0xE+15 = Maximum extended-precision quantizer
 
+//! Used in Neper-scale coefficients
+//! dB calculations would add computational cost for the exact same results,
+//! as logf() is faster than log2f() which is faster than log10f()... somehow
+#define ULC_COEF_NEPER_OUT_OF_RANGE 0.0f
+
 /**************************************/
 
 //! Encoder state structure
@@ -38,19 +43,19 @@ struct ULC_EncoderState_t {
 	//! Buffer memory layout:
 	//!  Data:
 	//!   char          _Padding[];
-	//!   float         TransformBuffer  [nChan][BlockSize]
-	//!   float         TransformTemp    [2*BlockSize]
-	//!   float         TransformFwdLap  [nChan][BlockSize/2]
-	//!   float         TransformFlatness[nChan][N_FLATNESS]
-	//!   AnalysisKey_t AnalysisKeys     [nChan*BlockSize]
-	//!   double        QuantsPow        [nChan][MAX_QUANTS]
-	//!   double        QuantsAbs        [nChan][MAX_QUANTS]
-	//!   float         Quants           [nChan][MAX_QUANTS]
-	//!   uint16_t      QuantsBw         [nChan][MAX_QUANTS]
+	//!   float         TransformBuffer[nChan][BlockSize]
+	//!   float         TransformNepers[nChan][BlockSize]
+	//!   float         TransformFwdLap[nChan][BlockSize/2]
+	//!   float         TransformTemp  [BlockSize]
+	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
+	//!   double        QuantsPow      [nChan][MAX_QUANTS]
+	//!   double        QuantsAbs      [nChan][MAX_QUANTS]
+	//!   float         Quants         [nChan][MAX_QUANTS]
+	//!   uint16_t      QuantsBw       [nChan][MAX_QUANTS]
 	//!  Followed by MD-array pointers:
 	//!   float    *_TransformBuffer  [nChan]
+	//!   float    *_TransformNepers  [nChan]
 	//!   float    *_TransformFwdLap  [nChan]
-	//!   float    *_TransformFlatness[nChan]
 	//!   double   *_QuantsPow        [nChan]
 	//!   double   *_QuantsAbs        [nChan]
 	//!   float    *_Quants           [nChan]
@@ -58,9 +63,9 @@ struct ULC_EncoderState_t {
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
-	float     *TransformTemp;
+	float    **TransformNepers;
 	float    **TransformFwdLap;
-	float    **TransformFlatness;
+	float     *TransformTemp;
 	void      *AnalysisKeys;
 	double   **QuantsPow;
 	double   **QuantsAbs;
