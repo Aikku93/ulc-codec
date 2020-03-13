@@ -91,28 +91,45 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 //! Returns updated number of keys in list
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, size_t Chan, struct AnalysisKey_t *Keys, size_t nKeys, float AnalysisPower, const float *MaskingPower) {
-	size_t i;
-#if !USE_PSYCHOACOUSTICS
-	(void)MaskingPower;
+static void Block_Transform_InsertKeys(
+	struct AnalysisKey_t *Keys,
+	const float *Coef,
+	const float *CoefNp,
+	size_t BlockSize,
+	size_t *nKeys,
+	size_t Chan,
+	float AnalysisPower,
+	float NyquistHz
+) {
+	size_t Band;
+#if MASKING_BAND_DECIMATION_FACTOR > 1
+	float MaskCur = 0.0f; //! <- Initializing shuts gcc up
+	float MaskNxt = Block_Transform_ComputeMaskingPower(Coef, CoefNp, 0, BlockSize, NyquistHz);
 #endif
-	//! Start inserting keys
-	for(i=0;i<BlockSize;i++) {
-		//! Check that value doesn't collapse to 0 under the smallest quantizer (1.0)
-		float v2 = SQR(Coef[i]);
-		if(v2 >= SQR(0.5f*ULC_COEF_EPS)) {
-			//! Build and insert key
-			Keys[nKeys].Band = i;
-			Keys[nKeys].Chan = Chan;
-#if ULC_USE_PSYHOACOUSTICS
-			Keys[nKeys].Val  = v2*AnalysisPower - MaskingPower[i/2];
+	for(Band=0;Band<BlockSize;Band++) {
+#if MASKING_BAND_DECIMATION_FACTOR > 1
+		//! Update masking
+		size_t MaskMu = Band%MASKING_BAND_DECIMATION_FACTOR;
+		if(MaskMu == 0) {
+			MaskCur = MaskNxt;
+			size_t NextBand = Band + MASKING_BAND_DECIMATION_FACTOR;
+			if(NextBand < BlockSize) MaskNxt = Block_Transform_ComputeMaskingPower(Coef, CoefNp, NextBand, BlockSize, NyquistHz);
+		}
+		float Mask = (MaskCur*(MASKING_BAND_DECIMATION_FACTOR - MaskMu) + MaskNxt*MaskMu) * (1.0f / MASKING_BAND_DECIMATION_FACTOR);
+#endif
+		//! Check that the value is in range of the smallest quantization
+		float ValNp = SQR(Coef[Band]);
+		if(ValNp >= 0.5f*SQR(ULC_COEF_EPS)) {
+			Keys[*nKeys].Band = Band;
+			Keys[*nKeys].Chan = Chan;
+#if MASKING_BAND_DECIMATION_FACTOR > 1
+			Keys[*nKeys].Val  = ValNp*AnalysisPower - Mask;
 #else
-			Keys[nKeys].Val  = v2*AnalysisPower;
+			Keys[*nKeys].Val  = ValNp*AnalysisPower - Block_Transform_ComputeMaskingPower(Coef, CoefNp, Band, BlockSize, NyquistHz);
 #endif
-			nKeys++;
+			(*nKeys)++;
 		}
 	}
-	return nKeys;
 }
 
 /**************************************/
@@ -122,6 +139,14 @@ static size_t Block_Transform_InsertKeys(const float *Coef, size_t BlockSize, si
 //!  -Applies MDCT
 //!  -Stores keys for block coefficients
 //! Returns the number of keys stored
+static inline void Block_Transform_ToNepers(float *Dst, float *Src, size_t BlockSize) {
+	size_t Band;
+	for(Band=0;Band<BlockSize;Band++) {
+		float v = ABS(Src[Band]);
+		      v = (v < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(v);
+		Dst[Band] = v - ULC_COEF_EPS*(v == 0.0f);
+	}
+}
 static size_t Block_Transform(const struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	size_t nChan     = State->nChan;
 	size_t BlockSize = State->BlockSize;
@@ -131,30 +156,19 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 	float  AnalysisPower = 1.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Get buffer pointers
-		//! NOTE:
-		//!  TransformTemp has 2*BlockSize elements
-		//!  The first half will contain our (scaled) sample data
-		//!  The second half will be for processing
-		float *BufferSample    = State->TransformTemp;
-		float *BufferTemp      = State->TransformTemp + BlockSize;
-		float *BufferMasking   = BufferTemp;
-		float *BufferFlatness  = State->TransformFlatness[Chan];
 		float *BufferTransform = State->TransformBuffer[Chan];
+		float *BufferNepers    = State->TransformNepers[Chan];
 		float *BufferFwdLap    = State->TransformFwdLap[Chan];
+		float *BufferTemp      = State->TransformTemp;
 
-		//! Fetch sample data
-		//! Pre-scale for scaled IMDCT(*2.0/BlockSize)
-		Block_Transform_CopySamples(BufferSample, Data + Chan*BlockSize, BlockSize, 2.0f/BlockSize);
+		//! Fetch sample data, pre-scaled for scaled IMDCT(*2.0/BlockSize)
+		//! NOTE: Sample data temporarily stored to BufferNepers
+		Block_Transform_CopySamples(BufferNepers, Data + Chan*BlockSize, BlockSize, 2.0f/BlockSize);
 
-		//! Apply transforms
-		//! NOTE: Masking power stored to BufferTemp
-		Fourier_MDCT(BufferTransform, BufferSample, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
-		Block_Transform_ComputeFlatness(BufferTransform, BufferFlatness, BlockSize);
-#if ULC_USE_PSYHOACOUSTICS
-		Block_Transform_ComputeMaskingPower(BufferTransform, BufferMasking, BufferFlatness, BlockSize, State->RateHz * 0.5f);
-#endif
-		//! Insert coefficient keys
-		nKeys = Block_Transform_InsertKeys(BufferTransform, BlockSize, Chan, State->AnalysisKeys, nKeys, AnalysisPower, BufferMasking);
+		//! Apply transforms and insert keys
+		Fourier_MDCT(BufferTransform, BufferNepers, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
+		Block_Transform_ToNepers(BufferNepers, BufferTransform, BlockSize);
+		Block_Transform_InsertKeys(State->AnalysisKeys, BufferTransform, BufferNepers, BlockSize, &nKeys, Chan, AnalysisPower, State->RateHz * 0.5f);
 		AnalysisPower *= PowerDecay;
 	}
 	Analysis_KeysValSort(State->AnalysisKeys, nKeys);
