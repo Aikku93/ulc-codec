@@ -11,7 +11,7 @@
 
 //! 0 == No psychoacoustic optimizations
 //! 1 == Use psychoacoustic model
-#define ULC_USE_PSYHOACOUSTICS 1
+#define ULC_USE_PSYCHOACOUSTICS 1
 
 //! Lowest possible coefficient value
 #define ULC_COEF_EPS (0x1.0p-33) //! 4+0xE+15 = Maximum extended-precision quantizer
@@ -20,6 +20,9 @@
 //! dB calculations would add computational cost for the exact same results,
 //! as logf() is faster than log2f() which is faster than log10f()... somehow
 #define ULC_COEF_NEPER_OUT_OF_RANGE 0.0f
+
+//! Maximum allowed quantizers
+#define ULC_MAX_QBANDS 48
 
 /**************************************/
 
@@ -48,16 +51,16 @@ struct ULC_EncoderState_t {
 	//!   float         TransformFwdLap[nChan][BlockSize/2]
 	//!   float         TransformTemp  [BlockSize]
 	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
-	//!   double        QuantsPow      [nChan][MAX_QUANTS]
-	//!   double        QuantsAbs      [nChan][MAX_QUANTS]
+	//!   float         QuantsSum      [nChan][MAX_QUANTS]
+	//!   float         QuantsWeight   [nChan][MAX_QUANTS]
 	//!   float         Quants         [nChan][MAX_QUANTS]
 	//!   uint16_t      QuantsBw       [nChan][MAX_QUANTS]
 	//!  Followed by MD-array pointers:
 	//!   float    *_TransformBuffer  [nChan]
 	//!   float    *_TransformNepers  [nChan]
 	//!   float    *_TransformFwdLap  [nChan]
-	//!   double   *_QuantsPow        [nChan]
-	//!   double   *_QuantsAbs        [nChan]
+	//!   float    *_QuantsSum        [nChan]
+	//!   float    *_QuantsWeight     [nChan]
 	//!   float    *_Quants           [nChan]
 	//!   uint16_t *_QuantsBw         [nChan]
 	//! BufferData contains the pointer returned by malloc()
@@ -67,8 +70,8 @@ struct ULC_EncoderState_t {
 	float    **TransformFwdLap;
 	float     *TransformTemp;
 	void      *AnalysisKeys;
-	double   **QuantsPow;
-	double   **QuantsAbs;
+	float    **QuantsSum;
+	float    **QuantsWeight;
 	float    **Quants;
 	uint16_t **QuantsBw;
 };
@@ -88,8 +91,8 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //! Encode block
 //! NOTE:
 //!  -Maximum size (in bits) for each block is:
-//!    (4 + 12*(MAX_QUANTS-1) + 4*BlockSize)*nChan
-//!   So output buffer size must be at least that size
+//!    (8 + 16*(MAX_QUANTS-1) + 4*BlockSize)*nChan
+//!   So output buffer size should be at least that size
 //!  -Input data must have its channels arranged sequentially;
 //!   For example:
 //!   {
