@@ -39,7 +39,7 @@ static float Block_Encode_BuildQuantizer(float Sum, float Weight) {
 	//! `sd` will always be greater than 4 (due to the bias)
 	//! NOTE: Adding 0.5 and then truncating to avoid lrint()
 	int sd = (int)(4.5f - 0x1.715476p0f*logf(Sum / Weight)); //! 0x1.715476p0 == 1/Ln[2]
-	if(sd < 0) sd = 0; //! Sometimes happens because of overflow?
+	if(sd < 4) sd = 4; //! Sometimes happens because of overflow?
 	if(sd > 4 + 0xE + 15) sd = 4 + 0xE + 15; //! 4+Eh+15 = Maximum extended-precision quantizer value (including a bias of 4)
 	return exp2f(sd);
 }
