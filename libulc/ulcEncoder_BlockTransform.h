@@ -22,7 +22,7 @@
 /**************************************/
 
 //! Copy scaled samples to buffer
-static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, size_t N, float Scale) {
+static inline void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, size_t N, float Scale) {
 	size_t i;
 #if defined(__AVX__)
 	__m256 mScale = _mm256_set1_ps(Scale);
@@ -91,23 +91,91 @@ static void Block_Transform_CopySamples(float *DataDst, const float *DataSrc, si
 //! Returns updated number of keys in list
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-static void Block_Transform_InsertKeys(
+struct Block_Transform_InsertKeys_UpdateQuantizers_QuantState_t {
+	float  Avg,   nAvg;
+	float  AvgLo, nAvgLo;
+	float  AvgHi, nAvgHi;
+	size_t nQBands, LastQBandOfs;
+};
+static inline size_t Block_Transform_InsertKeys_UpdateQuantizers(
+	struct Block_Transform_InsertKeys_UpdateQuantizers_QuantState_t *State,
+	size_t Band,
+	float vNp
+) {
+	if(State->nQBands == ULC_MAX_QBANDS-1) return 0;
+
+	//! Neper change before a quantizer change should happen
+	float AvgMaxRange = 4.0f;
+
+	//! Creating the first quantizer band?
+	if(State->Avg == 0.0f) {
+		State->Avg   = vNp, State->nAvg   = 1.0f;
+		State->AvgLo = vNp, State->nAvgLo = 1.0f;
+		State->AvgHi = vNp, State->nAvgHi = 1.0f;
+		return 0;
+	}
+
+	//! Add to the lower/upper average
+#if 0
+	if(vNp < State->Avg/State->nAvg) State->AvgLo += vNp, State->nAvgLo += 1.0f;
+	else                             State->AvgHi += vNp, State->nAvgHi += 1.0f;
+#else //! Math optimization (avoid division)
+	if(vNp*State->nAvg < State->Avg) State->AvgLo += vNp, State->nAvgLo += 1.0f;
+	else                             State->AvgHi += vNp, State->nAvgHi += 1.0f;
+#endif
+	State->Avg += vNp, State->nAvg += 1.0f;
+
+	//! Check range against threshold
+#if 0
+	float r = ABS(State->AvgHi/State->nAvgHi - State->AvgLo/State->nAvgLo);
+	if(r > AvgMaxRange) {
+#else //! Math optimization (avoid division)
+	float r = ABS(State->AvgHi*State->nAvgLo - State->AvgLo*State->nAvgHi);
+	if(r > AvgMaxRange*State->nAvgLo*State->nAvgHi) {
+#endif
+		//! A very sharp transient inside a small bandwidth
+		//! is likely to be a statistical anomaly, so ignore it
+		//! and let it stabilize on its own
+		size_t Bw = Band-1 - State->LastQBandOfs;
+		if(Bw > 4) {
+			//! Reset for a new band starting from the transient band
+			State->Avg   = vNp, State->nAvg   = 1.0f;
+			State->AvgLo = vNp, State->nAvgLo = 1.0f;
+			State->AvgHi = vNp, State->nAvgHi = 1.0f;
+			return Bw;
+		}
+	}
+	return 0;
+}
+static inline void Block_Transform_InsertKeys(
 	struct AnalysisKey_t *Keys,
 	const float *Coef,
 	const float *CoefNp,
 	size_t BlockSize,
 	size_t *nKeys,
+	uint16_t *QuantsBw,
 	size_t Chan,
 	float AnalysisPower,
 	float NyquistHz
 ) {
+#if !ULC_USE_PSYCHOACOUSTICS
+	(void)Coef;
+	(void)NyquistHz;
+#endif
 	size_t Band;
-#if MASKING_BAND_DECIMATION_FACTOR > 1
-	float MaskCur = 0.0f; //! <- Initializing shuts gcc up
+#if ULC_USE_PSYCHOACOUSTICS && MASKING_BAND_DECIMATION_FACTOR > 1
+	float MaskCur = 0.0f;
 	float MaskNxt = Block_Transform_ComputeMaskingPower(Coef, CoefNp, 0, BlockSize, NyquistHz);
 #endif
+	struct Block_Transform_InsertKeys_UpdateQuantizers_QuantState_t QuantState = {
+		.Avg   = 0, .nAvg   = 0,
+		.AvgLo = 0, .nAvgLo = 0,
+		.AvgHi = 0, .nAvgHi = 0,
+		.nQBands = 0, .LastQBandOfs = 0,
+	};
+	AnalysisPower = 2.0f*logf(AnalysisPower);
 	for(Band=0;Band<BlockSize;Band++) {
-#if MASKING_BAND_DECIMATION_FACTOR > 1
+#if ULC_USE_PSYCHOACOUSTICS && MASKING_BAND_DECIMATION_FACTOR > 1
 		//! Update masking
 		size_t MaskMu = Band%MASKING_BAND_DECIMATION_FACTOR;
 		if(MaskMu == 0) {
@@ -115,21 +183,39 @@ static void Block_Transform_InsertKeys(
 			size_t NextBand = Band + MASKING_BAND_DECIMATION_FACTOR;
 			if(NextBand < BlockSize) MaskNxt = Block_Transform_ComputeMaskingPower(Coef, CoefNp, NextBand, BlockSize, NyquistHz);
 		}
-		float Mask = (MaskCur*(MASKING_BAND_DECIMATION_FACTOR - MaskMu) + MaskNxt*MaskMu) * (1.0f / MASKING_BAND_DECIMATION_FACTOR);
 #endif
 		//! Check that the value is in range of the smallest quantization
-		float ValNp = SQR(Coef[Band]);
-		if(ValNp >= 0.5f*SQR(ULC_COEF_EPS)) {
-			Keys[*nKeys].Band = Band;
-			Keys[*nKeys].Chan = Chan;
-#if MASKING_BAND_DECIMATION_FACTOR > 1
-			Keys[*nKeys].Val  = ValNp*AnalysisPower - Mask;
-#else
-			Keys[*nKeys].Val  = ValNp*AnalysisPower - Block_Transform_ComputeMaskingPower(Coef, CoefNp, Band, BlockSize, NyquistHz);
+		float Val = CoefNp[Band]; if(Val == ULC_COEF_NEPER_OUT_OF_RANGE) continue;
+
+		//! Interpolate masking
+		float Mask = 0.0f;
+#if ULC_USE_PSYCHOACOUSTICS
+# if MASKING_BAND_DECIMATION_FACTOR > 1
+		Mask = (MaskCur*(MASKING_BAND_DECIMATION_FACTOR - MaskMu) + MaskNxt*MaskMu) * (1.0f / MASKING_BAND_DECIMATION_FACTOR);
+# else
+		Mask = Block_Transform_ComputeMaskingPower(Coef, CoefNp, Band, BlockSize, NyquistHz);
+# endif
 #endif
-			(*nKeys)++;
+		//! Get final channel value, taking into account masking and analysis power
+		Val = 2.0f*Val - Mask + AnalysisPower;
+
+		//! Update quantizer bands
+		//! NOTE: Pass the /masked/ value here
+		size_t Bw = Block_Transform_InsertKeys_UpdateQuantizers(&QuantState, Band, Val);
+		if(Bw != 0) {
+			QuantState.LastQBandOfs = Band;
+			QuantsBw[QuantState.nQBands++] = Bw;
 		}
+
+		//! Insert key for this band
+		Keys[*nKeys].Band = Band;
+		Keys[*nKeys].Chan = Chan;
+		Keys[*nKeys].Val  = Val;
+		(*nKeys)++;
 	}
+
+	//! Create the final quantizer band
+	QuantsBw[QuantState.nQBands++] = BlockSize - QuantState.LastQBandOfs;
 }
 
 /**************************************/
@@ -168,7 +254,7 @@ static size_t Block_Transform(const struct ULC_EncoderState_t *State, const floa
 		//! Apply transforms and insert keys
 		Fourier_MDCT(BufferTransform, BufferNepers, BufferFwdLap, BufferTemp, BlockSize, State->BlockOverlap);
 		Block_Transform_ToNepers(BufferNepers, BufferTransform, BlockSize);
-		Block_Transform_InsertKeys(State->AnalysisKeys, BufferTransform, BufferNepers, BlockSize, &nKeys, Chan, AnalysisPower, State->RateHz * 0.5f);
+		Block_Transform_InsertKeys(State->AnalysisKeys, BufferTransform, BufferNepers, BlockSize, &nKeys, State->QuantsBw[Chan], Chan, AnalysisPower, State->RateHz * 0.5f);
 		AnalysisPower *= PowerDecay;
 	}
 	Analysis_KeysValSort(State->AnalysisKeys, nKeys);
