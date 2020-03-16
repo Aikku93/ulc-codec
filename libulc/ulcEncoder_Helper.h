@@ -19,32 +19,49 @@ static inline size_t IntLog2(unsigned int x) {
 
 //! Spectral flatness measure
 //! Adapted from "Note on measures for spectral flatness"
-//! and then optimized, and slightly tweaked (specifically,
-//! normalization was factored out to perform a single pass;
-//! this is not technically the same, but the results are
-//! extremely close, and so it's worth optimizing like this)
 //! DOI: 10.1049/el.2009.1977
+//! Optimized derivation (for a single loop):
+//!  Given a sequence x[0..N-1]:
+//!  Let `f` be the output value, and `b` an arbitrary base:
+//!   f = 2^(-g / log_b(N)) - 1
+//!   where `g` = Sum(y[n]*log_b(y[n]))
+//!   and y = x[n] / Sum(x[0..N])
+//!  Letting `a` = Sum(x[0..N]) and replacing `y` by its
+//!  definition, we then get:
+//!   g = Sum(x[n]/a * log_b(x[n]/a))
+//!  Use logarithm rules to expand:
+//!   g = Sum(x[n]/a * (log_b(x[n]) - log_b(a)))
+//!   g = Sum(x[n] * log_b(x[n]) / a) - Sum(x[n] * log_b(a) / a)
+//!  Factor out `a` and `log_b(a)`:
+//!   g = (1/a)*Sum(x[n] * log_b(x[n])) - (1/a)*log_b(a)*Sum(x[n])
+//!  And since `a` = Sum(x[0..N]):
+//!   g = (1/a)*Sum(x[n] * log_b(x[n])) - log_b(Sum(x[n]))
+//!  This means that we only need to compute two sums:
+//!   a = Sum(x[n])
+//!   f = Sum(x[n] * log_b(x[n]))
+//!  and combine as
+//!   g = (1/a)*f - log_b(a)
+//!  As the sums are independent, this can be performed in a single step.
 static inline float SpectralFlatness(const float *Buf, size_t N) {
 	size_t i;
-	float Sum = 0.0f;
-	float Nrm = 0.0f;
+	float a = 0.0f, f = 0.0f;
 	for(i=0;i<N;i++) {
-		float v = SQR(Buf[i]);
-		Nrm += v; if(v != 0.0f) Sum += v*logf(v);
+		float Val = SQR(Buf[i]);
+		a += Val;
+		if(Val != 0.0f) f += Val*logf(Val);
 	}
-	return exp2f((Nrm*logf(Nrm) - Sum) / (Nrm * logf(N))) - 1.0f;
+	if(a == 0.0f) return 1.0f;
+	return exp2f((logf(a) - f/a) / logf(N)) - 1.0f;
 }
 
 //! Masking bandwidth estimation
-//! The curve peaks at around 3000Hz, corresponding to human hearing
 static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
-	return 1000.0f * expf(-2.0f*(float)M_PI * SQR(Fc/16000.0f)) * (1.0f - expf(-2.0f*(float)M_PI * SQR((Fc + 80.0f)/5000.0f)));
-}
-
-//! NOTE: Unused, and mostly for reference
-//! ERB scale-based (Moore and Glasberg, 1990) masking bandwidth estimation, but made into an exponential curve
-static inline __attribute__((always_inline)) float MaskingBandwidth_ERB(float Fc) {
-	return 1200.0f * (1.0f - expf((float)(-2.0*M_PI/SQR(16000.0f)) * SQR(Fc)));
+#if 1 //! Bark scale
+	return 50.21f + Fc*(1.0f/8.73f + Fc*(1.0f/93945.23f));
+#else
+	//! ERB scale
+	return 24.7f + 107.939f*Fc;
+#endif
 }
 
 /**************************************/
