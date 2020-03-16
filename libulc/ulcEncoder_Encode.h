@@ -16,7 +16,7 @@
 
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
 static inline int32_t Block_Encode_Quantize(float v, float q) {
-	int32_t vq = lrint(sqrtf(fabsf(v*q)));
+	int32_t vq = (int32_t)(sqrtf(ABS(v)*q) + 0.5f);
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, size_t *Size) {
