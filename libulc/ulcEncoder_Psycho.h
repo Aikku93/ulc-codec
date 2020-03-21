@@ -6,103 +6,79 @@
 #pragma once
 /**************************************/
 #include <math.h>
-#include <stddef.h>
 #include <stdint.h>
 /**************************************/
 #include "ulcEncoder.h"
 #include "ulcEncoder_Helper.h"
 /**************************************/
 
-//! How many masking bands are used per actual band
-//! 1 corresponds to no decimation. This would ideally give
-//! the most correct results (while being the slowest option),
-//! but in testing it was found that 16 or 32 works better in
-//! practice, while also being significantly faster
-#define MASKING_BAND_DECIMATION_FACTOR 32
-
-/**************************************/
-
-//! Compute masking energy estimation
-//! NOTE: This uses an inlined version of SpectralFlatness(), as we
-//! are already iterating over those bands so it makes no sense to
-//! use multiple loops to do different tasks
-static inline float Block_Transform_ComputeMaskingPower(
+//! Masking threshold estimation
+//! NOTE: ERB and flatness calculations are inlined as an optimization
+struct Block_Transform_MaskingState_t {
+	float SumLin;
+	float SumLog;
+	float BwBase;
+	int   BandBeg;
+	int   BandEnd;
+};
+static inline void Block_Transform_MaskingState_Init(
+	struct Block_Transform_MaskingState_t *State,
 	const float *Coef,
 	const float *CoefNp,
-	size_t Band,
-	size_t BlockSize,
+	int   BlockSize,
 	float NyquistHz
 ) {
-#if ULC_USE_PSYCHOACOUSTICS
-	size_t n;
-
+	State->SumLin = SQR(Coef[0]);
+	State->SumLog = SQR(Coef[0]) * CoefNp[0];
+	State->BwBase = 24.7f*BlockSize/NyquistHz + 0.0539695f;
+	State->BandBeg = 0;
+	State->BandEnd = 0;
+}
+static inline float Block_Transform_UpdateMaskingThreshold(
+	struct Block_Transform_MaskingState_t *State,
+	const float *Coef,
+	const float *CoefNp,
+	int   Band,
+	int   BlockSize,
+	float *_Flat
+) {
 	//! These settings are mostly based on trial and error
-	float Bw = MaskingBandwidth((Band+MASKING_BAND_DECIMATION_FACTOR*0.5f) * NyquistHz/BlockSize) * BlockSize/NyquistHz;
-	float BandPow  = 0.0f; for(n=0;n<MASKING_BAND_DECIMATION_FACTOR;n++) BandPow += ABS(Coef[Band+n]);
-	      BandPow  = BandPow / MASKING_BAND_DECIMATION_FACTOR;
-	float MaskFW   = 1.0f - BandPow;
+	float Bw = State->BwBase + 0.107939f*Band;
+	float MaskFW   = 1.0f - ABS(Coef[Band]);
 	float MaskBW   = sqrtf(1.0f - MaskFW);
-	float fBwFW    = Bw * MaskFW;
-	float fBwBW    = Bw * MaskBW;
-	size_t BwFW    = (size_t)(fBwFW);
-	size_t BwBW    = (size_t)(fBwBW);
-	if(Band+MASKING_BAND_DECIMATION_FACTOR+BwFW > BlockSize) BwFW = BlockSize - (Band+MASKING_BAND_DECIMATION_FACTOR);
-	if(Band                                     < BwBW)      BwBW = Band;
-	if(!BwFW && !BwBW) return 0.0f;
+	int   BandEnd  = Band + (int)(Bw * MaskFW + 0.5f);
+	int   BandBeg  = Band - (int)(Bw * MaskBW + 0.5f);
+	if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
+	if(BandBeg <          0) BandBeg = 0;
 
-	//! Get the energy of the masked bandwidths
-	float SumPow = 0.0f, SumFlat = 0.0f; {
-		float ScaleLin, ScaleExp;
-		float DecayLin, DecayExp;
-
-		//! Forwards
-		//! Target decay of -1.6Np (~0.2 linear scaling)
-		ScaleLin = 0.0f;
-		ScaleExp = 1.0f;
-		DecayLin = -1.6f / fBwFW;
-		DecayExp = expf(DecayLin);
-		for(n=0;n<BwFW;n++) {
-			float Val2  = ABS(Coef  [Band+n+MASKING_BAND_DECIMATION_FACTOR]) * (ScaleExp *= DecayExp);
-			float ValNp =    (CoefNp[Band+n+MASKING_BAND_DECIMATION_FACTOR]) + (ScaleLin += DecayLin);
-			SumPow  += Val2;
-			SumFlat += Val2 * ValNp;
-		}
-
-		//! Backwards
-		//! Target decay of -0.7Np (~0.5 linear scaling)
-		ScaleLin = 0.0f;
-		ScaleExp = 1.0f;
-		DecayLin = -1.6f / fBwBW;
-		DecayExp = expf(DecayLin);
-		for(n=0;n<BwBW;n++) {
-			float Val2  = ABS(Coef  [Band-n-1]) * (ScaleExp *= DecayExp);
-			float ValNp =    (CoefNp[Band-n-1]) + (ScaleLin += DecayLin);
-			SumPow  += Val2;
-			SumFlat += Val2*ValNp;
-		}
+	//! Update masking calculations
+	{
+#define ADD_TO_STATE(Val, ValNp) State->SumLin += SQR(Val), State->SumLog += SQR(Val)*(ValNp)
+#define SUB_TO_STATE(Val, ValNp) State->SumLin -= SQR(Val), State->SumLog -= SQR(Val)*(ValNp)
+		int Beg = State->BandBeg, End = State->BandEnd;
+		while(BandBeg < Beg) Beg--, ADD_TO_STATE(Coef[Beg], CoefNp[Beg]); //! Expand
+		while(BandEnd > End) End++, ADD_TO_STATE(Coef[End], CoefNp[End]);
+		while(BandBeg > Beg) SUB_TO_STATE(Coef[Beg], CoefNp[Beg]), Beg++; //! Contract
+		while(BandEnd < End) SUB_TO_STATE(Coef[End], CoefNp[End]), End--;
+		State->BandBeg = BandBeg, State->BandEnd = BandEnd;
+#undef SUB_TO_STATE
+#undef ADD_TO_STATE
 	}
 
-	//! Add the energy of the 'center' bandwidths to get the
-	//! final masking power and flatness
-	for(n=0;n<MASKING_BAND_DECIMATION_FACTOR;n++) {
-		float Val2  = ABS(Coef  [Band+n]); SumPow  += Val2;
-		float ValNp =    (CoefNp[Band+n]); SumFlat += Val2*ValNp;
-	}
-	if(SumPow == 0.0f) return 0.0f;
-	float Flat = exp2f((logf(SumPow) - SumFlat/SumPow) / logf(BwBW + MASKING_BAND_DECIMATION_FACTOR + BwFW)) - 1.0f;
-
-	//! Return the final masked power
-	//! Scaling by a flatness curve seems to give better results,
-	//! as flatter signals mask much more than tonal ones
-	return SumFlat/SumPow + 2.5f-4.5f*(1.0f-Flat);
-#else
-	(void)Coef;
-	(void)CoefNp;
-	(void)Band;
-	(void)BlockSize;
-	(void)NyquistHz;
-	return 0.0f;
-#endif
+	//! Get final masking threshold and flatness from the intermediates
+	//! NOTE: Limit at (0.5*eps)^2; this would correspond to one single
+	//! coefficient in the sum, so anything smaller than that would be
+	//! rounding error from limited precision representation.
+	//! NOTE: Multiply by two in the flatness equation ONLY. This will
+	//! return the correct masking value, while still using the squared
+	//! coefficients necessary for the calculation, as that equation
+	//! relies on kind of 'comparing' the log/linear values so they must
+	//! match. The reason for this is that log(x^2) = 2*log(x)
+	//! NOTE: 0x1.62E430p-1f = Log[2]
+	float  SumLin = State->SumLin; if(SumLin < SQR(0.5f*ULC_COEF_EPS)) { *_Flat = 1.0f; return 0.0f; }
+	float nSumLog = State->SumLog / SumLin;
+	*_Flat        = expf(0x1.62E430p-1f * ((logf(SumLin) - 2.0f*nSumLog) / logf(BandEnd - BandBeg + 1))) - 1.0f;
+	return nSumLog;
 }
 
 /**************************************/
