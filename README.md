@@ -28,12 +28,11 @@ This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode
 This will take ```Input.ulc``` and output ```Output.raw```. ```-nomidside``` disables M/S transform decoding.
 
 ## Possible issues
-* Syntax is flexible enough to cause buffer overflows
+* Syntax is flexible enough to cause buffer overflows.
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
     * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
-* Due to the extremely simplified quantization model, a large transform size is almost essential to avoid excessive quality degradation at low bitrates (eg. 32kbps @ 44.1kHz). However, an MP3-esque transform (N=1024; 512 coefficients) will sound only slightly inferior compared to it at 'average' bitrates (eg. 128kbps @ 44.1kHz).
-* The psychoacoustic model used is a very crude approximation to the usual models, as I didn't want to overcomplicate it by involving critical bands and the like. However, it does seem to work well enough to remove inaudible details as needed.
-* Build tools compile with SSE+SSE2/AVX+AVX2/FMA enabled by default. If the encoder crashes/doesn't work, change these flags in the ```Makefile```.
+* The psychoacoustic model used is somewhat bare-bones, so as to avoid extra complexity and memory usage. As an example, blocks are processed with no memory of prior blocks, which could cause some inefficiency in coding (such as not taking advantage of temporal masking effects). However, it does appear to work very well for what it *does* do.
+* Encode/decode tools compile with SSE+SSE2/AVX+AVX2/FMA enabled by default. If the encoder crashes/doesn't work, change these flags in the ```Makefile```.
 
 ## Technical details
 * Target bitrate: 32..256kbps+ (44.1kHz, M/S stereo)
@@ -50,7 +49,7 @@ This will take ```Input.ulc``` and output ```Output.raw```. ```-nomidside``` dis
 ulc-codec is released under the GPLv3 license. See the LICENSE file for full terms.
 
 ## Acknowledgements
-* Huge thanks to Dennis K (`DekuTree64`) and `musicalman` for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design
+* Huge thanks to Dennis K (`DekuTree64`) and `musicalman` for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design, as well as testing out experimental builds and offering immensely helpful critiques. Without them, this codec would never have gotten as far as it has.
 
 ## Gameboy Advance player
 
