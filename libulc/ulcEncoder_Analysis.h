@@ -5,7 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,7 +34,7 @@ static int Analysis_KeysSort_Comparator(const void *_a, const void *_b) {
 	const struct AnalysisKey_t *b = _b;
 	return a->Key - b->Key;
 }
-static void Analysis_KeysSort(struct AnalysisKey_t *Keys, size_t nKeys) {
+static void Analysis_KeysSort(struct AnalysisKey_t *Keys, int nKeys) {
 	qsort(Keys, nKeys, sizeof(struct AnalysisKey_t), Analysis_KeysSort_Comparator);
 }
 
@@ -45,7 +44,7 @@ static int Analysis_KeysValSort_Comparator(const void *_a, const void *_b) {
 	const struct AnalysisKey_t *b = _b;
 	return a->Val < b->Val ? (+1) : (-1);
 }
-static void Analysis_KeysValSort(struct AnalysisKey_t *Keys, size_t nKeys) {
+static void Analysis_KeysValSort(struct AnalysisKey_t *Keys, int nKeys) {
 	qsort(Keys, nKeys, sizeof(struct AnalysisKey_t), Analysis_KeysValSort_Comparator);
 }
 
