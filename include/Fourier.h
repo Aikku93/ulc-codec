@@ -12,8 +12,6 @@
 # include <xmmintrin.h>
 #endif
 /**************************************/
-#include <stddef.h>
-/**************************************/
 
 //! Sine/Cosine approximations
 //! Approximates {Sin,Cos}[x*Pi/2] (with x in range [-1,1])
@@ -39,8 +37,8 @@ float Fourier_SinCos(float x, float *Sin, float *Cos);
 //!  DOI: 10.13001/1081-3810.3207
 //! NOTE:
 //!  -N must be a power of two, and >= 8
-void Fourier_DCT2(float *Buf, float *Tmp, size_t N);
-void Fourier_DCT4(float *Buf, float *Tmp, size_t N);
+void Fourier_DCT2(float *Buf, float *Tmp, int N);
+void Fourier_DCT4(float *Buf, float *Tmp, int N);
 
 //! MDCT/IMDCT (based on DCT-IV; scaled)
 //! Arguments:
@@ -56,8 +54,8 @@ void Fourier_DCT4(float *Buf, float *Tmp, size_t N);
 //!  -Overlap must be a multiple of 16
 //!  -BufOut must not be the same as BufIn
 //!  -Sine window (modulated lapped transform)
-void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N, size_t Overlap);
-void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N, size_t Overlap);
+void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
+void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 
 /**************************************/
 //! EOF

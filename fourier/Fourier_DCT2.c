@@ -10,8 +10,6 @@
 # include <xmmintrin.h>
 #endif
 /**************************************/
-#include <stddef.h>
-/**************************************/
 #include "Fourier.h"
 /**************************************/
 
@@ -106,8 +104,8 @@ static void DCT2_8(float *x) {
 
 /**************************************/
 
-void Fourier_DCT2(float *Buf, float *Tmp, size_t N) {
-	size_t i;
+void Fourier_DCT2(float *Buf, float *Tmp, int N) {
+	int i;
 
 	//! Stop condition
 	if(N == 8) {

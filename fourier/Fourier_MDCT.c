@@ -10,13 +10,11 @@
 # include <xmmintrin.h>
 #endif
 /**************************************/
-#include <stddef.h>
-/**************************************/
 #include "Fourier.h"
 /**************************************/
 
-void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, size_t N, size_t Overlap) {
-	size_t i;
+void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap) {
+	int i;
 	float Ns = 1.0f / Overlap;
 	const float *InLo = BufIn;
 	const float *InHi = BufIn  + N;
