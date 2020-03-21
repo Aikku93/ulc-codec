@@ -5,16 +5,15 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <stddef.h>
+#include <math.h>
 /**************************************/
 #define ABS(x) ((x) < 0 ? (-(x)) : (x))
 #define SQR(x) ((x)*(x))
 /**************************************/
 
-//! Integer floor(log2(x))
-//! Using unsigned int because that's what the compiler expects
-static inline size_t IntLog2(unsigned int x) {
-	return sizeof(unsigned int)*8-1 - __builtin_clz(x);
+//! Maximum possible coding rate
+static inline float MaxCodingKbps(int BlockSize, int nChan, int RateHz) {
+	return nChan*(8 + 16*(ULC_MAX_QBANDS-1) + 4*BlockSize) * (float)RateHz/BlockSize * (1.0f/1000.0f);
 }
 
 //! Spectral flatness measure
@@ -42,8 +41,9 @@ static inline size_t IntLog2(unsigned int x) {
 //!  and combine as
 //!   g = (1/a)*f - log_b(a)
 //!  As the sums are independent, this can be performed in a single step.
-static inline float SpectralFlatness(const float *Buf, size_t N) {
-	size_t i;
+//! NOTE: Unused, and only here for reference
+static inline float SpectralFlatness(const float *Buf, int N) {
+	int i;
 	float a = 0.0f, f = 0.0f;
 	for(i=0;i<N;i++) {
 		float Val = SQR(Buf[i]);
@@ -55,12 +55,13 @@ static inline float SpectralFlatness(const float *Buf, size_t N) {
 }
 
 //! Masking bandwidth estimation
+//! NOTE: Unused, and only here for reference
 static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
-#if 1 //! Bark scale
+#if 0 //! Bark scale
 	return 50.21f + Fc*(1.0f/8.73f + Fc*(1.0f/93945.23f));
 #else
 	//! ERB scale
-	return 24.7f + 107.939f*Fc;
+	return 24.7f + 0.107939f*Fc;
 #endif
 }
 
