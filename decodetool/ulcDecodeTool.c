@@ -18,7 +18,6 @@
 /**************************************/
 
 #define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'd'<<24)
-#define MAX_QUANTS 48
 
 /**************************************/
 
@@ -46,7 +45,7 @@ struct FileHeader_t {
 //! Decoding state
 #define MAX_BLOCK_SIZE 8192
 #define MAX_CHANS         4
-static const size_t CacheSize = 512*1024;
+static const int CacheSize = 512*1024;
 struct DecodeState_t {
 	//! These need to be cleared to NULL
 	FILE *FileIn;
@@ -70,13 +69,13 @@ static void StateCleanupExit(const struct DecodeState_t *State, int ExitCode) {
 //! Initialize state
 static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *Header) {
 	//! Allocate memory
-	size_t BlockBuffer_Size = sizeof(float)    * Header->nChan*Header->BlockSize;
-	size_t BlockOutput_Size = sizeof(int16_t)  * Header->nChan*Header->BlockSize;
-	size_t CacheBuffer_Size = CacheSize;
-	size_t BlockBuffer_Offs = 0;
-	size_t BlockOutput_Offs = BlockBuffer_Offs + BlockBuffer_Size;
-	size_t CacheBuffer_Offs = BlockOutput_Offs + BlockOutput_Size;
-	size_t AllocSize = CacheBuffer_Offs + CacheBuffer_Size;
+	int BlockBuffer_Size = sizeof(float)   * Header->nChan*Header->BlockSize;
+	int BlockOutput_Size = sizeof(int16_t) * Header->nChan*Header->BlockSize;
+	int CacheBuffer_Size = CacheSize;
+	int BlockBuffer_Offs = 0;
+	int BlockOutput_Offs = BlockBuffer_Offs + BlockBuffer_Size;
+	int CacheBuffer_Offs = BlockOutput_Offs + BlockOutput_Size;
+	int AllocSize = CacheBuffer_Offs + CacheBuffer_Size;
 	char *Buf = State->AllocBuffer = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
 	if(!Buf) {
 		printf("ERROR: Out of memory.\n");
@@ -95,9 +94,9 @@ static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *He
 }
 
 //! Advance cached data
-static void StateCacheAdvance(struct DecodeState_t *State, size_t nBytes, size_t MinSize) {
+static void StateCacheAdvance(struct DecodeState_t *State, int nBytes, int MinSize) {
 	State->CacheNext += nBytes;
-	size_t Rem = State->CacheBuffer + CacheSize - State->CacheNext;
+	int Rem = State->CacheBuffer + CacheSize - State->CacheNext;
 	if(Rem < MinSize) {
 		memcpy(State->CacheBuffer, State->CacheNext, Rem);
 		fread(State->CacheBuffer + Rem, sizeof(uint8_t), CacheSize-Rem, State->FileIn);
@@ -164,22 +163,23 @@ int main(int argc, const char *argv[]) {
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
 		//! Process blocks
+		int      n, Chan;
+		int      nChan       = Header.nChan;
+		int      BlockSize   = Header.BlockSize;
 		float   *BlockBuffer = State.BlockBuffer;
 		int16_t *BlockOutput = State.BlockOutput;
-		size_t BlockSize = Header.BlockSize;
-		size_t nChan = Header.nChan;
-		size_t nBlk = (Header.nSamp + BlockSize-1) / BlockSize;
-		for(size_t Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
+		size_t   Blk, nBlk = (Header.nSamp + BlockSize-1) / BlockSize;
+		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
 			//! Show progress
 			printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
 			fflush(stdout);
 
 			//! Decode block
-			size_t Size = ULC_DecodeBlock(&Decoder, BlockBuffer, State.CacheNext);
-			StateCacheAdvance(&State, (Size + 7) / 8, Header.MaxBlockSize);
+			int Size = ULC_DecodeBlock(&Decoder, BlockBuffer, State.CacheNext);
+			StateCacheAdvance(&State, (Size + 7) / 8u, Header.MaxBlockSize);
 
 			//! Apply M/S transform
-			if(MidSideXfm && nChan == 2) for(size_t n=0;n<BlockSize;n++) {
+			if(MidSideXfm && nChan == 2) for(n=0;n<BlockSize;n++) {
 				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
 				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
 				*a = va + vb;
@@ -187,7 +187,7 @@ int main(int argc, const char *argv[]) {
 			}
 
 			//! Interleave to output buffer
-			for(size_t Chan=0;Chan<nChan;Chan++) for(size_t n=0;n<BlockSize;n++) {
+			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
 				BlockOutput[n*nChan+Chan] = (int16_t)Clip16(lrintf(32768.0f * BlockBuffer[Chan*BlockSize+n]));
 			}
 
