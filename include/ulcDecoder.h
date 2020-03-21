@@ -5,7 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <stddef.h>
 #include <stdint.h>
 /**************************************/
 
@@ -15,9 +14,9 @@
 //!  -{nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
 struct ULC_DecoderState_t {
 	//! Global state
-	size_t nChan;        //! Channels in encoding scheme
-	size_t BlockSize;    //! Transform block size
-	size_t BlockOverlap; //! Block overlap
+	int nChan;        //! Channels in encoding scheme
+	int BlockSize;    //! Transform block size
+	int BlockOverlap; //! Block overlap
 
 	//! Encoding state
 	//! Buffer memory layout:
@@ -29,7 +28,7 @@ struct ULC_DecoderState_t {
 	//!  MD-array pointers:
 	//!   float    *_TransformInvLap[nChan]
 	//! BufferData contains the pointer returned by malloc()
-	void *BufferData;
+	void   *BufferData;
 	float  *TransformBuffer;
 	float  *TransformTemp;
 	float **TransformInvLap;
@@ -61,7 +60,7 @@ void ULC_DecoderState_Destroy(struct ULC_DecoderState_t *State);
 //!    0,1,2,3...BlockSize-1, //! Chan1
 //!   }
 //! Returns the number of bits read
-size_t ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer);
+int ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer);
 
 /**************************************/
 //! EOF
