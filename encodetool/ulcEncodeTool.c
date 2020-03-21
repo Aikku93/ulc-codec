@@ -24,7 +24,7 @@
 //! Cache memory
 //! This avoids too many calls to fwrite(), which
 //! hopefully avoids excessive system calls
-#define CACHE_SIZE (256 * 1024) //! 256KiB
+#define CACHE_SIZE (512 * 1024)
 static uint8_t CacheMem[CACHE_SIZE];
 
 /**************************************/
@@ -39,19 +39,19 @@ int main(int argc, const char *argv[]) {
 			" -nc:1              - Set number of channels.\n"
 			" -nomidside         - Disable M/S stereo coding.\n"
 			" -blocksize:2048    - Set number of coefficients per block (must be a power of 2).\n"
-			" -blockoverlap:1536 - Set number of overlap samples (must be a multiple of 16).\n"
+			" -blockoverlap:2048 - Set number of overlap samples (must be a multiple of 16).\n"
 			"Multi-channel data must be interleaved.\n"
 		);
 		return 1;
 	}
 
 	//! Parse parameters
-	int    MidSideXfm   = 1;
-	size_t BlockSize    = 2048;
-	size_t BlockOverlap = 1536;
-	size_t nChan        = 1;
-	size_t RateHz   = atoi(argv[3]);
-	size_t RateKbps = atoi(argv[4]); {
+	int MidSideXfm   = 1;
+	int BlockSize    = 2048;
+	int BlockOverlap = 2048;
+	int nChan        = 1;
+	int RateHz       = atoi(argv[3]);
+	int RateKbps     = atoi(argv[4]); {
 		int n;
 		for(n=5;n<argc;n++) {
 			if(!memcmp(argv[n], "-nc:", 4)) {
@@ -81,17 +81,21 @@ int main(int argc, const char *argv[]) {
 	}
 
 	//! Verify parameters
-	if(RateHz < 1 || RateHz > 0xFFFFFFFFu) {
+	if(RateHz < 1 || RateHz > 0x7FFFFFFF) {
 		printf("ERROR: Invalid playback rate.\n");
 		return -1;
 	}
-	if(RateKbps < 1 || RateKbps > 0xFFFFu) {
+	if(RateKbps < 1 || RateKbps > 0xFFFF) {
 		printf("ERROR: Invalid coding rate.\n");
 		return -1;
 	}
-	if(nChan < 1 || nChan > 0xFFFFu) {
+	if(nChan < 1 || nChan > 0xFFFF) {
 		printf("ERROR: Invalid number of channels.\n");
 		return -1;
+	}
+	if(BlockOverlap > BlockSize) {
+		printf("WARNING: Block overlap larger than block size; clipping it.\n");
+		BlockOverlap = BlockSize;
 	}
 
 	//! Allocate buffers
@@ -146,10 +150,10 @@ int main(int argc, const char *argv[]) {
 		RateHz,
 		BlockSize,
 		BlockOverlap,
-		(uint16_t)nChan,
-		(uint16_t)RateKbps,
+		nChan,
+		RateKbps,
 	};
-	long int FileHeaderOffs = ftell(OutFile);
+	size_t FileHeaderOffs = ftell(OutFile);
 	fseek(OutFile, +sizeof(FileHeader), SEEK_CUR);
 
 	//! Create encoder
@@ -161,20 +165,23 @@ int main(int argc, const char *argv[]) {
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		//! Process blocks
-		size_t n, Chan;
+		int n, Chan;
+		int CacheIdx = 0;
 		size_t Blk, nBlk = (nSamp + BlockSize-1) / BlockSize;
 		uint64_t TotalSize = 0;
-		size_t CacheIdx = 0;
 		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
 			//! Show progress
-			printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
-			fflush(stdout);
+			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
+			if(/*Blk%4u == 0*/1) {
+				printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
+				fflush(stdout);
+			}
 
 			//! Fill buffer data
 			//! BlockFetch[] is free after this
 			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BlockSize, InFile);
 			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-				BlockBuffer[Chan*BlockSize+n] = (n < nMax) ? (BlockFetch[n*nChan+Chan] * 1.0f/32768.0f) : 0.0f;
+				BlockBuffer[Chan*BlockSize+n] = ((size_t)n < nMax) ? (BlockFetch[n*nChan+Chan] * (1.0f/32768.0f)) : 0.0f;
 			}
 
 			//! Apply M/S transform
@@ -188,15 +195,15 @@ int main(int argc, const char *argv[]) {
 			//! Encode block
 			//! Reuse BlockFetch[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockFetch;
-			size_t Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? 0.9f : 1.0f);
+			int Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? 0.9f : 1.0f);
 			TotalSize += Size;
 
 			//! Copy what we can into the cache
-			Size = (Size+7) / 8;
-			if(Size > FileHeader.MaxBlockSize) FileHeader.MaxBlockSize = Size;
+			Size = (Size+7) / 8u;
+			if((size_t)Size > FileHeader.MaxBlockSize) FileHeader.MaxBlockSize = Size;
 			while(Size) {
 				//! Copy up to the limits of the cache area
-				size_t n = CACHE_SIZE - CacheIdx; //! =CacheRem
+				int n = CACHE_SIZE - CacheIdx; //! =CacheRem
 				if(Size < n) n = Size;
 				Size -= n;
 
@@ -216,7 +223,7 @@ int main(int argc, const char *argv[]) {
 
 		//! Show statistics
 		printf(
-			"\e[2K\r"
+			"\e[2K\r" //! Clear line before CR
 			"Total size = %.2fKiB\n"
 			"Avg rate = %.5fkbps (%.5f bits/sample)\n",
 			TotalSize/8.0 / 1024,
