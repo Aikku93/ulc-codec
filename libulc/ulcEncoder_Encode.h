@@ -4,7 +4,6 @@
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
-#include <stddef.h>
 #include <stdint.h>
 /**************************************/
 #include "Fourier.h"
@@ -15,11 +14,11 @@
 /**************************************/
 
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
-static inline int32_t Block_Encode_Quantize(float v, float q) {
-	int32_t vq = (int32_t)(sqrtf(ABS(v)*q) + 0.5f);
+static inline int Block_Encode_Quantize(float v, float q) {
+	int vq = (int)(sqrtf(ABS(v)*q) + 0.5f);
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
-static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, size_t *Size) {
+static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
 	//! Push nybble
 	*(*Dst) >>= 4;
 	*(*Dst)  |= x << 4;
@@ -28,9 +27,9 @@ static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, size_t *Si
 	//! Next byte?
 	if((*Size)%8u == 0) (*Dst)++;
 }
-static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer, size_t *Size, int Lead) {
-	//! 8h,0h,0h..Eh: Quantizer change
-	size_t s = log2f(Quant) - 4;
+static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer, int *Size, int Lead) {
+	//! 8h,0h,0h..Eh[,Xh]: Quantizer change
+	int s = (int)log2f(Quant) - 4;
 	if(Lead) {
 		Block_Encode_WriteNybble(0x8, DstBuffer, Size);
 		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
@@ -42,23 +41,23 @@ static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer,
 		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
 	}
 }
-static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, size_t nNzMax, size_t nKeys, size_t *_nNzCoded) {
+static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nNzMax, int nKeys, int *_nNzCoded) {
 	//! Process the keys and determine how many we're working with
-	size_t nKeysEncode = Block_Encode_ProcessKeys(State, nNzMax, nKeys);
+	int nKeysEncode = Block_Encode_ProcessKeys(State, nNzMax, nKeys);
 
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
-	size_t nChan            = State->nChan;
-	size_t BlockSize        = State->BlockSize;
+	int     nChan           = State->nChan;
+	int     BlockSize       = State->BlockSize;
 	float **TransformBuffer = State->TransformBuffer;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
 	//! Start coding
-	size_t Chan;
-	size_t Key      = 0;
-	size_t Size     = 0; //! Block size (in bits)
-	size_t nNzCoded = 0; //! Coded non-zero coefficients
+	int Chan;
+	int Key      = 0;
+	int Size     = 0; //! Block size (in bits)
+	int nNzCoded = 0; //! Coded non-zero coefficients
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Code the coefficients
 		//! NOTE:
@@ -66,38 +65,38 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 		//!  Check Key.Chan==Chan: This correctly codes silent channels
 		if(Key < nKeysEncode && Keys[Key].Chan == Chan) {
 			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
-			size_t NextBand  = 0;
-			float  LastQuant = Keys[Key].Quant;
+			int   NextBand  = 0;
+			float LastQuant = Keys[Key].Quant;
 			Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 0);
 			do {
 				//! Unpack key data
 				//! If we cross to the next channel, break out
 #if 0
-				size_t tChan = Keys[Key].Chan; if(tChan != Chan) break;
-				size_t tBand = Keys[Key].Band;
+				int tChan = Keys[Key].Chan; if(tChan != Chan) break;
+				int tBand = Keys[Key].Band;
 #else
-				size_t KeyVal = Keys[Key].Key;
-				size_t tChan  = KeyVal >> 16; if(tChan != Chan) break;
-				size_t tBand  = (uint16_t)KeyVal;
+				int KeyVal = Keys[Key].Key;
+				int tChan  = KeyVal >> 16; if(tChan != Chan) break;
+				int tBand  = (uint16_t)KeyVal;
 #endif
 				//! Code the zero runs
 				//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
 				//!       This is because two zero coefficients can be coded as 0h,0h, so
 				//!       we instead use 8h,0h for the 'stop' code. This also allows coding
 				//!       of some coefficients we may have missed (see below)
-				size_t zR = tBand - NextBand;
+				int zR = tBand - NextBand;
 				while(zR >= 4) {
 					//! Small run?
-					size_t n = zR;
+					int n = zR;
 					if(n < 26) {
 						//! 8h,1h..Bh: 4..24 zeros
-						n = (n-2)/2;
+						n = (n-2)/2u;
 						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
 						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
 						n = n*2+2;
 					} else {
 						//! 8h,Ch..Fh,Xh: 26..152 zeros (Ch + n>>4, n&Fh)
-						n = (n-26)/2; if(n > 0x3F) n = 0x3F;
+						n = (n-26)/2u; if(n > 0x3F) n = 0x3F;
 						Block_Encode_WriteNybble(0x8,          &DstBuffer, &Size);
 						Block_Encode_WriteNybble(0xC + (n>>4), &DstBuffer, &Size);
 						Block_Encode_WriteNybble(n&0xF,        &DstBuffer, &Size);
@@ -126,7 +125,7 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 				do {
 					//! Get quantized coefficient
 					//! -7h..+7h
-					int32_t Qn = Block_Encode_Quantize(TransformBuffer[Chan][NextBand], LastQuant);
+					int Qn = Block_Encode_Quantize(TransformBuffer[Chan][NextBand], LastQuant);
 					if(Qn < -7) Qn = -7;
 					if(Qn > +7) Qn = +7;
 
@@ -138,7 +137,7 @@ static size_t Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstB
 
 			//! 8h,0h,Fh: Stop
 			//! If we're at the edge of the block, it might work better to just fill with 0h
-			size_t n = BlockSize - NextBand;
+			int n = BlockSize - NextBand;
 			if(n > 3) {
 				Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
 				Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
