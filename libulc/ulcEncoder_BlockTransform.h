@@ -125,7 +125,7 @@ static inline int Block_Transform_InsertKeys_UpdateQuantizers(
 
 	//! Check range against threshold
 #if 0
-	float r = ABS(2.0f*State->AvgHi/State->nAvgHi - State->AvgLo/State->nAvgLo);
+	float r = ABS((2.0f+Flat)*State->AvgHi/State->nAvgHi - (1.0f+Flat)*State->AvgLo/State->nAvgLo);
 	if(r > QuantRange) {
 #else //! Math optimization (avoid division)
 	float r = ABS((2.0f+Flat)*State->AvgHi*State->nAvgLo - (1.0f+Flat)*State->AvgLo*State->nAvgHi);
