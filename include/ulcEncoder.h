@@ -5,7 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <stddef.h>
 #include <stdint.h>
 /**************************************/
 
@@ -14,7 +13,7 @@
 #define ULC_USE_PSYCHOACOUSTICS 1
 
 //! Lowest possible coefficient value
-#define ULC_COEF_EPS (0x1.0p-33) //! 4+0xE+15 = Maximum extended-precision quantizer
+#define ULC_COEF_EPS (0x1.0p-33f) //! 4+0xE+15 = Maximum extended-precision quantizer
 
 //! Used in Neper-scale coefficients
 //! dB calculations would add computational cost for the exact same results,
@@ -30,17 +29,16 @@
 //! NOTE:
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
 //!  -{RateHz, nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
-//!  -MAX_QUANTS is an internal value, no larger than 48
 struct ULC_EncoderState_t {
 	//! Global state
-	size_t RateHz;       //! Playback rate (used for rate control)
-	size_t nChan;        //! Channels in encoding scheme
-	size_t BlockSize;    //! Transform block size
-	size_t BlockOverlap; //! Block overlap
+	int RateHz;       //! Playback rate (used for rate control)
+	int nChan;        //! Channels in encoding scheme
+	int BlockSize;    //! Transform block size
+	int BlockOverlap; //! Block overlap
 
 	//! Rate control state
-	double BitBudget;   //! Bit budget left over from previous block (similar to a bit reservoir)
-	double CoefBitRate; //! Reciprocal of average bits per non-zero coefficient
+	float BitBudget;   //! Bit budget left over from previous block (similar to a bit reservoir)
+	float CoefBitRate; //! Reciprocal of average bits per non-zero coefficient
 
 	//! Encoding state
 	//! Buffer memory layout:
@@ -103,7 +101,7 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!   channels are increasingly 'less important'. Pass 1.0 if
 //!   all channels are equally important.
 //! Returns the block size in bits
-size_t ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, double RateKbps, float PowerDecay);
+int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay);
 
 /**************************************/
 //! EOF
