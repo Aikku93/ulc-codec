@@ -47,13 +47,17 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N);
 //!  BufLap[N/2]
 //!  BufTmp[N]
 //! Implemented transforms (matrix form):
-//!  mtxMDCT  = Table[Cos[(n-1/2 + N/2)(k-1/2)Pi/N], {k, N}, {n,2N}]
-//!  mtxIMDCT = Table[Cos[(n-1/2 + N/2)(k-1/2)Pi/N], {k,2N}, {n, N}]
+//!  mtxMDCT  = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
+//!  mtxIMDCT = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k,2N}, {n, N}]
 //! NOTE:
 //!  -N must be a power of two, and >= 8
 //!  -Overlap must be a multiple of 16
 //!  -BufOut must not be the same as BufIn
 //!  -Sine window (modulated lapped transform)
+//!  -Shifted basis that results in phase inversion
+//!   relative to 'normal' I/MDCT calculations.
+//!   Negate input (MDCT) and output (IMDCT) if
+//!   'correct' I/MDCT coefficients are needed
 void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 
