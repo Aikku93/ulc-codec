@@ -78,10 +78,9 @@ Inverse transform takes the above-decoded coefficients and applies the IMDCT to 
 
 #### IMDCT
 
-The IMDCT used in this codec follows the normal IMDCT formula found on any maths book, but without any scaling factor in front (as it is moved to the MDCT in the encoder), ie.
+The IMDCT used in this codec follows the normal IMDCT formula found on any maths book, but without any scaling factor in front (as it is moved to the MDCT in the encoder) and with a shifted basis that results in phase inversion (as this results in programming optimizations), ie.
 
-    y[n] = Sum[X[k]*Cos[(n+1/2 + N/2)(k+1/2)*Pi/N], {k,0,N-1}]
+    y[n] =  Sum[X[k]*Cos[(n+1/2 + N/2 + N*2)(k+1/2)*Pi/N], {k,0,N-1}]
+         = -Sum[X[k]*Cos[(n+1/2 + N/2      )(k+1/2)*Pi/N], {k,0,N-1}]
     
 The windowing function used is a sine window. To use a different window, the MDCT and IMDCT functions of the source code must be changed.
-
-Note that when using less than 50% overlap, the MDCT/IMDCT transforms can be slightly improved in efficiency by offsetting the basis functions by -1 in ```n``` and ```k``` (ie. ```n-1/2``` and ```k-1/2```), as this avoids having to negate coefficients in the non-overlap region (for the overlapping region, this simply involves changing the quadrature oscillator signs). Note that while this results in negated MDCT coefficients as output, the phase-inversion is corrected in the IMDCT stage so long as both MDCT and IMDCT use the same shifted basis.
