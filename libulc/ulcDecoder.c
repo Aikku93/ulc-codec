@@ -30,13 +30,15 @@
 //! Initialize decoder state
 int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	//! Clear anything that is needed for EncoderState_Destroy()
-	State->BufferData = NULL;
+	State->BufferData  = NULL;
+	State->NextOverlap = 0;
 
 	//! Verify parameters
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
 	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
+	if((BlockSize & (-BlockSize)) != BlockSize)        return -1;
 
 	//! Get buffer offsets+sizes
 	//! PONDER: As with the encoder, this... is probably not ideal
@@ -94,7 +96,7 @@ static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, int *Size)
 	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,Xh: Extended-precision quantizer
 	return exp2f(-qi-4);
 }
-int ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
+int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
@@ -104,8 +106,11 @@ int ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, cons
 	float *TransformTemp    = State->TransformTemp;
 	float **TransformInvLap = State->TransformInvLap;
 
+	//! Begin decoding
 	int Chan;
 	int Size = 0;
+	int BlockOverlap = State->NextOverlap;
+	State->NextOverlap = BlockSize >> (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Start decoding coefficients
 		int32_t v;
@@ -157,7 +162,7 @@ int ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, cons
 		}
 
 		//! Inverse transform block
-		Fourier_IMDCT(DstData + Chan*BlockSize, TransformBuffer, TransformInvLap[Chan], TransformTemp, BlockSize, State->BlockOverlap);
+		Fourier_IMDCT(DstData + Chan*BlockSize, TransformBuffer, TransformInvLap[Chan], TransformTemp, BlockSize, BlockOverlap);
 	}
 	return Size;
 }
