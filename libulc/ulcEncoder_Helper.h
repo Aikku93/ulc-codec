@@ -12,8 +12,9 @@
 /**************************************/
 
 //! Maximum possible coding rate
+//! NOTE: Does NOT account for quantizers, as these mess up the calculations
 static inline float MaxCodingKbps(int BlockSize, int nChan, int RateHz) {
-	return nChan*(8 + 16*(ULC_MAX_QBANDS-1) + 4*BlockSize) * (float)RateHz/BlockSize * (1.0f/1000.0f);
+	return nChan*(4*BlockSize) * (float)RateHz/BlockSize * (1.0f/1000.0f);
 }
 
 //! Spectral flatness measure
