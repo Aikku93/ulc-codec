@@ -18,7 +18,7 @@ DECODETOOL_SRCDIR := decodetool
 ARCHCROSS :=
 ARCHFLAGS := -msse -msse2 -mavx -mavx2 -mfma
 
-CCFLAGS := $(ARCHFLAGS) -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
+CCFLAGS := $(ARCHFLAGS) -fno-math-errno -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
 LDFLAGS := -static
 
 #----------------------------#
