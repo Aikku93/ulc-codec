@@ -36,8 +36,7 @@ struct FileHeader_t {
 	uint32_t MaxBlockSize; //! [04h] Largest block size (in bytes; 0 = Unknown)
 	uint32_t nSamp;        //! [08h] Number of samples
 	uint32_t RateHz;       //! [0Ch] Playback rate
-	uint16_t BlockSize;    //! [10h] Transform block size
-	uint16_t BlockOverlap; //! [12h] Block overlap
+	uint32_t BlockSize;    //! [10h] Transform block size
 	uint16_t nChan;        //! [14h] Channels in stream
 	uint16_t RateKbps;     //! [16h] Nominal coding rate
 };
@@ -157,9 +156,8 @@ int main(int argc, const char *argv[]) {
 
 	//! Create decoder
 	struct ULC_DecoderState_t Decoder = {
-		.nChan        = Header.nChan,
-		.BlockSize    = Header.BlockSize,
-		.BlockOverlap = Header.BlockOverlap,
+		.nChan      = Header.nChan,
+		.BlockSize  = Header.BlockSize,
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
 		//! Process blocks
