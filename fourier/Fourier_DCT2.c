@@ -15,10 +15,10 @@
 
 //! DCT-II (N=8)
 static void DCT2_8(float *x) {
-	const float sqrt1_2 = 0x1.6A09E667F3BCDp-1;
-	const float c1_4 = 0x1.F6297CFF75CB0p-1, s1_4 = 0x1.8F8B83C69A60Bp-3;
-	const float c3_4 = 0x1.A9B66290EA1A3p-1, s3_4 = 0x1.1C73B39AE68C8p-1;
-	const float c6_4 = 0x1.87DE2A6AEA963p-2, s6_4 = 0x1.D906BCF328D46p-1;
+	const float sqrt1_2 = 0x1.6A09E6p-1f;
+	const float c1_4 = 0x1.F6297Dp-1f, s1_4 = 0x1.8F8B84p-3f;
+	const float c3_4 = 0x1.A9B663p-1f, s3_4 = 0x1.1C73B4p-1f;
+	const float c6_4 = 0x1.87DE2Ap-2f, s6_4 = 0x1.D906BDp-1f;
 #if defined(__SSE__)
 	__m128 x0, x1;
 	__m128 a0, a1;

@@ -15,12 +15,12 @@
 
 //! DCT-IV (N=8)
 static void DCT4_8(float *x) {
-	const float sqrt1_2 = 0x1.6A09E667F3BCD0p-1;
-	const float c1_3 = 0x1.D906BCF328D460p-1, s1_3 = 0x1.87DE2A6AEA9630p-2;
-	const float c1_5 = 0x1.FD88DA3D125260p-1, s1_5 = 0x1.917A6BC29B42C0p-4;
-	const float c3_5 = 0x1.E9F4156C62DDA0p-1, s3_5 = 0x1.294062ED59F050p-2;
-	const float c5_5 = 0x1.C38B2F180BDB10p-1, s5_5 = 0x1.E2B5D3806F63B0p-2;
-	const float c7_5 = 0x1.8BC806B1517410p-1, s7_5 = 0x1.44CF325091DD60p-1;
+	const float sqrt1_2 = 0x1.6A09E6p-1f;
+	const float c1_3 = 0x1.D906BDp-1f, s1_3 = 0x1.87DE2Ap-2f;
+	const float c1_5 = 0x1.FD88DAp-1f, s1_5 = 0x1.917A6Cp-4f;
+	const float c3_5 = 0x1.E9F415p-1f, s3_5 = 0x1.294063p-2f;
+	const float c5_5 = 0x1.C38B2Fp-1f, s5_5 = 0x1.E2B5D4p-2f;
+	const float c7_5 = 0x1.8BC807p-1f, s7_5 = 0x1.44CF32p-1f;
 #if defined(__SSE__)
 	__m128 x0, x1;
 	__m128 a0, a1;
