@@ -38,7 +38,7 @@ This will take ```Input.ulc``` and output ```Output.raw```. ```-nomidside``` dis
 * Target bitrate: 32..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
-    * The encoding tool accepts any N=2<sup>n</sup> (as long as N<16384; 8192 coefficients) with any overlap (provided that the number of overlap samples is a multiple of 16). The decoding tool reads these parameters from the file created by the encoder.
+    * Window switching is not used; instead, so-called 'overlap switching' is performed, which varies the size of the overlap segment per block. It's not a perfect solution, but it does appear to concentrate transient energy into fewer frequency bands, requiring less coefficients to achieve a desirable 'click'.
 * Non-linear coefficient quantization for greater control over dynamic range
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 
