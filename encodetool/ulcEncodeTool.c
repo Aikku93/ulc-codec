@@ -36,10 +36,10 @@ int main(int argc, const char *argv[]) {
 			"ulcEncodeTool - Ultra-Low Complexity Codec Encoding Tool\n"
 			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [Options]\n"
 			"Options:\n"
-			" -nc:1              - Set number of channels.\n"
-			" -nomidside         - Disable M/S stereo coding.\n"
-			" -blocksize:2048    - Set number of coefficients per block (must be a power of 2).\n"
-			" -blockoverlap:2048 - Set number of overlap samples (must be a multiple of 16).\n"
+			" -nc:1           - Set number of channels.\n"
+			" -nomidside      - Disable M/S stereo coding.\n"
+			" -blocksize:2048 - Set number of coefficients per block (must be a power of 2).\n"
+			" -minoverlap:0   - Set minimum number of overlap samples (must be a power of 2).\n"
 			"Multi-channel data must be interleaved.\n"
 		);
 		return 1;
@@ -48,7 +48,7 @@ int main(int argc, const char *argv[]) {
 	//! Parse parameters
 	int MidSideXfm   = 1;
 	int BlockSize    = 2048;
-	int BlockOverlap = 2048;
+	int MinOverlap   = 0;
 	int nChan        = 1;
 	int RateHz       = atoi(argv[3]);
 	int RateKbps     = atoi(argv[4]); {
@@ -70,9 +70,9 @@ int main(int argc, const char *argv[]) {
 				else printf("WARNING: Ignoring invalid parameter to block size (%d)\n", x);
 			}
 
-			else if(!memcmp(argv[n], "-blockoverlap:", 14)) {
-				int x = atoi(argv[n] + 14);
-				if(x >= 0 && (x%16) == 0) BlockOverlap = x;
+			else if(!memcmp(argv[n], "-minoverlap:", 12)) {
+				int x = atoi(argv[n] + 12);
+				if(x >= 0 && (x & (-x)) == x) MinOverlap = x;
 				else printf("WARNING: Ignoring invalid parameter to block overlap (%d)\n", x);
 			}
 
@@ -93,9 +93,9 @@ int main(int argc, const char *argv[]) {
 		printf("ERROR: Invalid number of channels.\n");
 		return -1;
 	}
-	if(BlockOverlap > BlockSize) {
+	if(MinOverlap > BlockSize) {
 		printf("WARNING: Block overlap larger than block size; clipping it.\n");
-		BlockOverlap = BlockSize;
+		MinOverlap = BlockSize;
 	}
 
 	//! Allocate buffers
@@ -139,8 +139,7 @@ int main(int argc, const char *argv[]) {
 		uint32_t MaxBlockSize; //! [04h] Largest block size (in bytes; 0 = Unknown)
 		uint32_t nSamp;        //! [08h] Number of samples
 		uint32_t RateHz;       //! [0Ch] Playback rate
-		uint16_t BlockSize;    //! [10h] Transform block size
-		uint16_t BlockOverlap; //! [12h] Block overlap
+		uint32_t BlockSize;    //! [10h] Transform block size
 		uint16_t nChan;        //! [14h] Channels in stream
 		uint16_t RateKbps;     //! [16h] Nominal coding rate
 	} FileHeader = {
@@ -149,7 +148,6 @@ int main(int argc, const char *argv[]) {
 		nSamp,
 		RateHz,
 		BlockSize,
-		BlockOverlap,
 		nChan,
 		RateKbps,
 	};
@@ -158,10 +156,10 @@ int main(int argc, const char *argv[]) {
 
 	//! Create encoder
 	struct ULC_EncoderState_t Encoder = {
-		.RateHz       = RateHz,
-		.nChan        = nChan,
-		.BlockSize    = BlockSize,
-		.BlockOverlap = BlockOverlap,
+		.RateHz     = RateHz,
+		.nChan      = nChan,
+		.BlockSize  = BlockSize,
+		.MinOverlap = MinOverlap,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		//! Process blocks
@@ -172,7 +170,7 @@ int main(int argc, const char *argv[]) {
 		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
 			//! Show progress
 			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
-			if(/*Blk%4u == 0*/1) {
+			if(Blk%4u == 0) {
 				printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
 				fflush(stdout);
 			}
