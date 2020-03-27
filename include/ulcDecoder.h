@@ -16,7 +16,8 @@ struct ULC_DecoderState_t {
 	//! Global state
 	int nChan;        //! Channels in encoding scheme
 	int BlockSize;    //! Transform block size
-	int BlockOverlap; //! Block overlap
+	int BlockOverlap; //! Block overlap (maximum)
+	int NextOverlap;  //! Overlap amount for next decoding block (BlockSize * 2^-NextOverlap)
 
 	//! Encoding state
 	//! Buffer memory layout:
@@ -60,7 +61,7 @@ void ULC_DecoderState_Destroy(struct ULC_DecoderState_t *State);
 //!    0,1,2,3...BlockSize-1, //! Chan1
 //!   }
 //! Returns the number of bits read
-int ULC_DecodeBlock(const struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer);
+int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer);
 
 /**************************************/
 //! EOF
