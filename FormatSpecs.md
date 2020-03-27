@@ -9,6 +9,8 @@ The encoding tools align each block (that is, including all channels) to byte bo
 
 These blocks code MDCT coefficients that have been pre-normalized. So to decode, one must simply apply an unnormalized IMDCT to return the decoded PCM stream.
 
+NOTE: Each block always starts with a single nybble specifying the block overlap scaling. This sets the number of overlap samples to `BlockSize * 2^-X`, where `X` is the nybble that is read.
+
 NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization).
 
 ### Syntax
@@ -83,4 +85,4 @@ The IMDCT used in this codec follows the normal IMDCT formula found on any maths
     y[n] =  Sum[X[k]*Cos[(n+1/2 + N/2 + N*2)(k+1/2)*Pi/N], {k,0,N-1}]
          = -Sum[X[k]*Cos[(n+1/2 + N/2      )(k+1/2)*Pi/N], {k,0,N-1}]
     
-The windowing function used is a sine window. To use a different window, the MDCT and IMDCT functions of the source code must be changed.
+The windowing function used is a sine window, with the overlap amount based on the block size scaled by the nybble at the start of the block (see the `Overview` section). To use a different window, the MDCT and IMDCT functions of the source code must be modified to accomodate such (this is not too difficult, and only involves loading the sine/cosine values with appropriate data).
