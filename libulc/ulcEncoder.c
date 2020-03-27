@@ -28,7 +28,7 @@
 #define MIN_BANDS    64 //! Mostly depends on the SIMD routines (currently limited by Block_Transform_CopySamples())
 #define MAX_CHANS 65535
 #define MAX_BANDS 65535
-#define OVERLAP_MULTIPLES 16 //! Depends on SIMD routines; setting as 16 arbitrarily
+#define MIN_OVERLAP  16 //! Depends on SIMD routines; setting as 16 arbitrarily
 
 //! Initialize encoder state
 int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
@@ -36,48 +36,50 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->BufferData = NULL;
 
 	//! Verify parameters
-	int nChan     = State->nChan;
-	int BlockSize = State->BlockSize;
+	int nChan      = State->nChan;
+	int BlockSize  = State->BlockSize;
+	int MinOverlap = State->MinOverlap;
 	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
 	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
 	if((BlockSize & (-BlockSize)) != BlockSize)        return -1;
-	if(State->BlockOverlap > BlockSize)                return -1;
-	if(State->BlockOverlap % OVERLAP_MULTIPLES)        return -1;
+	if(MinOverlap < MIN_OVERLAP) MinOverlap = State->MinOverlap = MIN_OVERLAP;
+	if(MinOverlap > BlockSize)                         return -1;
+	if((MinOverlap & (-MinOverlap)) != MinOverlap)     return -1;
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal
-	int TransformBuffer_Size    = sizeof(float)                * (nChan* BlockSize   );
-	int TransformNepers_Size    = sizeof(float)                * (nChan* BlockSize   );
-	int TransformFwdLap_Size    = sizeof(float)                * (nChan*(BlockSize/2));
-	int TransformTemp_Size      = sizeof(float)                * (    1* BlockSize   );
-	int AnalysisKeys_Size       = sizeof(struct AnalysisKey_t) * (nChan* BlockSize   );
-	int QuantsSum_Size          = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
-	int QuantsWeight_Size       = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
-	int Quants_Size             = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
-	int QuantsBw_Size           = sizeof(uint16_t)             * (nChan* ULC_MAX_QBANDS);
-	int _TransformBuffer_Size   = sizeof(float*)               * (nChan              );
-	int _TransformNepers_Size   = sizeof(float*)               * (nChan              );
-	int _TransformFwdLap_Size   = sizeof(float*)               * (nChan              );
-	int _QuantsSum_Size         = sizeof(float*)               * (nChan              );
-	int _QuantsWeight_Size      = sizeof(float*)               * (nChan              );
-	int _Quants_Size            = sizeof(float*)               * (nChan              );
-	int _QuantsBw_Size          = sizeof(uint16_t*)            * (nChan              );
-	int TransformBuffer_Offs    = 0;
-	int TransformNepers_Offs    = TransformBuffer_Offs    + TransformBuffer_Size;
-	int TransformFwdLap_Offs    = TransformNepers_Offs    + TransformNepers_Size;
-	int TransformTemp_Offs      = TransformFwdLap_Offs    + TransformFwdLap_Size;
-	int AnalysisKeys_Offs       = TransformTemp_Offs      + TransformTemp_Size;
-	int QuantsSum_Offs          = AnalysisKeys_Offs       + AnalysisKeys_Size;
-	int QuantsWeight_Offs       = QuantsSum_Offs          + QuantsSum_Size;
-	int Quants_Offs             = QuantsWeight_Offs       + QuantsWeight_Size;
-	int QuantsBw_Offs           = Quants_Offs             + Quants_Size;
-	int _TransformBuffer_Offs   = QuantsBw_Offs           + QuantsBw_Size;
-	int _TransformNepers_Offs   = _TransformBuffer_Offs   + _TransformBuffer_Size;
-	int _TransformFwdLap_Offs   = _TransformNepers_Offs   + _TransformNepers_Size;
-	int _QuantsSum_Offs         = _TransformFwdLap_Offs   + _TransformFwdLap_Size;
-	int _QuantsWeight_Offs      = _QuantsSum_Offs         + _QuantsSum_Size;
-	int _Quants_Offs            = _QuantsWeight_Offs      + _QuantsWeight_Size;
-	int _QuantsBw_Offs          = _Quants_Offs            + _Quants_Size;
+	int TransformBuffer_Size  = sizeof(float)                * (nChan* BlockSize   );
+	int TransformNepers_Size  = sizeof(float)                * (nChan* BlockSize   );
+	int TransformFwdLap_Size  = sizeof(float)                * (nChan*(BlockSize/2));
+	int TransformTemp_Size    = sizeof(float)                * (       BlockSize   );
+	int AnalysisKeys_Size     = sizeof(struct AnalysisKey_t) * (nChan* BlockSize   );
+	int QuantsSum_Size        = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
+	int QuantsWeight_Size     = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
+	int Quants_Size           = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
+	int QuantsBw_Size         = sizeof(uint16_t)             * (nChan* ULC_MAX_QBANDS);
+	int _TransformBuffer_Size = sizeof(float*)               * (nChan              );
+	int _TransformNepers_Size = sizeof(float*)               * (nChan              );
+	int _TransformFwdLap_Size = sizeof(float*)               * (nChan              );
+	int _QuantsSum_Size       = sizeof(float*)               * (nChan              );
+	int _QuantsWeight_Size    = sizeof(float*)               * (nChan              );
+	int _Quants_Size          = sizeof(float*)               * (nChan              );
+	int _QuantsBw_Size        = sizeof(uint16_t*)            * (nChan              );
+	int TransformBuffer_Offs  = 0;
+	int TransformNepers_Offs  = TransformBuffer_Offs    + TransformBuffer_Size;
+	int TransformFwdLap_Offs  = TransformNepers_Offs    + TransformNepers_Size;
+	int TransformTemp_Offs    = TransformFwdLap_Offs    + TransformFwdLap_Size;
+	int AnalysisKeys_Offs     = TransformTemp_Offs      + TransformTemp_Size;
+	int QuantsSum_Offs        = AnalysisKeys_Offs       + AnalysisKeys_Size;
+	int QuantsWeight_Offs     = QuantsSum_Offs          + QuantsSum_Size;
+	int Quants_Offs           = QuantsWeight_Offs       + QuantsWeight_Size;
+	int QuantsBw_Offs         = Quants_Offs             + Quants_Size;
+	int _TransformBuffer_Offs = QuantsBw_Offs           + QuantsBw_Size;
+	int _TransformNepers_Offs = _TransformBuffer_Offs   + _TransformBuffer_Size;
+	int _TransformFwdLap_Offs = _TransformNepers_Offs   + _TransformNepers_Size;
+	int _QuantsSum_Offs       = _TransformFwdLap_Offs   + _TransformFwdLap_Size;
+	int _QuantsWeight_Offs    = _QuantsSum_Offs         + _QuantsSum_Size;
+	int _Quants_Offs          = _QuantsWeight_Offs      + _QuantsWeight_Size;
+	int _QuantsBw_Offs        = _Quants_Offs            + _Quants_Size;
 	int AllocSize = _QuantsBw_Offs + _QuantsBw_Size;
 
 	//! Allocate buffer space
@@ -87,27 +89,28 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Set initial state
 	State->BitBudget   = 0.0;
 	State->CoefBitRate = -1.0f; //! Will be set on first run
+	State->LastTrackedRMSNp = -1.0e30;
 
 	//! Initialize pointers
 	int i, Chan;
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
-	State->TransformBuffer   = (float   **)(Buf + _TransformBuffer_Offs);
-	State->TransformNepers   = (float   **)(Buf + _TransformNepers_Offs);
-	State->TransformFwdLap   = (float   **)(Buf + _TransformFwdLap_Offs);
-	State->TransformTemp     = (float    *)(Buf + TransformTemp_Offs);
-	State->AnalysisKeys      = (void     *)(Buf + AnalysisKeys_Offs);
-	State->QuantsSum         = (float   **)(Buf + _QuantsSum_Offs);
-	State->QuantsWeight      = (float   **)(Buf + _QuantsWeight_Offs);
-	State->Quants            = (float   **)(Buf + _Quants_Offs);
-	State->QuantsBw          = (uint16_t**)(Buf + _QuantsBw_Offs);
+	State->TransformBuffer = (float   **)(Buf + _TransformBuffer_Offs);
+	State->TransformNepers = (float   **)(Buf + _TransformNepers_Offs);
+	State->TransformFwdLap = (float   **)(Buf + _TransformFwdLap_Offs);
+	State->TransformTemp   = (float    *)(Buf + TransformTemp_Offs);
+	State->AnalysisKeys    = (void     *)(Buf + AnalysisKeys_Offs);
+	State->QuantsSum       = (float   **)(Buf + _QuantsSum_Offs);
+	State->QuantsWeight    = (float   **)(Buf + _QuantsWeight_Offs);
+	State->Quants          = (float   **)(Buf + _Quants_Offs);
+	State->QuantsBw        = (uint16_t**)(Buf + _QuantsBw_Offs);
 	for(Chan=0;Chan<nChan;Chan++) {
-		State->TransformBuffer  [Chan] = (float   *)(Buf + TransformBuffer_Offs  ) + Chan*BlockSize;
-		State->TransformNepers  [Chan] = (float   *)(Buf + TransformNepers_Offs  ) + Chan*BlockSize;
-		State->TransformFwdLap  [Chan] = (float   *)(Buf + TransformFwdLap_Offs  ) + Chan*(BlockSize/2);
-		State->QuantsSum        [Chan] = (float   *)(Buf + QuantsSum_Offs        ) + Chan*ULC_MAX_QBANDS;
-		State->QuantsWeight     [Chan] = (float   *)(Buf + QuantsWeight_Offs     ) + Chan*ULC_MAX_QBANDS;
-		State->Quants           [Chan] = (float   *)(Buf + Quants_Offs           ) + Chan*ULC_MAX_QBANDS;
-		State->QuantsBw         [Chan] = (uint16_t*)(Buf + QuantsBw_Offs         ) + Chan*ULC_MAX_QBANDS;
+		State->TransformBuffer[Chan] = (float   *)(Buf + TransformBuffer_Offs  ) + Chan*BlockSize;
+		State->TransformNepers[Chan] = (float   *)(Buf + TransformNepers_Offs  ) + Chan*BlockSize;
+		State->TransformFwdLap[Chan] = (float   *)(Buf + TransformFwdLap_Offs  ) + Chan*(BlockSize/2);
+		State->QuantsSum      [Chan] = (float   *)(Buf + QuantsSum_Offs        ) + Chan*ULC_MAX_QBANDS;
+		State->QuantsWeight   [Chan] = (float   *)(Buf + QuantsWeight_Offs     ) + Chan*ULC_MAX_QBANDS;
+		State->Quants         [Chan] = (float   *)(Buf + Quants_Offs           ) + Chan*ULC_MAX_QBANDS;
+		State->QuantsBw       [Chan] = (uint16_t*)(Buf + QuantsBw_Offs         ) + Chan*ULC_MAX_QBANDS;
 
 		//! Everything can remain uninitialized except for the lapping buffer
 		for(i=0;i<BlockSize/2;i++) State->TransformFwdLap[Chan][i] = 0.0f;
