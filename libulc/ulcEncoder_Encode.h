@@ -58,6 +58,7 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 	int Key      = 0;
 	int Size     = 0; //! Block size (in bits)
 	int nNzCoded = 0; //! Coded non-zero coefficients
+	Block_Encode_WriteNybble(State->ThisOverlap, &DstBuffer, &Size);
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Code the coefficients
 		//! NOTE:
