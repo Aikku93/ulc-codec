@@ -31,10 +31,11 @@
 //!  -{RateHz, nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
 struct ULC_EncoderState_t {
 	//! Global state
-	int RateHz;       //! Playback rate (used for rate control)
-	int nChan;        //! Channels in encoding scheme
-	int BlockSize;    //! Transform block size
-	int BlockOverlap; //! Block overlap
+	int RateHz;      //! Playback rate (used for rate control)
+	int nChan;       //! Channels in encoding scheme
+	int BlockSize;   //! Transform block size
+	int MinOverlap;  //! Block overlap (minimum)
+	int ThisOverlap; //! Overlap scale for currently-processed block (BlockSize * 2^-ThisOverlap)
 
 	//! Rate control state
 	float BitBudget;   //! Bit budget left over from previous block (similar to a bit reservoir)
@@ -54,13 +55,13 @@ struct ULC_EncoderState_t {
 	//!   float         Quants         [nChan][MAX_QUANTS]
 	//!   uint16_t      QuantsBw       [nChan][MAX_QUANTS]
 	//!  Followed by MD-array pointers:
-	//!   float    *_TransformBuffer  [nChan]
-	//!   float    *_TransformNepers  [nChan]
-	//!   float    *_TransformFwdLap  [nChan]
-	//!   float    *_QuantsSum        [nChan]
-	//!   float    *_QuantsWeight     [nChan]
-	//!   float    *_Quants           [nChan]
-	//!   uint16_t *_QuantsBw         [nChan]
+	//!   float    *_TransformBuffer[nChan]
+	//!   float    *_TransformNepers[nChan]
+	//!   float    *_TransformFwdLap[nChan]
+	//!   float    *_QuantsSum      [nChan]
+	//!   float    *_QuantsWeight   [nChan]
+	//!   float    *_Quants         [nChan]
+	//!   uint16_t *_QuantsBw       [nChan]
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
@@ -72,6 +73,7 @@ struct ULC_EncoderState_t {
 	float    **QuantsWeight;
 	float    **Quants;
 	uint16_t **QuantsBw;
+	float      LastTrackedRMSNp;
 };
 
 /**************************************/
