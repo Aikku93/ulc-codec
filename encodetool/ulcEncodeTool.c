@@ -36,11 +36,13 @@ int main(int argc, const char *argv[]) {
 			"ulcEncodeTool - Ultra-Low Complexity Codec Encoding Tool\n"
 			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [Options]\n"
 			"Options:\n"
-			" -nc:1           - Set number of channels.\n"
-			" -nomidside      - Disable M/S stereo coding.\n"
-			" -blocksize:2048 - Set number of coefficients per block (must be a power of 2).\n"
-			" -minoverlap:0   - Set minimum number of overlap samples (must be a power of 2).\n"
+			" -nc:1            - Set number of channels.\n"
+			" -nomidside       - Disable M/S stereo coding.\n"
+			" -blocksize:2048  - Set number of coefficients per block (must be a power of 2).\n"
+			" -minoverlap:0    - Set minimum number of overlap samples (must be a power of 2).\n"
+			" -maxoverlap:2048 - Set maximum number of overlap samples (must be a power of 2).\n"
 			"Multi-channel data must be interleaved.\n"
+			"Note that minimum overlap may be clipped by the encoder.\n"
 		);
 		return 1;
 	}
