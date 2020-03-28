@@ -179,6 +179,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		//! NOTE: PeakDif is scaled by 2.0 because we used squared inputs,
 		//! and biased by Log[64] because it wasn't normalized. The bias
 		//! is unimportant, however, as it cancels out in the subtraction.
+		//! There is also a bias of Log[nChan], but as above, it cancels.
 		float PeakDif = 0.0f;
 		float RMSaNp = State->LastTrackedRMSNp;
 		for(n=0;n<BlockSize/64;n++) {
@@ -198,19 +199,20 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 
 		//! Set overlap size from peak difference
 		//! Target values:
-		//!  3dB (~0.3Np) = 50.0ms
-		//!  6dB (~0.7Np) = 25.0ms
-		//!  9dB (~1.0Np) = 12.5ms, etc.
+		//!  3dB (~0.3Np) = 80.0ms
+		//!  6dB (~0.7Np) = 40.0ms
+		//!  9dB (~1.0Np) = 20.0ms, etc.
 		//! ie.
-		//!  OverlapMs = 50 * E^(Log[2] - Np*(Log[2] * (20/Log[10])/3))
+		//!  OverlapMs = 80 * E^(Log[2] - Np*(Log[2] * (20/Log[10])/3))
 		//! Note that because PeakDif is scaled by 2.0, we must scale
 		//! by 0.5 to account for that (0x1.00E...p0 instead of 0x1.00E...p1).
-		float OverlapSec = (50.0f/1000.0f) * expf(0x1.62E430p-1f - PeakDif*0x1.00E102p0f);
+		float OverlapSec = (80.0f/1000.0f) * expf(0x1.62E430p-1f - PeakDif*0x1.00E102p0f);
 		float OverlapSmp = OverlapSec*State->RateHz;
 		OverlapScale = lrintf(log2f(BlockSize / (1.0e-30f + OverlapSmp)));
 		if(OverlapScale < 0x0) OverlapScale = 0x0;
 		if(OverlapScale > 0xF) OverlapScale = 0xF;
 		while((BlockSize >> OverlapScale) < State->MinOverlap) OverlapScale--;
+		while((BlockSize >> OverlapScale) > State->MaxOverlap) OverlapScale++;
 	}
 	State->ThisOverlap = OverlapScale;
 
