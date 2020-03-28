@@ -18,9 +18,9 @@ Work is being considered for implementing reading/writing of more common formats
 Additionally, the core encoding/decoding routines can theoretically work with any data they are fed, allowing for easier integration with non-file-based blocks of audio in the future.
 
 ### Encoding
-```ulcencodetool Input.raw Output.ulc RateHz RateKbps [-nc:1 [-nomidside]] [-blocksize:2048] [-blockoverlap:1536]```
+```ulcencodetool Input.raw Output.ulc RateHz RateKbps [-nc:1 [-nomidside]] [-blocksize:2048] [-maxoverlap:2048] [-minoverlap:0]```
 
-This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps```. ```-nc:X``` sets the number of channels, ```-nomidside``` disables M/S transform encoding, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block), ```-blockoverlap:X``` sets the number of overlap samples (eg. for 50% overlap, this should be equal to the block size).
+This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps```. ```-nc:X``` sets the number of channels, ```-nomidside``` disables M/S transform encoding, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block), ```-maxoverlap:X``` sets the maximum number of overlap samples (eg. for 50% overlap, this would be equal to the block size), and ```-minoverlap:X``` sets the smallest amount of overlap samples (some songs may benefit from increasing this to avoid glitching at ultra-low rates).
 
 ### Decoding
 ```ulcdecodetool Input.ulc Output.raw [-nomidside]```
