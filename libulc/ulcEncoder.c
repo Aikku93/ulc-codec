@@ -39,12 +39,16 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	int nChan      = State->nChan;
 	int BlockSize  = State->BlockSize;
 	int MinOverlap = State->MinOverlap;
+	int MaxOverlap = State->MaxOverlap;
 	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
 	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
 	if((BlockSize & (-BlockSize)) != BlockSize)        return -1;
 	if(MinOverlap < MIN_OVERLAP) MinOverlap = State->MinOverlap = MIN_OVERLAP;
 	if(MinOverlap > BlockSize)                         return -1;
 	if((MinOverlap & (-MinOverlap)) != MinOverlap)     return -1;
+	if(MaxOverlap < MIN_OVERLAP) MaxOverlap = State->MaxOverlap = MIN_OVERLAP;
+	if(MaxOverlap > BlockSize)                         return -1;
+	if((MaxOverlap & (-MaxOverlap)) != MaxOverlap)     return -1;
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal

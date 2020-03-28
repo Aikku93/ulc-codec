@@ -35,6 +35,7 @@ struct ULC_EncoderState_t {
 	int nChan;       //! Channels in encoding scheme
 	int BlockSize;   //! Transform block size
 	int MinOverlap;  //! Block overlap (minimum)
+	int MaxOverlap;  //! Block overlap (maximum)
 	int ThisOverlap; //! Overlap scale for currently-processed block (BlockSize * 2^-ThisOverlap)
 
 	//! Rate control state

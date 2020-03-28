@@ -49,6 +49,7 @@ int main(int argc, const char *argv[]) {
 	int MidSideXfm   = 1;
 	int BlockSize    = 2048;
 	int MinOverlap   = 0;
+	int MaxOverlap   = BlockSize;
 	int nChan        = 1;
 	int RateHz       = atoi(argv[3]);
 	int RateKbps     = atoi(argv[4]); {
@@ -73,7 +74,13 @@ int main(int argc, const char *argv[]) {
 			else if(!memcmp(argv[n], "-minoverlap:", 12)) {
 				int x = atoi(argv[n] + 12);
 				if(x >= 0 && (x & (-x)) == x) MinOverlap = x;
-				else printf("WARNING: Ignoring invalid parameter to block overlap (%d)\n", x);
+				else printf("WARNING: Ignoring invalid parameter to minimum overlap (%d)\n", x);
+			}
+
+			else if(!memcmp(argv[n], "-maxoverlap:", 12)) {
+				int x = atoi(argv[n] + 12);
+				if(x >= 0 && (x & (-x)) == x) MaxOverlap = x;
+				else printf("WARNING: Ignoring invalid parameter to maximum overlap (%d)\n", x);
 			}
 
 			else printf("WARNING: Ignoring unknown argument (%s)\n", argv[n]);
@@ -94,8 +101,18 @@ int main(int argc, const char *argv[]) {
 		return -1;
 	}
 	if(MinOverlap > BlockSize) {
-		printf("WARNING: Block overlap larger than block size; clipping it.\n");
+		printf("WARNING: Minimum overlap larger than block size; clipping it.\n");
 		MinOverlap = BlockSize;
+	}
+	if(MaxOverlap > BlockSize) {
+		printf("WARNING: Maximum overlap larger than block size; clipping it.\n");
+		MaxOverlap = BlockSize;
+	}
+	if(MaxOverlap < MinOverlap) {
+		printf("WARNING: Maximum overlap less than minimum overlap; swapping them.\n");
+		int t = MaxOverlap;
+		MaxOverlap = MinOverlap;
+		MinOverlap = t;
 	}
 
 	//! Allocate buffers
@@ -160,6 +177,7 @@ int main(int argc, const char *argv[]) {
 		.nChan      = nChan,
 		.BlockSize  = BlockSize,
 		.MinOverlap = MinOverlap,
+		.MaxOverlap = MaxOverlap,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		//! Process blocks
