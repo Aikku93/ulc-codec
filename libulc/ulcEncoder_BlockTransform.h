@@ -16,7 +16,6 @@
 /**************************************/
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
-/**************************************/
 #include "ulcEncoder_Psycho.h"
 /**************************************/
 
@@ -24,122 +23,55 @@
 //! Returns updated number of keys in list
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-struct Block_Transform_InsertKeys_UpdateQuantizers_QuantState_t {
-	float Avg,   nAvg;
-	float AvgLo, nAvgLo;
-	float AvgHi, nAvgHi;
-	int   nQBands, LastQBandOfs;
-};
-static inline int Block_Transform_InsertKeys_UpdateQuantizers(
-	struct Block_Transform_InsertKeys_UpdateQuantizers_QuantState_t *State,
-	int Band,
-	float vNp,
-	float QuantRange
-) {
-	if(State->nQBands == ULC_MAX_QBANDS-1) return 0;
-
-	//! Creating the first quantizer band?
-	if(State->Avg == 0.0f) {
-		State->Avg   = vNp, State->nAvg   = 1.0f;
-		State->AvgLo = vNp, State->nAvgLo = 1.0f;
-		State->AvgHi = vNp, State->nAvgHi = 1.0f;
-		return 0;
-	}
-
-	//! Add to the lower/upper average
-#if 0
-	if(vNp < State->Avg/State->nAvg) State->AvgLo += vNp, State->nAvgLo += 1.0f;
-	else                             State->AvgHi += vNp, State->nAvgHi += 1.0f;
-#else //! Math optimization (avoid division)
-	if(vNp*State->nAvg < State->Avg) State->AvgLo += vNp, State->nAvgLo += 1.0f;
-	else                             State->AvgHi += vNp, State->nAvgHi += 1.0f;
-#endif
-	State->Avg += vNp, State->nAvg += 1.0f;
-
-	//! Check range against threshold
-#if 0
-	float r = ABS(4.0f*State->AvgHi/State->nAvgHi - 3.0f*State->AvgLo/State->nAvgLo);
-	if(r > QuantRange) {
-#else //! Math optimization (avoid division)
-	float r = ABS(4.0f*State->AvgHi*State->nAvgLo - 3.0f*State->AvgLo*State->nAvgHi);
-	if(r > QuantRange*State->nAvgLo*State->nAvgHi) {
-#endif
-		//! A very sharp transient inside a small bandwidth
-		//! is likely to be a statistical anomaly, so ignore it
-		//! and let it stabilize on its own
-		int Bw = Band-1 - State->LastQBandOfs;
-		if(Bw > 4) {
-			//! Reset for a new band starting from the transient band
-			State->Avg   = vNp, State->nAvg   = 1.0f;
-			State->AvgLo = vNp, State->nAvgLo = 1.0f;
-			State->AvgHi = vNp, State->nAvgHi = 1.0f;
-			return Bw;
-		}
-	}
-	return 0;
-}
 static inline void Block_Transform_InsertKeys(
 	struct AnalysisKey_t *Keys,
 	const float *Coef,
 	const float *CoefNp,
 	int   BlockSize,
 	int  *nKeys,
-	uint16_t *QuantsBw,
 	int   Chan,
 	float AnalysisPowerNp,
 	float NyquistHz,
 	float QuantRange
 ) {
-#if ULC_USE_PSYCHOACOUSTICS
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Coef, CoefNp, BlockSize, NyquistHz);
-#else
-	(void)Coef;
-	(void)NyquistHz;
-#endif
-	int Band;
-	struct Block_Transform_InsertKeys_UpdateQuantizers_QuantState_t QuantState = {
-		.Avg   = 0, .nAvg   = 0,
-		.AvgLo = 0, .nAvgLo = 0,
-		.AvgHi = 0, .nAvgHi = 0,
-		.nQBands = 0, .LastQBandOfs = 0,
-	};
+
+	int   Band;
+	int   nQBands   = 0;
+	float QBandAvg  = 0.0f;
+	float QBandAvgW = 0.0f;
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Check that the value is in range of the smallest quantization
 		float ValNp = CoefNp[Band]; if(ValNp == ULC_COEF_NEPER_OUT_OF_RANGE) continue;
-#if ULC_USE_PSYCHOACOUSTICS
-		//! Get masking threshold and spectral flatness
-		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
 
-		//! Get final channel value, taking masking and flatness into account
-		//! Scaling by a flatness curve seems to give better results,
-		//! as flatter signals mask much more than tonal ones
-		//! TMN ratio: Around -6dB
-		ValNp = 4.0f*ValNp - 3.0f*(Mask + 0.7f*(Flat - 1.0f));
-#endif
-		//! Update quantizer bands
-		//! NOTE: Pass the /perceived/ level here
-#if ULC_USE_PSYCHOACOUSTICS
-		int QuantBw = Block_Transform_InsertKeys_UpdateQuantizers(&QuantState, Band, ValNp, QuantRange);
-#else
-		int QuantBw = Block_Transform_InsertKeys_UpdateQuantizers(&QuantState, Band, ValNp, QuantRange);
-#endif
-		if(QuantBw != 0) {
-			QuantState.LastQBandOfs = Band;
-			QuantsBw[QuantState.nQBands++] = QuantBw;
+		//! Get masking and equal-loudness parameters to get the final value
+		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
+		float AWeight = (1.0f-Flat) * AWeightNp((Band+0.5f)*NyquistHz / BlockSize);
+		ValNp = 2.0f*ValNp - Mask - AWeight;
+		float ValMasked = expf(ValNp + AnalysisPowerNp);
+
+		//! Check the 'background' level of this quantizer band against the masking threshold
+		//! NOTE: Accumulation is done with weighting of the band power to simulate
+		//! the fact that low-power bands are masked by loud bands
+		if(QBandAvg > (Mask-AWeight+QuantRange)*QBandAvgW) {
+			if(nQBands < ULC_MAX_QBANDS-1) {
+				QBandAvg = 0.0f, QBandAvgW = 0.0f;
+				nQBands++;
+			}
 		}
+		QBandAvg  += ValMasked*ValNp;
+		QBandAvgW += ValMasked;
 
 		//! Insert key for this band
 		//! NOTE: Store the 'audible' level to the key value. This
 		//! will be used later as a weight for the quantizers.
-		Keys[*nKeys].Band = Band;
-		Keys[*nKeys].Chan = Chan;
-		Keys[*nKeys].Val  = expf(ValNp + AnalysisPowerNp);
+		Keys[*nKeys].Band  = Band;
+		Keys[*nKeys].Chan  = Chan;
+		Keys[*nKeys].QBand = nQBands;
+		Keys[*nKeys].Val   = ValMasked;
 		(*nKeys)++;
 	}
-
-	//! Create the final quantizer band
-	QuantsBw[QuantState.nQBands++] = BlockSize - QuantState.LastQBandOfs;
 }
 
 /**************************************/
@@ -167,48 +99,48 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 
 	//! Attempt to find transients in order to decide on an overlap amount
 	int OverlapScale; {
-		//! Divide block into 64-sample subblocks and get their RMS
+		//! Divide block into 64-sample subblocks and get their sum of squares
 		int n;
 		float *SubBlockRMS = State->TransformTemp;
-		for(n=0;n<64;n++) SubBlockRMS[n] = 0.0f;
+		for(n=0;n<64;n++) SubBlockRMS[n] = 1.0e-30f;
 		for(Chan=0;Chan<nChan;Chan++) {
 			for(n=0;n<BlockSize;n++) SubBlockRMS[n/64] += SQR(Data[Chan*BlockSize+n]);
 		}
 
-		//! Find peak difference between subblocks
-		//! NOTE: PeakDif is scaled by 2.0 because we used squared inputs,
-		//! and biased by Log[64] because it wasn't normalized. The bias
-		//! is unimportant, however, as it cancels out in the subtraction.
-		//! There is also a bias of Log[nChan], but as above, it cancels.
-		float PeakDif = 0.0f;
-		float RMSaNp = State->LastTrackedRMSNp;
+		//! Find minimum (or maximum) ratio between subblocks
+		//! NOTE: The ratios are squared by design; this seems to
+		//! results in greater transient selectivity
+		float MinRatio = 1.0f;
+		float RMSa = State->LastTrackedRMS;
 		for(n=0;n<BlockSize/64;n++) {
-			const float Silence = 1.0e-30f;
-			float RMS = SubBlockRMS[n]; if(RMS < Silence) RMS = Silence;
-			float RMSbNp = logf(RMS);
-			float Dif = RMSbNp - RMSaNp;
-			if(Dif < 0.0f) Dif *= -0.5f; //! Release transients are less important
-			if(Dif > PeakDif) PeakDif = Dif;
+			//! Get the ratio of A:B (or B:A) and save the smallest
+			//! NOTE: Even though the original RMS values were scaled
+			//! by 64*nChan (from the analysis), this cancels in the
+			//! division applied, only needing the square root for RMS.
+			//! NOTE: When A:B > 1.0, then we detected a release/decay
+			//! transient; these are less important than attack ones,
+			//! so we apply a curve to reduce their importance a bit.
+			float RMSb = SubBlockRMS[n];
+			float Ratio = RMSa/RMSb;
+			if(Ratio > 1.0f) {
+				Ratio = 1.0f - RMSb/RMSa;
+				Ratio = 1.0f - SQR(SQR(Ratio));
+			}
+			if(Ratio < MinRatio) MinRatio = Ratio;
 
-			//! NOTE: Remove part of the linear term from the last block.
+			//! Remove part of the linear term from the last block,
+			//! based on how large of a jump there was between them.
 			//! This reduces overdetection during volume envelopes
-			const float mu = 0.3f;
-			RMSaNp = mu*RMSaNp + (1.0f-mu)*RMSbNp;
+			RMSa = Ratio*RMSa + (1.0f-Ratio)*RMSb;
 		}
-		State->LastTrackedRMSNp = RMSaNp;
+		State->LastTrackedRMS = RMSa;
 
-		//! Set overlap size from peak difference
-		//! Target values:
-		//!  3dB (~0.3Np) = 80.0ms
-		//!  6dB (~0.7Np) = 40.0ms
-		//!  9dB (~1.0Np) = 20.0ms, etc.
-		//! ie.
-		//!  OverlapMs = 80 * E^(Log[2] - Np*(Log[2] * (20/Log[10])/3))
-		//! Note that because PeakDif is scaled by 2.0, we must scale
-		//! by 0.5 to account for that (0x1.00E...p0 instead of 0x1.00E...p1).
-		float OverlapSec = (80.0f/1000.0f) * expf(0x1.62E430p-1f - PeakDif*0x1.00E102p0f);
+		//! Set overlap size from the smallest (or largest) ratio
+		//! NOTE: Maximum overlap time of 60ms. The rounding point
+		//! is also at 0.75, and NOT 0.5 as this would be too much.
+		float OverlapSec = (50.0f/1000.0f) * MinRatio;
 		float OverlapSmp = OverlapSec*State->RateHz;
-		OverlapScale = lrintf(log2f(BlockSize / (1.0e-30f + OverlapSmp)));
+		OverlapScale = (int)(log2f(BlockSize / (1.0e-30f + OverlapSmp)) + 0.25f);
 		if(OverlapScale < 0x0) OverlapScale = 0x0;
 		if(OverlapScale > 0xF) OverlapScale = 0xF;
 		while((BlockSize >> OverlapScale) < State->MinOverlap) OverlapScale--;
@@ -217,10 +149,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 	State->ThisOverlap = OverlapScale;
 
 	//! Neper range before a quantizer change should happen
-	//! 0x1.51CCA1p2  = Log[(2*7)^2]; Dynamic range of quantized coefficients, in Nepers
-	//! 0x1.62E430p-1 = Log[2]
-	float QuantRange = 0x1.51CCA1p2f * (1.0f - 4.0f*RateKbps/MaxCodingKbps(BlockSize, nChan, State->RateHz));
-	if(QuantRange < 0x1.62E430p-1f) QuantRange = 0x1.62E430p-1f; //! Limit at dynamic range of 2 units
+	//! 0x1.51CCA1p2 = Log[(2*7)^2]; Range of quantized coefficients, in Nepers (45.8dB)
+	float QuantRange = 0x1.51CCA1p2f * (1.0f - RateKbps/MaxCodingKbps(BlockSize, nChan, State->RateHz));
+	if(QuantRange < 0.0f) QuantRange = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Get buffer pointers
 		float *BufferTransform = State->TransformBuffer[Chan];
@@ -237,7 +168,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 			BufferNepers,
 			BlockSize,
 			&nKeys,
-			State->QuantsBw[Chan],
 			Chan,
 			AnalysisPowerNp,
 			State->RateHz * 0.5f,
