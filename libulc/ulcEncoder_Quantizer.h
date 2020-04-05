@@ -19,16 +19,6 @@
 
 /**************************************/
 
-//! Get quantizer band from band index
-static int Block_Encode_BuildQuants_GetQBand(int Band, const uint16_t *QuantBw) {
-	int QBand;
-	for(QBand=0;;QBand++) {
-		int Bw = QuantBw[QBand];
-		if(Band < Bw) return QBand;
-		Band -= Bw;
-	}
-}
-
 //! Build quantizer from weighted average
 //! NOTE: Biased by the median of possible quantized values (ie. x^2, with x = {1..7}),
 //!       and the maximum range is reduced by the same amount for compactness.
@@ -59,11 +49,11 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 	//! Key data fetcher
 	int Band, Chan, QBand;
 	float  Val, wVal;
-#define FETCH_KEY_DATA(KeyIdx)     \
-	Band  = Keys[KeyIdx].Band, \
-	Chan  = Keys[KeyIdx].Chan, \
-	wVal  = Keys[KeyIdx].Val,  \
-	QBand = Block_Encode_BuildQuants_GetQBand(Band, QuantsBw[Chan]), \
+#define FETCH_KEY_DATA(KeyIdx)      \
+	Band  = Keys[KeyIdx].Band,  \
+	Chan  = Keys[KeyIdx].Chan,  \
+	QBand = Keys[KeyIdx].QBand, \
+	wVal  = Keys[KeyIdx].Val,   \
 	Val   = ABS(CoefBuffer[Chan][Band])
 #define MARK_KEY_UNUSED(KeyIdx) Keys[KeyIdx].Key = ANALYSIS_KEY_UNUSED
 
@@ -72,7 +62,6 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 	//!         doesn't just copy the whole thing out to the stack :/
 	int        nChan        = State->nChan;
 	float    **CoefBuffer   = State->TransformBuffer, **CoefNepers = State->TransformNepers;
-	uint16_t **QuantsBw     = State->QuantsBw;
 	float    **Quants       = State->Quants;
 	float    **QuantsSum    = State->QuantsSum;
 	float    **QuantsWeight = State->QuantsWeight;
@@ -167,7 +156,10 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 			MARK_KEY_UNUSED(nKeysEncode);
 			nDeadKeys++;
 			if(nNzMax < nKeys) nNzMax++;
-		} else Keys[nKeysEncode].Quant = Qnt;
+		} else {
+			Keys[nKeysEncode].QBand = 0; //! Must be cleared before sorting
+			Keys[nKeysEncode].Quant = Qnt;
+		}
 	}
 
 	//! Sort the keys and return how many we work with
