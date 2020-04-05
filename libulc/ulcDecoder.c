@@ -21,9 +21,9 @@
 
 //! Just for consistency
 #define MIN_BANDS 8
-#define MAX_BANDS 65536
+#define MAX_BANDS 65535
 #define MIN_CHANS 1
-#define MAX_CHANS 65536
+#define MAX_CHANS 255
 
 /**************************************/
 
