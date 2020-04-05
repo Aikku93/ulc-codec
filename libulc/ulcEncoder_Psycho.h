@@ -45,7 +45,7 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 	//! These settings are mostly based on trial and error
 	float Bw = State->BwBase + 0.107939f*Band;
 	float MaskFW   = 1.0f - ABS(Coef[Band]);
-	float MaskBW   = sqrtf(1.0f - MaskFW);
+	float MaskBW   = sqrtf(ABS(Coef[Band]));
 	int   BandEnd  = Band + (int)ceilf(Bw * MaskFW);
 	int   BandBeg  = Band - (int)ceilf(Bw * MaskBW);
 	if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
@@ -76,7 +76,7 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 	float  SumLin = State->SumLin;
 	float nSumLog = State->SumLog / SumLin;
 	*_Flat        = expf(0x1.62E430p-1f * ((logf(SumLin) - 2.0f*nSumLog) / logf(MaskBw))) - 1.0f;
-	return nSumLog;
+	return 0.5f*logf(SumLin/MaskBw); //! NOTE: nSumLog is unreliable here; quiet bands are ignored when mixed with loud bands
 }
 
 /**************************************/
