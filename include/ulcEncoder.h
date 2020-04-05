@@ -8,10 +8,6 @@
 #include <stdint.h>
 /**************************************/
 
-//! 0 == No psychoacoustic optimizations
-//! 1 == Use psychoacoustic model
-#define ULC_USE_PSYCHOACOUSTICS 1
-
 //! Lowest possible coefficient value
 #define ULC_COEF_EPS (0x1.0p-33f) //! 4+0xE+15 = Maximum extended-precision quantizer
 
@@ -54,15 +50,13 @@ struct ULC_EncoderState_t {
 	//!   float         QuantsSum      [nChan][MAX_QUANTS]
 	//!   float         QuantsWeight   [nChan][MAX_QUANTS]
 	//!   float         Quants         [nChan][MAX_QUANTS]
-	//!   uint16_t      QuantsBw       [nChan][MAX_QUANTS]
 	//!  Followed by MD-array pointers:
-	//!   float    *_TransformBuffer[nChan]
-	//!   float    *_TransformNepers[nChan]
-	//!   float    *_TransformFwdLap[nChan]
-	//!   float    *_QuantsSum      [nChan]
-	//!   float    *_QuantsWeight   [nChan]
-	//!   float    *_Quants         [nChan]
-	//!   uint16_t *_QuantsBw       [nChan]
+	//!   float *_TransformBuffer[nChan]
+	//!   float *_TransformNepers[nChan]
+	//!   float *_TransformFwdLap[nChan]
+	//!   float *_QuantsSum      [nChan]
+	//!   float *_QuantsWeight   [nChan]
+	//!   float *_Quants         [nChan]
 	//! BufferData contains the pointer returned by malloc()
 	void *BufferData;
 	float    **TransformBuffer;
@@ -73,8 +67,7 @@ struct ULC_EncoderState_t {
 	float    **QuantsSum;
 	float    **QuantsWeight;
 	float    **Quants;
-	uint16_t **QuantsBw;
-	float      LastTrackedRMSNp;
+	float      LastTrackedRMS;
 };
 
 /**************************************/
