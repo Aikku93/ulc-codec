@@ -16,19 +16,21 @@ struct AnalysisKey_t {
 	union {
 		struct {
 			uint16_t Band;
-			uint16_t Chan;
+			uint8_t  Chan;
+			uint8_t  QBand;
 		};
-		uint32_t Key; //! Band | Chan<<16
+		uint32_t Key; //! Band | Chan<<16 | QBand<<24
 	};
 	union {
-		float Val;   //! Sorting value (ie. Coef^2 * Importance; for biased preferencing)
-		float Quant; //! Quantizer (set after calling Block_Encode_BuildQuants() in ulcEncoder_Quantizer.h)
+		float Val;   //! Sorting value (higher value = greater importance)
+		float Quant; //! Quantizer scale (set after calling Block_Encode_BuildQuants() in ulcEncoder_Quantizer.h)
 	};
 };
 
 /**************************************/
 
 //! Sort keys in increasing Chan>Band order
+//! NOTE: All keys' QBand members must be set to 0 before calling this
 static int Analysis_KeysSort_Comparator(const void *_a, const void *_b) {
 	const struct AnalysisKey_t *a = _a;
 	const struct AnalysisKey_t *b = _b;
