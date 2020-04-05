@@ -72,14 +72,9 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 			do {
 				//! Unpack key data
 				//! If we cross to the next channel, break out
-#if 0
 				int tChan = Keys[Key].Chan; if(tChan != Chan) break;
 				int tBand = Keys[Key].Band;
-#else
-				int KeyVal = Keys[Key].Key;
-				int tChan  = KeyVal >> 16; if(tChan != Chan) break;
-				int tBand  = (uint16_t)KeyVal;
-#endif
+
 				//! Code the zero runs
 				//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
 				//!       This is because two zero coefficients can be coded as 0h,0h, so
