@@ -13,7 +13,7 @@
 
 //! Maximum possible coding rate
 //! NOTE: Does NOT account for quantizers, as these mess up the calculations
-static inline float MaxCodingKbps(int BlockSize, int nChan, int RateHz) {
+static inline __attribute__((always_inline)) float MaxCodingKbps(int BlockSize, int nChan, int RateHz) {
 	return nChan*(4*BlockSize) * (float)RateHz/BlockSize * (1.0f/1000.0f);
 }
 
@@ -43,7 +43,7 @@ static inline float MaxCodingKbps(int BlockSize, int nChan, int RateHz) {
 //!   g = (1/a)*f - log_b(a)
 //!  As the sums are independent, this can be performed in a single step.
 //! NOTE: Unused, and only here for reference
-static inline float SpectralFlatness(const float *Buf, int N) {
+static inline __attribute__((always_inline)) float SpectralFlatness(const float *Buf, int N) {
 	int i;
 	float a = 0.0f, f = 0.0f;
 	for(i=0;i<N;i++) {
@@ -64,6 +64,16 @@ static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
 	//! ERB scale
 	return 24.7f + 0.107939f*Fc;
 #endif
+}
+
+//! A-Weight approximation, in Nepers
+static inline __attribute__((always_inline)) float AWeightNp(float Fc) {
+	if(Fc < 1000.0f) return -420.0f/(50.0f + Fc) + 0.4f;
+	if(Fc < 6000.0f) {
+		float f = logf((Fc - 1000.0f) * (1.0f/5000.0f));
+		return -0.4f * expf(0.9f*f) * f;
+	}
+	return (Fc - 6000.0f) * (-1.0f/13000.0f);
 }
 
 /**************************************/
