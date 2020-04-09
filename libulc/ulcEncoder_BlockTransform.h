@@ -47,14 +47,16 @@ static inline void Block_Transform_InsertKeys(
 
 		//! Get masking and equal-loudness parameters to get the final value
 		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
-		float AWeight = (1.0f-Flat) * AWeightNp((Band+0.5f)*NyquistHz / BlockSize);
-		ValNp = 2.0f*ValNp - Mask - AWeight;
+		float InvAWeight = (Flat-1.0f)*AWeightNp((Band+0.5f)*NyquistHz / BlockSize);
+		ValNp += InvAWeight;
+		Mask  += InvAWeight;
+		ValNp  = (2.0f*ValNp - Mask);
 		float ValMasked = expf(ValNp + AnalysisPowerNp);
 
 		//! Check the 'background' level of this quantizer band against the masking threshold
 		//! NOTE: Accumulation is done with weighting of the band power to simulate
 		//! the fact that low-power bands are masked by loud bands
-		if(QBandAvg > (Mask-AWeight+QuantRange)*QBandAvgW) {
+		if(QBandAvg > (Mask+QuantRange)*QBandAvgW) {
 			if(nQBands < ULC_MAX_QBANDS-1) {
 				QBandAvg = 0.0f, QBandAvgW = 0.0f;
 				nQBands++;
@@ -109,7 +111,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 
 		//! Find minimum (or maximum) ratio between subblocks
 		//! NOTE: The ratios are squared by design; this seems to
-		//! results in greater transient selectivity
+		//! result in greater transient selectivity
 		float MinRatio = 1.0f;
 		float RMSa = State->LastTrackedRMS;
 		for(n=0;n<BlockSize/64;n++) {
@@ -136,7 +138,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		State->LastTrackedRMS = RMSa;
 
 		//! Set overlap size from the smallest (or largest) ratio
-		//! NOTE: Maximum overlap time of 60ms. The rounding point
+		//! NOTE: Maximum overlap time of 50ms. The rounding point
 		//! is also at 0.75, and NOT 0.5 as this would be too much.
 		float OverlapSec = (50.0f/1000.0f) * MinRatio;
 		float OverlapSmp = OverlapSec*State->RateHz;
