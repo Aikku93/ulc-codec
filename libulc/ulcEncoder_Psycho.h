@@ -72,7 +72,7 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 	//! relies on kind of 'comparing' the log/linear values so they must
 	//! match. The reason for this is that log(x^2) = 2*log(x)
 	//! NOTE: 0x1.62E430p-1f = Log[2]
-	int    MaskBw = BandEnd - BandBeg + 1; if(MaskBw < 2) { *_Flat = 1.0f; return 0.0f; }
+	int    MaskBw = BandEnd - BandBeg + 1;
 	float  SumLin = State->SumLin;
 	float nSumLog = State->SumLog / SumLin;
 	*_Flat        = expf(0x1.62E430p-1f * ((logf(SumLin) - 2.0f*nSumLog) / logf(MaskBw))) - 1.0f;
