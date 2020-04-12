@@ -5,13 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#if defined(__AVX__)
-# include <immintrin.h>
-#endif
-#if defined(__SSE__)
-# include <xmmintrin.h>
-#endif
-/**************************************/
 #include <stdint.h>
 /**************************************/
 #include "ulcEncoder_Analysis.h"
@@ -31,47 +24,39 @@ static inline void Block_Transform_InsertKeys(
 	int  *nKeys,
 	int   Chan,
 	float AnalysisPowerNp,
-	float NyquistHz,
-	float QuantRange
+	float NyquistHz
 ) {
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Coef, CoefNp, BlockSize, NyquistHz);
 
 	int   Band;
-	int   nQBands   = 0;
+	int   QBand     = 0;
 	float QBandAvg  = 0.0f;
 	float QBandAvgW = 0.0f;
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Check that the value is in range of the smallest quantization
 		float ValNp = CoefNp[Band]; if(ValNp == ULC_COEF_NEPER_OUT_OF_RANGE) continue;
 
-		//! Get masking and equal-loudness parameters to get the final value
-		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
-		float InvAWeight = (Flat-1.0f)*AWeightNp((Band+0.5f)*NyquistHz / BlockSize);
-		ValNp += InvAWeight;
-		Mask  += InvAWeight;
-		ValNp  = (2.0f*ValNp - Mask);
-		float ValMasked = expf(ValNp + AnalysisPowerNp);
-
 		//! Check the 'background' level of this quantizer band against the masking threshold
-		//! NOTE: Accumulation is done with weighting of the band power to simulate
-		//! the fact that low-power bands are masked by loud bands
-		if(QBandAvg > (Mask+QuantRange)*QBandAvgW) {
-			if(nQBands < ULC_MAX_QBANDS-1) {
+		//! NOTE: Allow 8.69dB less dynamic range for tones as they need to be
+		//! around this much more accurate relative to noise to sound right
+		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
+		if(QBandAvg > (Mask + Flat-1.0f)*QBandAvgW) {
+			if(QBand < ULC_MAX_QBANDS-1) {
 				QBandAvg = 0.0f, QBandAvgW = 0.0f;
-				nQBands++;
+				QBand++;
 			}
 		}
-		QBandAvg  += ValMasked*ValNp;
-		QBandAvgW += ValMasked;
+		QBandAvg  += ValNp; //! NOTE: Relies on Mask being the weighted sum of logs, NOT the log of sum of squares
+		QBandAvgW += 1.0;
 
 		//! Insert key for this band
 		//! NOTE: Store the 'audible' level to the key value. This
 		//! will be used later as a weight for the quantizers.
 		Keys[*nKeys].Band  = Band;
 		Keys[*nKeys].Chan  = Chan;
-		Keys[*nKeys].QBand = nQBands;
-		Keys[*nKeys].Val   = ValMasked;
+		Keys[*nKeys].QBand = QBand;
+		Keys[*nKeys].Val   = expf((4.0f*ValNp - 3.0f*Mask) + AnalysisPowerNp + 2.0f*Flat); //! Boost noise importance by 17.37dB
 		(*nKeys)++;
 	}
 }
@@ -91,7 +76,7 @@ static inline void Block_Transform_ScaleAndToNepers(float *Dst, float *Src, int 
 		Src[Band] = v;
 	}
 }
-static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float RateKbps, float PowerDecay) {
+static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 
@@ -150,10 +135,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 	}
 	State->ThisOverlap = OverlapScale;
 
-	//! Neper range before a quantizer change should happen
-	//! 0x1.51CCA1p2 = Log[(2*7)^2]; Range of quantized coefficients, in Nepers (45.8dB)
-	float QuantRange = 0x1.51CCA1p2f * (1.0f - RateKbps/MaxCodingKbps(BlockSize, nChan, State->RateHz));
-	if(QuantRange < 0.0f) QuantRange = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Get buffer pointers
 		float *BufferTransform = State->TransformBuffer[Chan];
@@ -172,8 +153,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 			&nKeys,
 			Chan,
 			AnalysisPowerNp,
-			State->RateHz * 0.5f,
-			QuantRange
+			State->RateHz * 0.5f
 		);
 		AnalysisPowerNp += PowerDecay;
 	}
