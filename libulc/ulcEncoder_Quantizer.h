@@ -29,7 +29,7 @@ static float Block_Encode_BuildQuantizer(float Sum, float Weight) {
 
 	//! `sd` will always be greater than 4 (due to the bias)
 	//! NOTE: Adding 0.5 and then truncating to avoid lrint()
-	int sd = (int)(4.5f - 0x1.715476p0f*(Sum / Weight)); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
+	int sd = (int)(4.5f - 0x1.715476p0f*logf(Sum / Weight)); //! 0x1.715476p0 == 1/Ln[2], as we need the log2 but logf() is faster than log2f()
 	if(sd < 4) sd = 4; //! Sometimes happens because of overflow?
 	if(sd > 4 + 0xE + 15) sd = 4 + 0xE + 15; //! 4+Eh+15 = Maximum extended-precision quantizer value (including a bias of 4)
 	return exp2f(sd);
@@ -61,7 +61,7 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
 	int        nChan        = State->nChan;
-	float    **CoefBuffer   = State->TransformBuffer, **CoefNepers = State->TransformNepers;
+	float    **CoefBuffer   = State->TransformBuffer;
 	float    **Quants       = State->Quants;
 	float    **QuantsSum    = State->QuantsSum;
 	float    **QuantsWeight = State->QuantsWeight;
@@ -86,7 +86,7 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 	for(Key=0;Key<nNzMax;Key++) {
 		//! NOTE: wVal must be > 0 for this to function properly, which it always will be at this point
 		FETCH_KEY_DATA(Key);
-		Block_Encode_ProcessKeys_QuantAdd(&QuantsSum[Chan][QBand], &QuantsWeight[Chan][QBand], CoefNepers[Chan][Band], wVal);
+		Block_Encode_ProcessKeys_QuantAdd(&QuantsSum[Chan][QBand], &QuantsWeight[Chan][QBand], Val, wVal);
 	}
 	for(;Key<nKeys;Key++) Keys[Key].Val *= -1.0f; //! Turn negative ('unused')
 	for(Chan=0;Chan<nChan;Chan++) for(QBand=0;QBand<ULC_MAX_QBANDS;QBand++) {
@@ -110,7 +110,7 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 				//! Key still present in quantizer?
 				if(wVal > 0.0f) {
 					//! Remove key from analysis (DON'T rebuild the quantizer)
-					Block_Encode_ProcessKeys_QuantAdd(&QuantsSum[Chan][QBand], &QuantsWeight[Chan][QBand], CoefNepers[Chan][Band], -wVal);
+					Block_Encode_ProcessKeys_QuantAdd(&QuantsSum[Chan][QBand], &QuantsWeight[Chan][QBand], Val, -wVal);
 					Keys[nKeysEncode].Val = -wVal; //! Turn negative ('unused')
 				}
 
@@ -120,7 +120,7 @@ static int Block_Encode_ProcessKeys(const struct ULC_EncoderState_t *State, int 
 				//! Key not present in quantizer?
 				if(wVal < 0.0f) {
 					//! Re-add key to analysis (DON'T rebuild the quantizer)
-					Block_Encode_ProcessKeys_QuantAdd(&QuantsSum[Chan][QBand], &QuantsWeight[Chan][QBand], CoefNepers[Chan][Band], -wVal);
+					Block_Encode_ProcessKeys_QuantAdd(&QuantsSum[Chan][QBand], &QuantsWeight[Chan][QBand], Val, -wVal);
 					Keys[nKeysEncode].Val = -wVal; //! Turn positive ('used')
 				}
 			}
