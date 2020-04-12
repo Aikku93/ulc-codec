@@ -68,7 +68,7 @@ static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
 
 //! A-Weight approximation, in Nepers
 static inline __attribute__((always_inline)) float AWeightNp(float Fc) {
-	if(Fc < 1000.0f) return 0x1.95BC61p-2f - 420.0f/(60.0f + Fc);
+	if(Fc <= 1000.0f) return 0x1.95BC61p-2f - 420.0f/(60.0f + Fc);
 	if(Fc < 6000.0f) {
 		float f = logf((Fc - 1000.0f) * (1.0f/5000.0f));
 		return -0.35f * expf(0.87f*f) * f;
