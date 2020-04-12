@@ -13,15 +13,14 @@
 #endif
 /**************************************/
 
-//! Sine/Cosine approximations
-//! Approximates {Sin,Cos}[x*Pi/2] (with x in range [-1,1])
-#if defined(__AVX__)
-void Fourier_SinCosAVX(__m256 x, __m256 *Sin, __m256 *Cos);
-#endif
-#if defined(__SSE__)
-void Fourier_SinCosSSE(__m128 x, __m128 *Sin, __m128 *Cos);
-#endif
-float Fourier_SinCos(float x, float *Sin, float *Cos);
+//! Sine table for DCT analysis
+//! Contains Table[Sin[(n+0.5)*(Pi/2)/N], {n,0,N-1}]
+//! for N={16,32,64,128,256,512,1024,2048,4096,8192}
+extern const float Fourier_SinTable[];
+static inline __attribute__((always_inline)) const float *Fourier_SinTableN(int N) {
+	//! NOTE: N must be > 8
+	return Fourier_SinTable + (N-16);
+}
 
 /**************************************/
 
