@@ -15,8 +15,19 @@
 
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
 static inline int Block_Encode_Quantize(float v, float q) {
-	int vq = (int)(sqrtf(ABS(v)*q) + 0.5f);
+	float av = ABS(v);
+	int vq = (int)(sqrtf(av*q) + 0.5f);
+#if 1 //! Optimal rounding
+	//! NOTE: Handle vq+1 first in case vq==0, as dl and dr would be equal, and
+	//! so if vq-1 was handled first, it would set vq=-1, which would sign-flip
+	float dl = ABS(av*q - SQR(vq-1)); int vql = vq-1;
+	float d  = ABS(av*q - SQR(vq  ));
+	float dr = ABS(av*q - SQR(vq+1)); int vqr = vq+1;
+	if(dr < d) vq = vqr, d = dr;
+	if(dl < d) vq = vql;
+#endif
 	return (v < 0.0f) ? (-vq) : (+vq);
+
 }
 static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
 	//! Push nybble
