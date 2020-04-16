@@ -135,7 +135,7 @@ int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const 
 	State->BitBudget += AvgBitBudget;
 
 	//! Transform input, build keys, and get maximum number of non-zero bands
-	int nKeys = Block_Transform(State, SrcData, PowerDecay);
+	int nKeys = Block_Transform(State, SrcData, RateKbps, PowerDecay);
 	int nNzMax; {
 		//! First run?
 		if(State->CoefBitRate < 0.0f) {

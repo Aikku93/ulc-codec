@@ -8,6 +8,10 @@
 #include <stdint.h>
 /**************************************/
 
+//! 0 == No psychoacoustic optimizations
+//! 1 == Use psychoacoustic model
+#define ULC_USE_PSYCHOACOUSTICS 1
+
 //! Lowest possible coefficient value
 #define ULC_COEF_EPS (0x1.0p-33f) //! 4+0xE+15 = Maximum extended-precision quantizer
 
