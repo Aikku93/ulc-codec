@@ -27,7 +27,6 @@ static inline int Block_Encode_Quantize(float v, float q) {
 	if(dl < d) vq = vql;
 #endif
 	return (v < 0.0f) ? (-vq) : (+vq);
-
 }
 static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
 	//! Push nybble
