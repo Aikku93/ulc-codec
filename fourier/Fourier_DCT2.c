@@ -3,7 +3,7 @@
 //! Copyright (C) 2020, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
-#if defined(__AVX__)
+#if defined(__AVX__) || defined(__FMA__)
 # include <immintrin.h>
 #endif
 #if defined(__SSE__)
