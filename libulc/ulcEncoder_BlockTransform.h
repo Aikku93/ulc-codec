@@ -5,6 +5,13 @@
 /**************************************/
 #pragma once
 /**************************************/
+#if defined(__AVX__) || defined(__FMA__)
+# include <immintrin.h>
+#endif
+#if defined(__SSE__)
+# include <xmmintrin.h>
+#endif
+/**************************************/
 #include <stdint.h>
 /**************************************/
 #include "ulcEncoder_Analysis.h"
@@ -74,6 +81,114 @@ static inline void Block_Transform_InsertKeys(
 
 /**************************************/
 
+//! Get optimal log base-2 overlap scaling for transients
+//! The idea is that with reduced overlap, transients need fewer
+//! coefficients to sound correct (at the cost of distortion)
+static inline int Block_Transform_GetLogOverlapScale(const float *Data, float *SubBlockRMSBuffer, float *LastTrackedRMS, int BlockSize, int MinOverlap, int MaxOverlap, int nChan) {
+	const unsigned int SubBlockLength = 32u;
+	int nSubBlocks = BlockSize / SubBlockLength;
+
+	//! Divide block into short subblocks and get their sum of squares
+	int n, Chan; {
+		for(n=0;n<nSubBlocks;n++) SubBlockRMSBuffer[n] = 1.0e-30f;
+		for(Chan=0;Chan<nChan;Chan++) {
+			for(n=0;n<nSubBlocks;n++) {
+				unsigned int i;
+				float Sum;
+#if defined(__AVX__)
+				__m256 vSum = _mm256_setzero_ps();
+				for(i=0;i<SubBlockLength;i+=8) {
+					__m256 v = _mm256_load_ps(Data); Data += 8;
+#if defined(__FMA__)
+					vSum = _mm256_fmadd_ps(v, v, vSum);
+#else
+					v    = _mm256_mul_ps(v, v);
+					vSum = _mm256_add_ps(vSum, v);
+#endif
+				}
+				__m128 vSumL = _mm256_extractf128_ps(vSum, 0);
+				__m128 vSumH = _mm256_extractf128_ps(vSum, 1);
+				vSumL = _mm_add_ps    (vSumL, vSumH);
+				vSumH = _mm_movehl_ps (vSumL, vSumL);
+				vSumL = _mm_add_ps    (vSumL, vSumH);
+				vSumH = _mm_shuffle_ps(vSumL, vSumL, 0x01);
+				vSumL = _mm_add_ss    (vSumL, vSumH);
+				Sum   = _mm_cvtss_f32 (vSumL);
+#elif defined(__SSE__)
+				__m128 vSum = _mm_setzero_ps();
+				for(i=0;i<SubBlockLength;i+=4) {
+					__m128 v = _mm_load_ps(Data); Data += 4;
+#if defined(__FMA__)
+					vSum = _mm_fmadd_ps(v, v, vSum);
+#else
+					v    = _mm_mul_ps(v, v);
+					vSum = _mm_add_ps(vSum, v);
+#endif
+				}
+				__m128 vSumL = vSum;
+				__m128 vSumH;
+				vSumH = _mm_movehl_ps (vSumL, vSumL);
+				vSumL = _mm_add_ps    (vSumL, vSumH);
+				vSumH = _mm_shuffle_ps(vSumL, vSumL, 0x01);
+				vSumL = _mm_add_ss    (vSumL, vSumH);
+				Sum   = _mm_cvtss_f32 (vSumL);
+#else
+				Sum = 0.0f;
+				for(i=0;i<SubBlockLength;i++) {
+					float v = *Data++;
+					Sum += SQR(v);
+				}
+#endif
+				SubBlockRMSBuffer[n] += Sum;
+			}
+		}
+	}
+
+	//! Find minimum (or maximum) ratio between subblocks
+	//! NOTE: The ratios are squared by design; this seems to
+	//! result in greater transient selectivity and is faster
+	//! than using a square root everywhere
+	float RMSa = *LastTrackedRMS;
+	float RatioMin = 1.0f, RatioSum = 1.0e-30f;
+	for(n=0;n<nSubBlocks;n++) {
+		//! Get the ratio of A:B (or B:A) and save the smallest
+		//! NOTE: Even though the original RMS values were scaled
+		//! by SubBlockLength*nChan (from the analysis), this will
+		//! cancel in the division applied.
+		//! NOTE: When A:B > 1.0, then we detected a release/decay
+		//! transient; these are less important than attack ones,
+		//! so we apply a curve to reduce their importance a bit.
+		float Ratio, RMSb = SubBlockRMSBuffer[n];
+		if(RMSa < RMSb) Ratio = RMSa/RMSb;
+		else {
+			Ratio = 1.0f - RMSb/RMSa;
+			Ratio = 1.0f - SQR(Ratio);
+		}
+		if(Ratio < RatioMin) RatioMin = Ratio;
+		RatioSum += SQR(Ratio); //! Squaring here seems to make it less oversensitive
+
+		//! Remove part of the linear term from the last block,
+		//! based on how large of a jump there was between them.
+		//! This reduces overdetection during volume envelopes
+		RMSa = Ratio*RMSa + (1.0f-Ratio)*RMSb;
+	}
+	*LastTrackedRMS = RMSa;
+	float Ratio = RatioMin*nSubBlocks / RatioSum;
+
+	//! Set overlap size from the smallest (or largest) ratio,
+	//! taking into account its step behaviour
+	//! NOTE: The rounding point is at 0.75, and NOT 0.5 as this
+	//! would result in too much unnecessary narrowing.
+	int OverlapScale = (int)(-0x1.715476p0f*logf(Ratio) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+	if(OverlapScale < 0x0) OverlapScale = 0x0;
+	if(OverlapScale > 0xF) OverlapScale = 0xF;
+	while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
+	while((BlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
+	return OverlapScale;
+}
+
+/**************************************/
+
 //! Apply block transform
 //!  -Fetches data
 //!  -Applies MDCT
@@ -90,77 +205,29 @@ static inline void Block_Transform_ScaleAndToNepers(float *Dst, float *Src, int 
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float RateKbps, float PowerDecay) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
-
-	int Chan;
-	int nKeys = 0;
 	float AnalysisPowerNp = 0.0f; PowerDecay = logf(PowerDecay);
 
-	//! Attempt to find transients in order to decide on an overlap amount
-	int OverlapScale; {
-		const unsigned int SubBlockLength = 32u;
-		int nSubBlocks = BlockSize / SubBlockLength;
+	//! Get the overlap scaling for this block
+	int OverlapScale = State->ThisOverlap = Block_Transform_GetLogOverlapScale(
+		Data,
+		State->TransformTemp,
+		&State->LastTrackedRMS,
+		BlockSize,
+		State->MinOverlap,
+		State->MaxOverlap,
+		nChan
+	);
 
-		//! Divide block into short subblocks and get their sum of squares
-		int n;
-		float *SubBlockRMS = State->TransformTemp;
-		for(n=0;n<nSubBlocks;n++) SubBlockRMS[n] = 1.0e-30f;
-		for(Chan=0;Chan<nChan;Chan++) for(n=0;n<nSubBlocks;n++) {
-			unsigned int i;
-			float Sum = 0.0f;
-			const float *Src = Data + Chan*BlockSize + n*SubBlockLength;
-			for(i=0;i<SubBlockLength;i++) Sum += SQR(Src[i]);
-			SubBlockRMS[n] += Sum;
-		}
-
-		//! Find minimum (or maximum) ratio between subblocks
-		//! NOTE: The ratios are squared by design; this seems to
-		//! result in greater transient selectivity and is faster
-		//! than using a square root everywhere
-		float RMSa = State->LastTrackedRMS;
-		float RatioMin = 1.0f, RatioSum = 1.0e-30f;
-		for(n=0;n<nSubBlocks;n++) {
-			//! Get the ratio of A:B (or B:A) and save the smallest
-			//! NOTE: Even though the original RMS values were scaled
-			//! by SubBlockLength*nChan (from the analysis), this will
-			//! cancel in the division applied.
-			//! NOTE: When A:B > 1.0, then we detected a release/decay
-			//! transient; these are less important than attack ones,
-			//! so we apply a curve to reduce their importance a bit.
-			float Ratio, RMSb = SubBlockRMS[n];
-			if(RMSa < RMSb) Ratio = RMSa/RMSb;
-			else {
-				Ratio = 1.0f - RMSb/RMSa;
-				Ratio = 1.0f - SQR(Ratio);
-			}
-			if(Ratio < RatioMin) RatioMin = Ratio;
-			RatioSum += SQR(Ratio); //! Squaring here seems to make it less oversensitive
-
-			//! Remove part of the linear term from the last block,
-			//! based on how large of a jump there was between them.
-			//! This reduces overdetection during volume envelopes
-			RMSa = Ratio*RMSa + (1.0f-Ratio)*RMSb;
-		}
-		State->LastTrackedRMS = RMSa;
-		float Ratio = RatioMin*nSubBlocks / RatioSum;
-
-		//! Set overlap size from the smallest (or largest) ratio,
-		//! taking into account its step behaviour
-		//! NOTE: The rounding point is at 0.75, and NOT 0.5 as this
-		//! would result in too much unnecessary narrowing.
-		OverlapScale = (int)(-0x1.715476p0f*logf(Ratio) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
-		if(OverlapScale < 0x0) OverlapScale = 0x0;
-		if(OverlapScale > 0xF) OverlapScale = 0xF;
-		while((BlockSize >> OverlapScale) < State->MinOverlap) OverlapScale--;
-		while((BlockSize >> OverlapScale) > State->MaxOverlap) OverlapScale++;
-	}
-	State->ThisOverlap = OverlapScale;
-
-	//! Neper range before a quantizer change should happen
+	//! Get the allowed dynamic range in a quantizer zone
 	//! 0x1.25701Bp2 = Log[(2*7)^2 / 2]; Half the range of quantized coefficients, in Nepers (39.8dB)
-	float QuantRange = 0x1.25701Bp2f * (2.0f - RateKbps/MaxCodingKbps(BlockSize, nChan, State->RateHz));
-	if(QuantRange < 0.0f) QuantRange = 0.0f;
+	float QuantRangeScale = 2.0f - RateKbps/MaxCodingKbps(BlockSize, nChan, State->RateHz);
+	if(QuantRangeScale < 1.0f) QuantRangeScale = 1.0f; //! Avoid creating too many quantizer zones
+	float QuantRange = 0x1.25701Bp2f * QuantRangeScale;
+
+	//! Transform channels and insert keys for each codeable coefficient
+	int Chan;
+	int nKeys = 0;
 	for(Chan=0;Chan<nChan;Chan++) {
-		//! Get buffer pointers
 		float *BufferTransform = State->TransformBuffer[Chan];
 		float *BufferNepers    = State->TransformNepers[Chan];
 		float *BufferFwdLap    = State->TransformFwdLap[Chan];
