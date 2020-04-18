@@ -92,17 +92,6 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 #endif
 		_mm_store_ps(OutLo, t0); OutLo += 4;
 		OutHi -= 4; _mm_storer_ps(OutHi, t1);
-#if defined(__FMA__)
-		t0 = _mm_mul_ps(ws, s);
-		t1 = _mm_mul_ps(wc, s);
-		t0 = _mm_fmsub_ps(wc, c, t0);
-		t1 = _mm_fmadd_ps(ws, c, t1);
-#else
-		t0 = _mm_sub_ps(_mm_mul_ps(wc, c), _mm_mul_ps(ws, s));
-		t1 = _mm_add_ps(_mm_mul_ps(ws, c), _mm_mul_ps(wc, s));
-#endif
-		c = t0;
-		s = t1;
 	}
 #else
 	for(i=0;i<(N-Overlap)/2;i++) {
