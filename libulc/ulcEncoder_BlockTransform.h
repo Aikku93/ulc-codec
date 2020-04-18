@@ -59,11 +59,11 @@ static inline void Block_Transform_InsertKeys(
 		//! whereas this trial-and-error form gives substantially
 		//! better results (values correspond to 30dB and 22dB in Np).
 		//! NOTE: Reduce importance of non-tonal/non-noise bands by 17.37dB.
-		//! NOTE: Store the SQUARED post-masking energy as weights.
 		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
 		ValNp  = 0x1.BA18AAp1f*ValNp - 0x1.443438p1f*Mask;
 		ValNp += 2.0f * 4.0f*SQR(Flat)*(SQR(Flat) - 1.0f);
 #endif
+		//! NOTE: Store the SQUARED post-masking energy as weights.
 		Keys[*nKeys].Band  = Band;
 		Keys[*nKeys].Chan  = Chan;
 		Keys[*nKeys].QBand = QBand;
@@ -97,61 +97,57 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 
 	//! Attempt to find transients in order to decide on an overlap amount
 	int OverlapScale; {
-		//! Divide block into 64-sample subblocks and get their sum of squares
+		const unsigned int SubBlockLength = 32u;
+		int nSubBlocks = BlockSize / SubBlockLength;
+
+		//! Divide block into short subblocks and get their sum of squares
 		int n;
 		float *SubBlockRMS = State->TransformTemp;
-		for(n=0;n<64;n++) SubBlockRMS[n] = 1.0e-30f;
-		for(Chan=0;Chan<nChan;Chan++) {
-			for(n=0;n<BlockSize;n++) SubBlockRMS[n/64] += SQR(Data[Chan*BlockSize+n]);
+		for(n=0;n<nSubBlocks;n++) SubBlockRMS[n] = 1.0e-30f;
+		for(Chan=0;Chan<nChan;Chan++) for(n=0;n<nSubBlocks;n++) {
+			unsigned int i;
+			float Sum = 0.0f;
+			const float *Src = Data + Chan*BlockSize + n*SubBlockLength;
+			for(i=0;i<SubBlockLength;i++) Sum += SQR(Src[i]);
+			SubBlockRMS[n] += Sum;
 		}
 
 		//! Find minimum (or maximum) ratio between subblocks
 		//! NOTE: The ratios are squared by design; this seems to
-		//! result in greater transient selectivity
-		float MinRatio = 1.0f, MeanRatio = 0.0f;
+		//! result in greater transient selectivity and is faster
+		//! than using a square root everywhere
 		float RMSa = State->LastTrackedRMS;
-		for(n=0;n<BlockSize/64;n++) {
+		float RatioMin = 1.0f, RatioSum = 1.0e-30f;
+		for(n=0;n<nSubBlocks;n++) {
 			//! Get the ratio of A:B (or B:A) and save the smallest
 			//! NOTE: Even though the original RMS values were scaled
-			//! by 64*nChan (from the analysis), this cancels in the
-			//! division applied, only needing the square root for RMS.
+			//! by SubBlockLength*nChan (from the analysis), this will
+			//! cancel in the division applied.
 			//! NOTE: When A:B > 1.0, then we detected a release/decay
 			//! transient; these are less important than attack ones,
 			//! so we apply a curve to reduce their importance a bit.
-			float RMSb = SubBlockRMS[n];
-			float Ratio = RMSa/RMSb;
-			if(Ratio > 1.0f) {
+			float Ratio, RMSb = SubBlockRMS[n];
+			if(RMSa < RMSb) Ratio = RMSa/RMSb;
+			else {
 				Ratio = 1.0f - RMSb/RMSa;
-				Ratio = 1.0f - SQR(SQR(Ratio));
+				Ratio = 1.0f - SQR(Ratio);
 			}
-			if(Ratio < MinRatio) MinRatio = Ratio;
+			if(Ratio < RatioMin) RatioMin = Ratio;
+			RatioSum += SQR(Ratio); //! Squaring here seems to make it less oversensitive
 
 			//! Remove part of the linear term from the last block,
 			//! based on how large of a jump there was between them.
 			//! This reduces overdetection during volume envelopes
 			RMSa = Ratio*RMSa + (1.0f-Ratio)*RMSb;
-
-			//! Add to the mean ratio
-			//! Repeated changes are likely to show up as a
-			//! quasi-periodic signal and would not need to be
-			//! decimated to improve the transient behaviour
-			MeanRatio += Ratio;
 		}
 		State->LastTrackedRMS = RMSa;
-		MeanRatio *= 64.0f/BlockSize;
+		float Ratio = RatioMin*nSubBlocks / RatioSum;
 
-		//! Set overlap size from the smallest (or largest) ratio
+		//! Set overlap size from the smallest (or largest) ratio,
+		//! taking into account its step behaviour
 		//! NOTE: The rounding point is at 0.75, and NOT 0.5 as this
-		//! would results in too much unnecessary narrowing.
-		//! NOTE: As stated above, also take into account the average
-		//! ratio to avoid decimating a block that doesn't need it.
-		//! This does mean that there isn't truly a 'maximum' amount
-		//! of overlap time, as the division by MeanRatio results in
-		//! approaching +inf as MeanRatio approaches 0. Therefore, the
-		//! 20ms constant in OverlapSec is rather arbitrary.
-		float OverlapSec = (20.0f/1000.0f) * MinRatio / MeanRatio;
-		float OverlapSmp = OverlapSec*State->RateHz;
-		OverlapScale = (int)(0x1.715476p0f*logf(BlockSize / (1.0e-30f + OverlapSmp)) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+		//! would result in too much unnecessary narrowing.
+		OverlapScale = (int)(-0x1.715476p0f*logf(Ratio) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
 		if(OverlapScale < 0x0) OverlapScale = 0x0;
 		if(OverlapScale > 0xF) OverlapScale = 0xF;
 		while((BlockSize >> OverlapScale) < State->MinOverlap) OverlapScale--;
