@@ -71,7 +71,8 @@ struct ULC_EncoderState_t {
 	float    **QuantsSum;
 	float    **QuantsWeight;
 	float    **Quants;
-	float      LastTrackedRMS;
+	float      LastBlockEnergy;
+	float      LastSampleEnergy;
 };
 
 /**************************************/

@@ -89,7 +89,8 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Set initial state
 	State->BitBudget   = 0.0;
 	State->CoefBitRate = -1.0f; //! Will be set on first run
-	State->LastTrackedRMS = 1.0e-30f;
+	State->LastBlockEnergy  = 1.0e-30f;
+	State->LastSampleEnergy = 0.0f;
 
 	//! Initialize pointers
 	int i, Chan;
