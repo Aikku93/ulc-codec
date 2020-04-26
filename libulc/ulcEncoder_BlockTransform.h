@@ -84,102 +84,87 @@ static inline void Block_Transform_InsertKeys(
 //! Get optimal log base-2 overlap scaling for transients
 //! The idea is that with reduced overlap, transients need fewer
 //! coefficients to sound correct (at the cost of distortion)
-static inline int Block_Transform_GetLogOverlapScale(const float *Data, float *SubBlockRMSBuffer, float *LastTrackedRMS, int BlockSize, int MinOverlap, int MaxOverlap, int nChan) {
-	const unsigned int SubBlockLength = 32u;
-	int nSubBlocks = BlockSize / SubBlockLength;
+//! Transient detection is loosely based on ideas found in:
+//!  "Codierung von Audiosignalen mit uberlappender Transformation und adaptiven Fensterfunktionen"
+//!  (Coding of Audio Signals with Overlapping Block Transform and Adaptive Window Functions)
+//!  DOI: 10.1515/FREQ.1989.43.9.252
+static inline int Block_Transform_GetLogOverlapScale(
+	const float *Data,
+	float *EnergyBuffer,
+	float *LastBlockEnergy,
+	float *LastSampleEnergy,
+	int BlockSize,
+	int MinOverlap,
+	int MaxOverlap,
+	int nChan
+) {
+	int n, Chan;
 
-	//! Divide block into short subblocks and get their sum of squares
-	int n, Chan; {
-		for(n=0;n<nSubBlocks;n++) SubBlockRMSBuffer[n] = 1.0e-30f;
-		for(Chan=0;Chan<nChan;Chan++) {
-			for(n=0;n<nSubBlocks;n++) {
-				unsigned int i;
-				float Sum;
+	//! Combine all channel energy into a single buffer
+	//! NOTE: Transients are improved by leaving this energy
+	//! squared and additionally using the sum of squared
+	//! deltas later on. This also saves on computations by
+	//! avoiding any square roots in the calculations
+	for(n=0;n<BlockSize;n++) EnergyBuffer[n] = 0.0f;
+	for(Chan=0;Chan<nChan;Chan++) {
 #if defined(__AVX__)
-				__m256 vSum = _mm256_setzero_ps();
-				for(i=0;i<SubBlockLength;i+=8) {
-					__m256 v = _mm256_load_ps(Data); Data += 8;
+		for(n=0;n<BlockSize;n+=8) {
+			__m256 v = _mm256_load_ps(Data + Chan*BlockSize + n);
+			__m256 b = _mm256_load_ps(EnergyBuffer + n);
 #if defined(__FMA__)
-					vSum = _mm256_fmadd_ps(v, v, vSum);
+			b = _mm256_fmadd_ps(v, v, b);
 #else
-					v    = _mm256_mul_ps(v, v);
-					vSum = _mm256_add_ps(vSum, v);
+			v = _mm256_mul_ps(v, v);
+			b = _mm256_add_ps(b, v);
 #endif
-				}
-				__m128 vSumL = _mm256_extractf128_ps(vSum, 0);
-				__m128 vSumH = _mm256_extractf128_ps(vSum, 1);
-				vSumL = _mm_add_ps    (vSumL, vSumH);
-				vSumH = _mm_movehl_ps (vSumL, vSumL);
-				vSumL = _mm_add_ps    (vSumL, vSumH);
-				vSumH = _mm_shuffle_ps(vSumL, vSumL, 0x01);
-				vSumL = _mm_add_ss    (vSumL, vSumH);
-				Sum   = _mm_cvtss_f32 (vSumL);
+			_mm256_store_ps(EnergyBuffer + n, b);
+		}
 #elif defined(__SSE__)
-				__m128 vSum = _mm_setzero_ps();
-				for(i=0;i<SubBlockLength;i+=4) {
-					__m128 v = _mm_load_ps(Data); Data += 4;
+		for(n=0;n<BlockSize;n+=4) {
+			__m128 v = _mm_load_ps(Data + Chan*BlockSize + n);
+			__m128 b = _mm_load_ps(EnergyBuffer + n);
 #if defined(__FMA__)
-					vSum = _mm_fmadd_ps(v, v, vSum);
+			b = _mm_fmadd_ps(v, v, b);
 #else
-					v    = _mm_mul_ps(v, v);
-					vSum = _mm_add_ps(vSum, v);
+			v = _mm_mul_ps(v, v);
+			b = _mm_add_ps(b, v);
 #endif
-				}
-				__m128 vSumL = vSum;
-				__m128 vSumH;
-				vSumH = _mm_movehl_ps (vSumL, vSumL);
-				vSumL = _mm_add_ps    (vSumL, vSumH);
-				vSumH = _mm_shuffle_ps(vSumL, vSumL, 0x01);
-				vSumL = _mm_add_ss    (vSumL, vSumH);
-				Sum   = _mm_cvtss_f32 (vSumL);
-#else
-				Sum = 0.0f;
-				for(i=0;i<SubBlockLength;i++) {
-					float v = *Data++;
-					Sum += SQR(v);
-				}
-#endif
-				SubBlockRMSBuffer[n] += Sum;
-			}
+			_mm_store_ps(EnergyBuffer + n, b);
 		}
+#else
+		for(n=0;n<BlockSize;n++) EnergyBuffer[n] += SQR(Data[Chan*BlockSize + n]);
+#endif
 	}
 
-	//! Find minimum (or maximum) ratio between subblocks
-	//! NOTE: The ratios are squared by design; this seems to
-	//! result in greater transient selectivity and is faster
-	//! than using a square root everywhere
-	float RMSa = *LastTrackedRMS;
-	float RatioMin = 1.0f, RatioSum = 1.0e-30f;
-	for(n=0;n<nSubBlocks;n++) {
-		//! Get the ratio of A:B (or B:A) and save the smallest
-		//! NOTE: Even though the original RMS values were scaled
-		//! by SubBlockLength*nChan (from the analysis), this will
-		//! cancel in the division applied.
-		//! NOTE: When A:B > 1.0, then we detected a release/decay
-		//! transient; these are less important than attack ones,
-		//! so we apply a curve to reduce their importance a bit.
-		float Ratio, RMSb = SubBlockRMSBuffer[n];
-		if(RMSa < RMSb) Ratio = RMSa/RMSb;
-		else {
-			Ratio = 1.0f - RMSb/RMSa;
-			Ratio = 1.0f - SQR(Ratio);
-		}
-		if(Ratio < RatioMin) RatioMin = Ratio;
-		RatioSum += SQR(Ratio); //! Squaring here seems to make it less oversensitive
+	//! Analyze samples in smaller blocks
+	float Ratio = 1.0f;
+	int SubBlockOffs;
+	int SubBlockSize = 256; if(BlockSize < SubBlockSize) SubBlockSize = BlockSize;
+	for(SubBlockOffs=0;SubBlockOffs<BlockSize;SubBlockOffs += SubBlockSize) {
+		const float *Energy = EnergyBuffer + SubBlockOffs;
 
-		//! Remove part of the linear term from the last block,
-		//! based on how large of a jump there was between them.
-		//! This reduces overdetection during volume envelopes
-		RMSa = Ratio*RMSa + (1.0f-Ratio)*RMSb;
+		//! Get the sum of the step sizes in this block
+		float StepSum = SQR(Energy[0] - *LastSampleEnergy);
+		for(n=1;n<SubBlockSize;n++) StepSum += SQR(Energy[n] - Energy[n-1]);
+		StepSum += 1.0e-30f; //! Add a small bias to avoid dividing by 0 on silence
+		*LastSampleEnergy = Energy[SubBlockSize-1];
+
+		//! Relate the average step size of this block to that of the last block
+		//! NOTE: The divsion cancels the scaling bias of summing multiple channels
+		float r;
+		if(StepSum > *LastBlockEnergy) r = StepSum / *LastBlockEnergy;
+		else                           r = *LastBlockEnergy / StepSum;
+		*LastBlockEnergy = StepSum;
+
+		//! Update the global maxima
+		if(r > Ratio) Ratio = r;
 	}
-	*LastTrackedRMS = RMSa;
-	float Ratio = RatioMin*nSubBlocks / RatioSum;
 
 	//! Set overlap size from the smallest (or largest) ratio,
 	//! taking into account its step behaviour
 	//! NOTE: The rounding point is at 0.75, and NOT 0.5 as this
 	//! would result in too much unnecessary narrowing.
-	int OverlapScale = (int)(-0x1.715476p0f*logf(Ratio) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+	int OverlapScale = (int)(0x1.715476p0f*logf(Ratio) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
 	if(OverlapScale < 0x0) OverlapScale = 0x0;
 	if(OverlapScale > 0xF) OverlapScale = 0xF;
 	while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
@@ -211,7 +196,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 	int OverlapScale = State->ThisOverlap = Block_Transform_GetLogOverlapScale(
 		Data,
 		State->TransformTemp,
-		&State->LastTrackedRMS,
+		&State->LastBlockEnergy,
+		&State->LastSampleEnergy,
 		BlockSize,
 		State->MinOverlap,
 		State->MaxOverlap,
