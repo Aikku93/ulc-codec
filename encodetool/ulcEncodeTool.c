@@ -17,7 +17,7 @@
 /**************************************/
 
 //! Header magic value
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'e'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'f'<<24)
 
 /**************************************/
 
@@ -41,6 +41,7 @@ int main(int argc, const char *argv[]) {
 			" -blocksize:2048  - Set number of coefficients per block (must be a power of 2).\n"
 			" -minoverlap:0    - Set minimum number of overlap samples (must be a power of 2).\n"
 			" -maxoverlap:2048 - Set maximum number of overlap samples (must be a power of 2).\n"
+			" -sidescale:0.9   - Set side-channel importance (when using M/S stereo).\n"
 			"Multi-channel data must be interleaved.\n"
 			"Note that minimum overlap may be clipped by the encoder.\n"
 		);
@@ -48,13 +49,14 @@ int main(int argc, const char *argv[]) {
 	}
 
 	//! Parse parameters
-	int MidSideXfm   = 1;
-	int BlockSize    = 2048;
-	int MinOverlap   = 0;
-	int MaxOverlap   = BlockSize;
-	int nChan        = 1;
-	int RateHz       = atoi(argv[3]);
-	int RateKbps     = atoi(argv[4]); {
+	int   MidSideXfm = 1;
+	int   BlockSize  = 2048;
+	int   MinOverlap = 0;
+	int   MaxOverlap = BlockSize;
+	int   nChan      = 1;
+	int   RateHz     = atoi(argv[3]);
+	int   RateKbps   = atoi(argv[4]);
+	float SideScale  = 0.9f; {
 		int n;
 		for(n=5;n<argc;n++) {
 			if(!memcmp(argv[n], "-nc:", 4)) {
@@ -83,6 +85,12 @@ int main(int argc, const char *argv[]) {
 				int x = atoi(argv[n] + 12);
 				if(x >= 0 && (x & (-x)) == x) MaxOverlap = x;
 				else printf("WARNING: Ignoring invalid parameter to maximum overlap (%d)\n", x);
+			}
+
+			else if(!memcmp(argv[n], "-sidescale:", 11)) {
+				float x = atof(argv[n] + 11);
+				if(x > 0.0f) SideScale = x;
+				else printf("WARNING: Ignoring invalid parameter to side-channel importance (%.3f)\n", x);
 			}
 
 			else printf("WARNING: Ignoring unknown argument (%s)\n", argv[n]);
@@ -213,7 +221,7 @@ int main(int argc, const char *argv[]) {
 			//! Encode block
 			//! Reuse BlockFetch[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockFetch;
-			int Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? 0.9f : 1.0f);
+			int Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? SideScale : 1.0f);
 			TotalSize += Size;
 
 			//! Copy what we can into the cache
