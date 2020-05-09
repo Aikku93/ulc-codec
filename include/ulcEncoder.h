@@ -13,7 +13,7 @@
 #define ULC_USE_PSYCHOACOUSTICS 1
 
 //! Lowest possible coefficient value
-#define ULC_COEF_EPS (0x1.0p-33f) //! 4+0xE+15 = Maximum extended-precision quantizer
+#define ULC_COEF_EPS (0x1.0p-31f) //! 4+0xE+0xC = Maximum extended-precision quantizer
 
 //! Used in Neper-scale coefficients
 //! dB calculations would add computational cost for the exact same results,

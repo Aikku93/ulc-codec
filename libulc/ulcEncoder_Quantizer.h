@@ -20,22 +20,22 @@
 /**************************************/
 
 //! Build quantizer from weighted average
-//! NOTE: Biased by the median of possible quantized values (ie. x^2, with x = {1..7}),
-//!       and the maximum range is reduced by the same amount for compactness.
+//! NOTE: Biased by the log base-2 of the maximum possible quantized coefficient
+//!       (ie. 7^2). This allows coding up to the maximum range in a quantizer.
 //! NOTE: The average is performed over the Neper-domain coefficients, so there is
 //!       no need to apply a further logarithm here to get the base-2 logarithm.
 static float Block_Encode_BuildQuantizer(float Sum, float Weight) {
 	if(Weight == 0.0f) return 0.0f;
 
-	//! `sd` will always be greater than 4 (due to the bias)
-	//! NOTE: Adding 0.5 and then truncating to avoid lrint()
-	//! TODO: Figure out why a bias of 5.5 works better than 4.5. Perhaps
-	//! because this is the closest 2^n to represent the mean (and RMS) of
-	//! quantized coefficient values?
-	int sd = (int)(5.5f - 0x1.715476p0f*Sum / Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
-	if(sd < 4) sd = 4; //! Sometimes happens because of overflow?
-	if(sd > 4 + 0xE + 15) sd = 4 + 0xE + 15; //! 4+Eh+15 = Maximum extended-precision quantizer value (including a bias of 4)
-	return exp2f(sd);
+	//! NOTE: `sd` will always be greater than 5 due to the bias
+	//! NOTE: Truncate (ie. round down); do NOT round off, as if
+	//! we were to round up, then too many coefficients would be
+	//! clipped and this distorts the output; it's better to
+	//! have reduced precision and avoid clipping.
+	int sd = (int)(0x1.675768p2f - 0x1.715476p0f*Sum / Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
+	if(sd < 5) sd = 5; //! Sometimes happens because of overflow?
+	if(sd > 5 + 0xE + 0xC) sd = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
+	return (float)(1u << sd);
 }
 
 /**************************************/
