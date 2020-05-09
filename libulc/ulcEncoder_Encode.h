@@ -38,15 +38,15 @@ static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size)
 	if((*Size)%8u == 0) (*Dst)++;
 }
 static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer, int *Size, int Lead) {
-	//! 8h,0h,0h..Eh[,Xh]: Quantizer change
-	int s = (int)log2f(Quant) - 4;
+	//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
+	int s = (int)log2f(Quant) - 5;
 	if(Lead) {
 		Block_Encode_WriteNybble(0x8, DstBuffer, Size);
 		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
 	}
 	if(s < 0xE) Block_Encode_WriteNybble(s, DstBuffer, Size);
 	else {
-		//! 8h,0h,Eh,Xh: Extended-precision quantizer
+		//! 8h,0h,Eh,0h..Ch: Extended-precision quantizer
 		Block_Encode_WriteNybble(  0xE, DstBuffer, Size);
 		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
 	}
@@ -92,21 +92,28 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 				//!       of some coefficients we may have missed (see below)
 				int zR = tBand - NextBand;
 				while(zR >= 4) {
-					//! Small run?
+					//! Encode optimal run
 					int n = zR;
-					if(n < 26) {
-						//! 8h,1h..Bh: 4..24 zeros
+					if(n < 28+2) {
+						//! 8h,1h..Dh:  4.. 28 zeros (Step: 2)
 						n = (n-2)/2u;
 						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
 						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
 						n = n*2+2;
+					} else if(n < 90+4) {
+						//! 8h,Eh,Xh:  30.. 90 zeros (Step: 4)
+						n = (n-30)/4u;
+						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
+						Block_Encode_WriteNybble(0xE, &DstBuffer, &Size);
+						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
+						n = n*4+30;
 					} else {
-						//! 8h,Ch..Fh,Xh: 26..152 zeros (Ch + n>>4, n&Fh)
-						n = (n-26)/2u; if(n > 0x3F) n = 0x3F;
-						Block_Encode_WriteNybble(0x8,          &DstBuffer, &Size);
-						Block_Encode_WriteNybble(0xC + (n>>4), &DstBuffer, &Size);
-						Block_Encode_WriteNybble(n&0xF,        &DstBuffer, &Size);
-						n = n*2+26;
+						//! 8h,Fh,Xh:  94..214 zeros (Step: 8)
+						n = (n-94)/8u; if(n > 0xF) n = 0xF;
+						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
+						Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
+						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
+						n = n*8+94;
 					}
 
 					//! Insert zeros

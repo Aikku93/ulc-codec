@@ -93,8 +93,8 @@ static inline uint8_t Block_Decode_ReadNybble(const uint8_t **Src, int *Size) {
 }
 static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, int *Size) {
 	int8_t        qi  = Block_Decode_ReadNybble(Src, Size) & 0xF; if(qi == 0xF) return 0.0f;
-	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,Xh: Extended-precision quantizer
-	return exp2f(-qi-4);
+	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,0h..Ch: Extended-precision quantizer
+	return 1.0f / ((1u<<5) << qi);
 }
 int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
 	//! Spill state to local variables to make things easier to read
@@ -134,14 +134,13 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			//! Unpack escape code
 			v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
 			if(v != 0x0) {
-				//! 8h,1h..Bh:     4.. 24 zeros
-				//! 8h,Ch..Fh,Xh: 26..152 zeros
-				int nZ = v;
-				if(nZ < 0xC) nZ = nZ*2 + 2;
-				else {
-					nZ = (nZ-0xC)<<4 | (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-					nZ = nZ*2 + 26;
-				}
+				//! 8h,1h..Dh:  4.. 28 zeros (Step: 2)
+				//! 8h,Eh,Xh:  30.. 90 zeros (Step: 4)
+				//! 8h,Fh,Xh:  94..214 zeros (Step: 8)
+				int nZ;
+				     if(v == 0xF) nZ = 94 + 8*(Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+				else if(v == 0xE) nZ = 30 + 4*(Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+				else              nZ =  2 + 2*v;
 
 				//! Clipping to avoid buffer overflow on corrupted blocks
 				if(nZ > CoefRem) nZ = CoefRem;
