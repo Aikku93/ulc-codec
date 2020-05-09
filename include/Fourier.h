@@ -16,8 +16,9 @@
 //! Sine table for DCT analysis
 //! Contains Table[Sin[(n+0.5)*(Pi/2)/N], {n,0,N-1}]
 //! for N={16,32,64,128,256,512,1024,2048,4096,8192}
-extern const float Fourier_SinTable[];
 static inline __attribute__((always_inline)) const float *Fourier_SinTableN(int N) {
+	extern const float Fourier_SinTable[];
+
 	//! NOTE: N must be > 8
 	return Fourier_SinTable + (N-16);
 }
