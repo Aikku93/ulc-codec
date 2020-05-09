@@ -14,6 +14,7 @@
 /**************************************/
 #include <stdint.h>
 /**************************************/
+#include "Fourier.h"
 #include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 #include "ulcEncoder_Psycho.h"
@@ -101,10 +102,6 @@ static inline int Block_Transform_GetLogOverlapScale(
 	int n, Chan;
 
 	//! Combine all channel energy into a single buffer
-	//! NOTE: Transients are improved by leaving this energy
-	//! squared and additionally using the sum of squared
-	//! deltas later on. This also saves on computations by
-	//! avoiding any square roots in the calculations
 	for(n=0;n<BlockSize;n++) EnergyBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 #if defined(__AVX__)
@@ -136,35 +133,56 @@ static inline int Block_Transform_GetLogOverlapScale(
 #endif
 	}
 
-	//! Analyze samples in smaller blocks
-	float Ratio = 1.0f;
-	int SubBlockOffs;
-	int SubBlockSize = 256; if(BlockSize < SubBlockSize) SubBlockSize = BlockSize;
-	for(SubBlockOffs=0;SubBlockOffs<BlockSize;SubBlockOffs += SubBlockSize) {
-		const float *Energy = EnergyBuffer + SubBlockOffs;
-
-		//! Get the sum of the step sizes in this block
-		float StepSum = SQR(Energy[0] - *LastSampleEnergy);
-		for(n=1;n<SubBlockSize;n++) StepSum += SQR(Energy[n] - Energy[n-1]);
-		StepSum += 1.0e-30f; //! Add a small bias to avoid dividing by 0 on silence
-		*LastSampleEnergy = Energy[SubBlockSize-1];
+	//! Analyze sample energy to build a log-domain ratio
+	float LogRatio; {
+		//! Get the squared step energy for each sample, and then
+		//! apply a window to the step energy to get a weighted sum
+		//! of squares. As far as MDCT is concerned, this current
+		//! block will be fading in, and so the important transient
+		//! energy is towards the end of the block. The previous
+		//! block is simultaneously fading out, so the transient
+		//! energy to analyze against should use a reversed window.
+		//! NOTE: There is no point in normalizing, as these energy
+		//! values will be divided by the previous block's, and as
+		//! they have the same normalization factor, it cancels out.
+		//! NOTE: Do NOT count 'release' jumps; these are very easily
+		//! masked and a larger overlap generally provides better
+		//! perceived audio quality.
+		float LastEnergy   = *LastSampleEnergy;
+		float EnergyCenter = 1.0e-30f; //! Add a small bias to avoid division by zero
+		float EnergyEdge   = 1.0e-30f;
+		const float *WinS = Fourier_SinTableN(BlockSize);
+		const float *WinC = WinS + BlockSize;
+		for(n=0;n<BlockSize;n++) {
+			float v = sqrtf(*EnergyBuffer++);
+			float s = *WinS++;
+			float c = *--WinC;
+			float d = v - LastEnergy;
+			LastEnergy = v;
+			if(d > 0.0f) {
+				EnergyCenter += s*SQR(d);
+				EnergyEdge   += c*SQR(d);
+			}
+		}
+		*LastSampleEnergy = LastEnergy;
 
 		//! Relate the average step size of this block to that of the last block
-		//! NOTE: The divsion cancels the scaling bias of summing multiple channels
-		float r;
-		if(StepSum > *LastBlockEnergy) r = StepSum / *LastBlockEnergy;
-		else                           r = *LastBlockEnergy / StepSum;
-		*LastBlockEnergy = StepSum;
-
-		//! Update the global maxima
-		if(r > Ratio) Ratio = r;
+		//! NOTE: If the energy decayed in this block, don't shrink this block's
+		//! overlap; release transients are easily masked, and if it wasn't really
+		//! a transient, then it was very likely a simple volume envelope.
+		//! NOTE: Scaling by EnergyCenter/EnergyEdge gives better results, as this
+		//! basically controls just how far we can narrow the overlap without any
+		//! click/pop artifacts from discontinuities at the overlap boundaries.
+		//! When a transient is extremely sharp/poppy, then we can decrease the
+		//! overlap a lot further, as the transient itself will be masking any
+		//! discontinuity artifacts from too narrow of an overlap.
+		if(EnergyCenter > *LastBlockEnergy) LogRatio = (EnergyCenter / EnergyEdge) * logf(EnergyCenter / *LastBlockEnergy);
+		else                                LogRatio = 0.0f;
+		*LastBlockEnergy = EnergyEdge;
 	}
 
-	//! Set overlap size from the smallest (or largest) ratio,
-	//! taking into account its step behaviour
-	//! NOTE: The rounding point is at 0.75, and NOT 0.5 as this
-	//! would result in too much unnecessary narrowing.
-	int OverlapScale = (int)(0x1.715476p0f*logf(Ratio) + 0.25f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+	//! Use the above-derived ratio to set an overlap amount for this block
+	int OverlapScale = (int)(0x1.715476p0f*LogRatio + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
 	if(OverlapScale < 0x0) OverlapScale = 0x0;
 	if(OverlapScale > 0xF) OverlapScale = 0xF;
 	while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
