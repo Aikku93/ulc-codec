@@ -134,7 +134,9 @@ static inline int Block_Transform_GetLogOverlapScale(
 	}
 
 	//! Analyze sample energy to build a log-domain ratio
-	float LogRatio; {
+	int OverlapScale; {
+		//! Calculate the energy leading up to the transient point
+
 		//! Get the squared step energy for each sample, and then
 		//! apply a window to the step energy to get a weighted sum
 		//! of squares. As far as MDCT is concerned, this current
@@ -176,15 +178,15 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! When a transient is extremely sharp/poppy, then we can decrease the
 		//! overlap a lot further, as the transient itself will be masking any
 		//! discontinuity artifacts from too narrow of an overlap.
-		if(EnergyCenter > *LastBlockEnergy) LogRatio = (EnergyCenter / EnergyEdge) * logf(EnergyCenter / *LastBlockEnergy);
-		else                                LogRatio = 0.0f;
+		if(EnergyCenter > *LastBlockEnergy) {
+			float LogRatio = (EnergyCenter / EnergyEdge) * logf(EnergyCenter / *LastBlockEnergy);
+			OverlapScale = (int)(0x1.715476p0f*LogRatio + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+			if(OverlapScale > 0xF) OverlapScale = 0xF;
+		} else OverlapScale = 0;
 		*LastBlockEnergy = EnergyEdge;
 	}
 
 	//! Use the above-derived ratio to set an overlap amount for this block
-	int OverlapScale = (int)(0x1.715476p0f*LogRatio + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
-	if(OverlapScale < 0x0) OverlapScale = 0x0;
-	if(OverlapScale > 0xF) OverlapScale = 0xF;
 	while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 	while((BlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
 	return OverlapScale;
