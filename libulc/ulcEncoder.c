@@ -57,30 +57,18 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	int TransformFwdLap_Size  = sizeof(float)                * (nChan*(BlockSize/2));
 	int TransformTemp_Size    = sizeof(float)                * (       BlockSize   );
 	int AnalysisKeys_Size     = sizeof(struct AnalysisKey_t) * (nChan* BlockSize   );
-	int QuantsSum_Size        = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
-	int QuantsWeight_Size     = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
-	int Quants_Size           = sizeof(float)                * (nChan* ULC_MAX_QBANDS);
 	int _TransformBuffer_Size = sizeof(float*)               * (nChan              );
 	int _TransformNepers_Size = sizeof(float*)               * (nChan              );
 	int _TransformFwdLap_Size = sizeof(float*)               * (nChan              );
-	int _QuantsSum_Size       = sizeof(float*)               * (nChan              );
-	int _QuantsWeight_Size    = sizeof(float*)               * (nChan              );
-	int _Quants_Size          = sizeof(float*)               * (nChan              );
 	int TransformBuffer_Offs  = 0;
 	int TransformNepers_Offs  = TransformBuffer_Offs  + TransformBuffer_Size;
 	int TransformFwdLap_Offs  = TransformNepers_Offs  + TransformNepers_Size;
 	int TransformTemp_Offs    = TransformFwdLap_Offs  + TransformFwdLap_Size;
 	int AnalysisKeys_Offs     = TransformTemp_Offs    + TransformTemp_Size;
-	int QuantsSum_Offs        = AnalysisKeys_Offs     + AnalysisKeys_Size;
-	int QuantsWeight_Offs     = QuantsSum_Offs        + QuantsSum_Size;
-	int Quants_Offs           = QuantsWeight_Offs     + QuantsWeight_Size;
-	int _TransformBuffer_Offs = Quants_Offs           + Quants_Size;
+	int _TransformBuffer_Offs = AnalysisKeys_Offs     + AnalysisKeys_Size;
 	int _TransformNepers_Offs = _TransformBuffer_Offs + _TransformBuffer_Size;
 	int _TransformFwdLap_Offs = _TransformNepers_Offs + _TransformNepers_Size;
-	int _QuantsSum_Offs       = _TransformFwdLap_Offs + _TransformFwdLap_Size;
-	int _QuantsWeight_Offs    = _QuantsSum_Offs       + _QuantsSum_Size;
-	int _Quants_Offs          = _QuantsWeight_Offs    + _QuantsWeight_Size;
-	int AllocSize             = _Quants_Offs          + _Quants_Size;
+	int AllocSize             = _TransformFwdLap_Offs + _TransformFwdLap_Size;
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
@@ -100,16 +88,10 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->TransformFwdLap = (float**)(Buf + _TransformFwdLap_Offs);
 	State->TransformTemp   = (float *)(Buf + TransformTemp_Offs);
 	State->AnalysisKeys    = (void  *)(Buf + AnalysisKeys_Offs);
-	State->QuantsSum       = (float**)(Buf + _QuantsSum_Offs);
-	State->QuantsWeight    = (float**)(Buf + _QuantsWeight_Offs);
-	State->Quants          = (float**)(Buf + _Quants_Offs);
 	for(Chan=0;Chan<nChan;Chan++) {
 		State->TransformBuffer[Chan] = (float   *)(Buf + TransformBuffer_Offs  ) + Chan*BlockSize;
 		State->TransformNepers[Chan] = (float   *)(Buf + TransformNepers_Offs  ) + Chan*BlockSize;
 		State->TransformFwdLap[Chan] = (float   *)(Buf + TransformFwdLap_Offs  ) + Chan*(BlockSize/2);
-		State->QuantsSum      [Chan] = (float   *)(Buf + QuantsSum_Offs        ) + Chan*ULC_MAX_QBANDS;
-		State->QuantsWeight   [Chan] = (float   *)(Buf + QuantsWeight_Offs     ) + Chan*ULC_MAX_QBANDS;
-		State->Quants         [Chan] = (float   *)(Buf + Quants_Offs           ) + Chan*ULC_MAX_QBANDS;
 
 		//! Everything can remain uninitialized except for the lapping buffer
 		for(i=0;i<BlockSize/2;i++) State->TransformFwdLap[Chan][i] = 0.0f;
@@ -136,7 +118,7 @@ int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const 
 	State->BitBudget += AvgBitBudget;
 
 	//! Transform input, build keys, and get maximum number of non-zero bands
-	int nKeys = Block_Transform(State, SrcData, RateKbps, PowerDecay);
+	int nKeys = Block_Transform(State, SrcData, PowerDecay);
 	int nNzMax; {
 		//! First run?
 		if(State->CoefBitRate < 0.0f) {
@@ -164,7 +146,7 @@ int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const 
 
 	//! Encode block
 	int nNzCoded;
-	int BlockBits = Block_Encode(State, DstBuffer, nNzMax, nKeys, &nNzCoded);
+	int BlockBits = Block_Encode(State, DstBuffer, nNzMax, &nNzCoded);
 
 	//! Update state
 	State->BitBudget -= BlockBits;
