@@ -32,50 +32,34 @@ static inline void Block_Transform_InsertKeys(
 	int  *nKeys,
 	int   Chan,
 	float AnalysisPowerNp,
-	float NyquistHz,
-	float QuantRange
+	float NyquistHz
 ) {
+	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Coef, CoefNp, BlockSize, NyquistHz);
 #else
+	(void)Coef;
 	(void)NyquistHz;
 #endif
-	int   Band;
-	int   QBand     = 0;
-	float QBandAvg  = 0.0f;
-	float QBandAvgW = 0.0f;
+	//! Analyze to create the quantizer zones
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Check that the value is in range of the smallest quantization
 		float ValNp = CoefNp[Band]; if(ValNp == ULC_COEF_NEPER_OUT_OF_RANGE) continue;
-
-		//! Check the 'background' level of this quantizer band against the current value
-		if((ValNp + QuantRange)*QBandAvgW < QBandAvg || (ValNp - QuantRange)*QBandAvgW > QBandAvg) {
-			//! Out of range - split a new quantizer band
-			if(QBand < ULC_MAX_QBANDS-1) {
-				QBandAvg = 0.0f, QBandAvgW = 0.0f;
-				QBand++;
-			}
-		}
-		QBandAvg  += SQR(Coef[Band])*ValNp;
-		QBandAvgW += SQR(Coef[Band]);
-
-		//! Insert key for this band
 #if ULC_USE_PSYCHOACOUSTICS
+		//! Get the effective energy of this band by removing the background contribution
 		//! NOTE: Not sure why this masking equation is the way it is.
-		//! Using 2*ValNp-Mask does not give very impressive results
-		//! whereas this trial-and-error form gives substantially
-		//! better results (values correspond to 30dB and 22dB in Np).
-		//! NOTE: Reduce importance of non-tonal/non-noise bands by 17.37dB.
+		//! From experiments, this seems to give the best tradeoff between
+		//! brightness/clarity and tonal stability
 		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
-		ValNp  = 0x1.BA18AAp1f*ValNp - 0x1.443438p1f*Mask;
-		ValNp += 2.0f * 4.0f*SQR(Flat)*(SQR(Flat) - 1.0f);
+		ValNp = (2.0f+Flat)*ValNp - (1.0f+Flat)*Mask;
 #endif
-		//! NOTE: Store the SQUARED post-masking energy as weights.
+		//! Insert key for this band
+		//! NOTE: It is not necessary to re-map back to the linear
+		//! domain, as this value is only used for sorting
 		Keys[*nKeys].Band  = Band;
 		Keys[*nKeys].Chan  = Chan;
-		Keys[*nKeys].QBand = QBand;
-		Keys[*nKeys].Val   = expf(2.0f*ValNp + AnalysisPowerNp);
+		Keys[*nKeys].Val   = 2.0f*ValNp + AnalysisPowerNp;
 		(*nKeys)++;
 	}
 }
@@ -207,7 +191,7 @@ static inline void Block_Transform_ScaleAndToNepers(float *Dst, float *Src, int 
 		Src[Band] = v;
 	}
 }
-static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float RateKbps, float PowerDecay) {
+static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 	float AnalysisPowerNp = 0.0f; PowerDecay = logf(PowerDecay);
@@ -223,12 +207,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		State->MaxOverlap,
 		nChan
 	);
-
-	//! Get the allowed dynamic range in a quantizer zone
-	//! 0x1.25701Bp2 = Log[(2*7)^2 / 2]; Half the range of quantized coefficients, in Nepers (39.8dB)
-	float QuantRangeScale = 2.0f - RateKbps/MaxCodingKbps(BlockSize, nChan, State->RateHz);
-	if(QuantRangeScale < 1.0f) QuantRangeScale = 1.0f; //! Avoid creating too many quantizer zones
-	float QuantRange = 0x1.25701Bp2f * QuantRangeScale;
 
 	//! Transform channels and insert keys for each codeable coefficient
 	int Chan;
@@ -250,8 +228,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 			&nKeys,
 			Chan,
 			AnalysisPowerNp,
-			State->RateHz * 0.5f,
-			QuantRange
+			State->RateHz * 0.5f
 		);
 		AnalysisPowerNp += PowerDecay;
 	}
