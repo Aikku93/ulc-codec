@@ -219,8 +219,8 @@ int main(int argc, const char *argv[]) {
 			}
 
 			//! Encode block
-			//! Reuse BlockFetch[] to avoid more memory allocation
-			uint8_t *EncData = (uint8_t*)BlockFetch;
+			//! Reuse BlockBuffer[] to avoid more memory allocation
+			uint8_t *EncData = (uint8_t*)BlockBuffer;
 			int Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? SideScale : 1.0f);
 			TotalSize += Size;
 
