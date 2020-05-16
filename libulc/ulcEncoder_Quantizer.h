@@ -35,7 +35,6 @@ static float Block_Encode_BuildQuantizer(float Sum, float Weight) {
 //! Group coefficients into quantizer zones based on their dynamic range
 static void Block_Encode_ProcessQuantizerZones(const struct ULC_EncoderState_t *State, int nKeys) {
 	//! Analyze the bands and build quantizer bands as we move along
-	//! NOTE: Calculations use the ERB scale and everything is inlined for performance
 	int   Key;
 	int   Chan = -1;         //! Always start on a dummy/invalid channel to force a channel change
 	int   QuantStartKey = 0; //! Always store to a valid key on the first [dummy] coefficient
@@ -70,7 +69,7 @@ static void Block_Encode_ProcessQuantizerZones(const struct ULC_EncoderState_t *
 		int   Band    = CurKey->Band;
 		float BandPow = SQR(Coef[Chan][Band]);
 
-		//! Background level out of range?
+		//! Level out of range in this quantizer zone?
 		if(BandPow < QuantMin) QuantMin = BandPow;
 		if(BandPow > QuantMax) QuantMax = BandPow;
 		if(QuantMax/QuantMin > SQR(8)) { //! Maximum quantized range before needing a split
