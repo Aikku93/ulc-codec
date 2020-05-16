@@ -16,10 +16,9 @@ struct AnalysisKey_t {
 	union {
 		struct {
 			uint16_t Band;
-			uint8_t  Chan;
-			uint8_t  QBand;
+			uint16_t Chan;
 		};
-		uint32_t Key; //! Band | Chan<<16 | QBand<<24
+		uint32_t Key; //! Band | Chan<<16
 	};
 	union {
 		float Val;   //! Sorting value (higher value = greater importance)
@@ -30,7 +29,6 @@ struct AnalysisKey_t {
 /**************************************/
 
 //! Sort keys in increasing Chan>Band order
-//! NOTE: All keys' QBand members must be set to 0 before calling this
 static int Analysis_KeysSort_Comparator(const void *_a, const void *_b) {
 	const struct AnalysisKey_t *a = _a;
 	const struct AnalysisKey_t *b = _b;
