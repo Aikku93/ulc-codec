@@ -44,12 +44,12 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 ) {
 	//! These settings are mostly based on trial and error
 	float Bw = State->BwBase + 0.107939f*Band;
-	float MaskFW   = 1.0f - ABS(Coef[Band]);
-	float MaskBW   = sqrtf(ABS(Coef[Band]));
-	int   BandEnd  = Band + (int)ceilf(Bw * MaskFW);
+	float MaskFW   = 0.25f + 0.75f*SQR(Coef[Band]);
+	float MaskBW   = 0.25f;
 	int   BandBeg  = Band - (int)ceilf(Bw * MaskBW);
-	if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
+	int   BandEnd  = Band + (int)ceilf(Bw * MaskFW);
 	if(BandBeg <          0) BandBeg = 0;
+	if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 
 	//! Update masking calculations
 	{
@@ -72,10 +72,13 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 	//! relies on kind of 'comparing' the log/linear values so they must
 	//! match. The reason for this is that log(x^2) = 2*log(x)
 	//! NOTE: 0x1.62E430p-1f = Log[2]
+	//! NOTE: SumLin can never be 0, as this update routine is only called
+	//! upon encountering a valid non-zero coefficient. Therefore, this
+	//! coefficient will always allow the routine to succeed
 	int    MaskBw = BandEnd - BandBeg + 1;
 	float  SumLin = State->SumLin;
 	float nSumLog = State->SumLog / SumLin;
-	*_Flat        = expf(0x1.62E430p-1f * ((logf(SumLin) - 2.0f*nSumLog) / logf(MaskBw))) - 1.0f;
+	*_Flat = (logf(SumLin) - 2.0f*nSumLog) / logf(MaskBw);
 	return nSumLog;
 }
 
