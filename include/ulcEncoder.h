@@ -20,9 +20,6 @@
 //! as logf() is faster than log2f() which is faster than log10f()... somehow
 #define ULC_COEF_NEPER_OUT_OF_RANGE 0.0f
 
-//! Maximum allowed quantizers
-#define ULC_MAX_QBANDS 48
-
 /**************************************/
 
 //! Encoder state structure
@@ -51,28 +48,19 @@ struct ULC_EncoderState_t {
 	//!   float         TransformFwdLap[nChan][BlockSize/2]
 	//!   float         TransformTemp  [BlockSize]
 	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
-	//!   float         QuantsSum      [nChan][MAX_QUANTS]
-	//!   float         QuantsWeight   [nChan][MAX_QUANTS]
-	//!   float         Quants         [nChan][MAX_QUANTS]
 	//!  Followed by MD-array pointers:
 	//!   float *_TransformBuffer[nChan]
 	//!   float *_TransformNepers[nChan]
 	//!   float *_TransformFwdLap[nChan]
-	//!   float *_QuantsSum      [nChan]
-	//!   float *_QuantsWeight   [nChan]
-	//!   float *_Quants         [nChan]
 	//! BufferData contains the pointer returned by malloc()
-	void *BufferData;
-	float    **TransformBuffer;
-	float    **TransformNepers;
-	float    **TransformFwdLap;
-	float     *TransformTemp;
-	void      *AnalysisKeys;
-	float    **QuantsSum;
-	float    **QuantsWeight;
-	float    **Quants;
-	float      LastBlockEnergy;
-	float      LastSampleEnergy;
+	void   *BufferData;
+	float **TransformBuffer;
+	float **TransformNepers;
+	float **TransformFwdLap;
+	float  *TransformTemp;
+	void   *AnalysisKeys;
+	float   LastBlockEnergy;
+	float   LastSampleEnergy;
 };
 
 /**************************************/
@@ -90,7 +78,10 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //! Encode block
 //! NOTE:
 //!  -Maximum size (in bits) for each block is:
-//!    (8 + 16*(MAX_QUANTS-1) + 4*BlockSize)*nChan
+//!    4 + nChan*(8+4 + (16+4)*(BlockSize-1))
+//!     4    = Overlap selection
+//!     8+4  = Initial quantizer ([8h,0h,]Eh,Xh) and first coefficient (Xh)
+//!     16+4 = Quantizer (8h,0h,Eh,Xh) + coefficient (Xh)
 //!   So output buffer size should be at least that size
 //!  -Input data must have its channels arranged sequentially;
 //!   For example:
