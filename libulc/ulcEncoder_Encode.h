@@ -51,10 +51,7 @@ static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer,
 		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
 	}
 }
-static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nNzMax, int nKeys, int *_nNzCoded) {
-	//! Process the keys and determine how many we're working with
-	int nKeysEncode = Block_Encode_ProcessKeys(State, nNzMax, nKeys);
-
+static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nKeys, int *_nNzCoded) {
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
@@ -62,6 +59,9 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 	int     BlockSize       = State->BlockSize;
 	float **TransformBuffer = State->TransformBuffer;
 	struct AnalysisKey_t *Keys = State->AnalysisKeys;
+
+	//! Group the coefficients into quantizer zones
+	Block_Encode_ProcessQuantizerZones(State, nKeys);
 
 	//! Start coding
 	int Chan;
@@ -72,9 +72,9 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Code the coefficients
 		//! NOTE:
-		//!  Check Key < nKeysEncode: If the last channel is silent, this avoids trying to code it by accident
+		//!  Check Key < nKeys: If the last channel is silent, this avoids trying to code it by accident
 		//!  Check Key.Chan==Chan: This correctly codes silent channels
-		if(Key < nKeysEncode && Keys[Key].Chan == Chan) {
+		if(Key < nKeys && Keys[Key].Chan == Chan) {
 			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
 			int   NextBand  = 0;
 			float LastQuant = Keys[Key].Quant;
@@ -84,6 +84,17 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 				//! If we cross to the next channel, break out
 				int tChan = Keys[Key].Chan; if(tChan != Chan) break;
 				int tBand = Keys[Key].Band;
+
+				//! Update quantizer?
+				if(Keys[Key].Quant != 0.0f && Keys[Key].Quant != LastQuant) {
+					LastQuant = Keys[Key].Quant;
+					Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 1);
+				}
+
+				//! As we don't do an optimization pass over the coefficients, this
+				//! key might collapse to 0. So check for this first, as if it does
+				//! collapse, we can extend the zero run further for bit savings
+				if(ABS(Block_Encode_Quantize(TransformBuffer[Chan][tBand], LastQuant)) == 0) continue;
 
 				//! Code the zero runs
 				//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
@@ -121,12 +132,6 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 					zR       -= n;
 				}
 
-				//! Update quantizer?
-				if(Keys[Key].Quant != LastQuant) {
-					LastQuant = Keys[Key].Quant;
-					Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 1);
-				}
-
 				//! Insert coded coefficients
 				//! NOTE:
 				//!  We might still have more coefficients marked for skipping,
@@ -146,7 +151,7 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 					Block_Encode_WriteNybble(Qn, &DstBuffer, &Size);
 				} while(++NextBand <= tBand);
 				nNzCoded++;
-			} while(++Key < nKeysEncode);
+			} while(++Key < nKeys);
 
 			//! 8h,0h,Fh: Stop
 			//! If we're at the edge of the block, it might work better to just fill with 0h
