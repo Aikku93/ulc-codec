@@ -14,6 +14,8 @@
 
 //! Masking threshold estimation
 //! NOTE: ERB and flatness calculations are inlined as an optimization
+//! NOTE: Flatness is returned as its reciprocal, as this seems to be
+//! more numerically stable.
 struct Block_Transform_MaskingState_t {
 	double SumLin;
 	double SumLog;
@@ -40,21 +42,23 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 	const float *CoefNp,
 	int   Band,
 	int   BlockSize,
-	float *_Flat
+	float *_InvFlat
 ) {
 	//! These settings are mostly based on trial and error
 	float Bw = State->BwBase + 0.107939f*Band;
-	float MaskFW   = 0.25f + 0.75f*SQR(Coef[Band]);
-	float MaskBW   = 0.25f;
+	float MaskBW   = 0.75f;
+	float MaskFW   = 0.25f;
 	int   BandBeg  = Band - (int)ceilf(Bw * MaskBW);
 	int   BandEnd  = Band + (int)ceilf(Bw * MaskFW);
 	if(BandBeg <          0) BandBeg = 0;
 	if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 
 	//! Update masking calculations
+	double SumLin = State->SumLin;
+	double SumLog = State->SumLog;
 	{
-#define ADD_TO_STATE(Val, ValNp) State->SumLin += SQR((double)Val), State->SumLog += SQR((double)Val)*(ValNp)
-#define SUB_TO_STATE(Val, ValNp) State->SumLin -= SQR((double)Val), State->SumLog -= SQR((double)Val)*(ValNp)
+#define ADD_TO_STATE(Val, ValNp) SumLin += SQR(Val), SumLog += SQR(Val)*(ValNp)
+#define SUB_TO_STATE(Val, ValNp) SumLin -= SQR(Val), SumLog -= SQR(Val)*(ValNp)
 		int Beg = State->BandBeg, End = State->BandEnd;
 		while(BandBeg < Beg) --Beg, ADD_TO_STATE(Coef[Beg], CoefNp[Beg]); //! Expand
 		while(BandEnd > End) ++End, ADD_TO_STATE(Coef[End], CoefNp[End]);
@@ -64,6 +68,8 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 #undef SUB_TO_STATE
 #undef ADD_TO_STATE
 	}
+	State->SumLin = SumLin;
+	State->SumLog = SumLog;
 
 	//! Get final masking threshold and flatness from the intermediates
 	//! NOTE: Multiply by two in the flatness equation ONLY. This will
@@ -71,14 +77,13 @@ static inline float Block_Transform_UpdateMaskingThreshold(
 	//! coefficients necessary for the calculation, as that equation
 	//! relies on kind of 'comparing' the log/linear values so they must
 	//! match. The reason for this is that log(x^2) = 2*log(x)
-	//! NOTE: 0x1.62E430p-1f = Log[2]
 	//! NOTE: SumLin can never be 0, as this update routine is only called
 	//! upon encountering a valid non-zero coefficient. Therefore, this
 	//! coefficient will always allow the routine to succeed
-	int    MaskBw = BandEnd - BandBeg + 1;
-	float  SumLin = State->SumLin;
-	float nSumLog = State->SumLog / SumLin;
-	*_Flat = (logf(SumLin) - 2.0f*nSumLog) / logf(MaskBw);
+	double LogSumLin = log(SumLin);
+	double LogMaskBw = log(BandEnd - BandBeg + 1);
+	double nSumLog   = SumLog/SumLin;
+	*_InvFlat = (float)(LogMaskBw / (LogSumLin - 2.0*nSumLog));
 	return nSumLog;
 }
 
