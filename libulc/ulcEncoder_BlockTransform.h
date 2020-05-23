@@ -25,8 +25,8 @@
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
 static inline void Block_Transform_WriteSortValues(
 	float *CoefIdx,
-	float *Coef,
-	float *CoefNp,
+	const float *Coef,
+	const float *CoefNp,
 	int   *nNzCoef,
 	int   BlockSize,
 	float AnalysisPowerNp,
@@ -37,6 +37,7 @@ static inline void Block_Transform_WriteSortValues(
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Coef, CoefNp, BlockSize, NyquistHz);
 #else
+	(void)Coef;
 	(void)NyquistHz;
 #endif
 	for(Band=0;Band<BlockSize;Band++) {
