@@ -10,7 +10,6 @@
 #include "Fourier.h"
 #include "ulcEncoder.h"
 /**************************************/
-#include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_BlockTransform.h"
 #include "ulcEncoder_Encode.h"
 #include "ulcEncoder_Helper.h"
@@ -52,50 +51,37 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal
-	int TransformBuffer_Size  = sizeof(float)                * (nChan* BlockSize   );
-	int TransformNepers_Size  = sizeof(float)                * (nChan* BlockSize   );
-	int TransformFwdLap_Size  = sizeof(float)                * (nChan*(BlockSize/2));
-	int TransformTemp_Size    = sizeof(float)                * (       BlockSize   );
-	int AnalysisKeys_Size     = sizeof(struct AnalysisKey_t) * (nChan* BlockSize   );
-	int _TransformBuffer_Size = sizeof(float*)               * (nChan              );
-	int _TransformNepers_Size = sizeof(float*)               * (nChan              );
-	int _TransformFwdLap_Size = sizeof(float*)               * (nChan              );
+	int TransformBuffer_Size  = sizeof(float) * (nChan* BlockSize   );
+	int TransformNepers_Size  = sizeof(float) * (nChan* BlockSize   );
+	int TransformFwdLap_Size  = sizeof(float) * (nChan*(BlockSize/2));
+	int TransformTemp_Size    = sizeof(float) * (nChan* BlockSize   );
+	int TransformIndex_Size   = sizeof(int)   * (nChan* BlockSize   );
 	int TransformBuffer_Offs  = 0;
-	int TransformNepers_Offs  = TransformBuffer_Offs  + TransformBuffer_Size;
-	int TransformFwdLap_Offs  = TransformNepers_Offs  + TransformNepers_Size;
-	int TransformTemp_Offs    = TransformFwdLap_Offs  + TransformFwdLap_Size;
-	int AnalysisKeys_Offs     = TransformTemp_Offs    + TransformTemp_Size;
-	int _TransformBuffer_Offs = AnalysisKeys_Offs     + AnalysisKeys_Size;
-	int _TransformNepers_Offs = _TransformBuffer_Offs + _TransformBuffer_Size;
-	int _TransformFwdLap_Offs = _TransformNepers_Offs + _TransformNepers_Size;
-	int AllocSize             = _TransformFwdLap_Offs + _TransformFwdLap_Size;
+	int TransformNepers_Offs  = TransformBuffer_Offs + TransformBuffer_Size;
+	int TransformFwdLap_Offs  = TransformNepers_Offs + TransformNepers_Size;
+	int TransformTemp_Offs    = TransformFwdLap_Offs + TransformFwdLap_Size;
+	int TransformIndex_Offs   = TransformTemp_Offs   + TransformTemp_Size;
+	int AllocSize             = TransformIndex_Offs  + TransformIndex_Size;
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
 	if(!Buf) return -1;
 
 	//! Set initial state
-	State->BitBudget   = 0.0;
-	State->CoefBitRate = -1.0f; //! Will be set on first run
 	State->LastBlockEnergy  = 1.0e-30f;
 	State->LastSampleEnergy = 0.0f;
 
 	//! Initialize pointers
-	int i, Chan;
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
-	State->TransformBuffer = (float**)(Buf + _TransformBuffer_Offs);
-	State->TransformNepers = (float**)(Buf + _TransformNepers_Offs);
-	State->TransformFwdLap = (float**)(Buf + _TransformFwdLap_Offs);
-	State->TransformTemp   = (float *)(Buf + TransformTemp_Offs);
-	State->AnalysisKeys    = (void  *)(Buf + AnalysisKeys_Offs);
-	for(Chan=0;Chan<nChan;Chan++) {
-		State->TransformBuffer[Chan] = (float   *)(Buf + TransformBuffer_Offs  ) + Chan*BlockSize;
-		State->TransformNepers[Chan] = (float   *)(Buf + TransformNepers_Offs  ) + Chan*BlockSize;
-		State->TransformFwdLap[Chan] = (float   *)(Buf + TransformFwdLap_Offs  ) + Chan*(BlockSize/2);
+	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
+	State->TransformNepers = (float*)(Buf + TransformNepers_Offs);
+	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
+	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
+	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
 
-		//! Everything can remain uninitialized except for the lapping buffer
-		for(i=0;i<BlockSize/2;i++) State->TransformFwdLap[Chan][i] = 0.0f;
-	}
+	//! Clear the lapping buffer
+	int i;
+	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
 
 	//! Success
 	return 1;
@@ -113,72 +99,8 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
 
 //! Encode block
 int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay) {
-	//! Refill bit budget
-	float AvgBitBudget = RateKbps*1000.0f/State->RateHz * State->BlockSize;
-	State->BitBudget += AvgBitBudget;
-
-	//! Transform input, build keys, and get maximum number of non-zero bands
-	int nKeys = Block_Transform(State, SrcData, PowerDecay);
-	int nNzMax; {
-		//! First run?
-		if(State->CoefBitRate < 0.0f) {
-			//! Experimentally-derived average bitrate
-			float MaxRate = MaxCodingKbps(State->BlockSize, State->nChan, State->RateHz);
-			float CoefRate = (State->RateHz / 1000.0f / SQR(MaxRate)) * (MaxRate + RateKbps);
-			State->CoefBitRate = CoefRate < 1.0f ? CoefRate : 1.0f;
-		}
-
-		//! Limit to 1.25x target bitrate to avoid quality spikes,
-		//! as these have a tendency to sound bad in context
-		float MinBudget = AvgBitBudget*0.75f;
-		float MaxBudget = AvgBitBudget*1.25f;
-
-		//! Clip budget to limit, derive nNzMax from that
-		float Budget = State->BitBudget;
-		if(Budget < MinBudget) Budget = MinBudget;
-		if(Budget > MaxBudget) Budget = MaxBudget;
-		nNzMax = lrintf(Budget * State->CoefBitRate);
-
-		//! Sometimes we may get less non-zero bands than we're
-		//! able to code (eg. during silence), so just clip here
-		if(nNzMax > nKeys) nNzMax = nKeys;
-	}
-
-	//! Encode block
-	int nNzCoded;
-	int BlockBits = Block_Encode(State, DstBuffer, nNzMax, &nNzCoded);
-
-	//! Update state
-	State->BitBudget -= BlockBits;
-	if(nNzCoded) {
-		//! RateDecayFactor specifies how much of the coefficient
-		//! bit rate of the previous block we should take into
-		//! account for future blocks:
-		//!  0.0: Use old cost exclusively
-		//!  1.0: Use new cost exclusively
-		//! With the following formulation, we use the new cost
-		//! exclusively if we hit our nNzMax target exactly,
-		//! but if we didn't hit this target, then we rely more
-		//! on the last-known 'goal' coefficient rate.
-		//! NOTE:
-		//!  -nNzCoded can be greater than nNzMax, depending on
-		//!   the statistics of the zero runs (since we might
-		//!   decide to code a coefficient that we didn't think
-		//!   to include in our calculations), so we need to
-		//!   clip to 1.0 here (since we met our goal)
-		//!  -Slightly biased towards the new cost regardless of
-		//!   meeting the target; this allows some adaptation to
-		//!   take place, hopefully giving us a more precise cost
-		//!   measurement in future blocks
-		float RateDecayFactor = 0.25f + nNzCoded*0.75f/nNzMax;
-		if(RateDecayFactor > 1.0f) RateDecayFactor = 1.0f;
-
-		float nZCoefCost = (float)nNzCoded / BlockBits;
-		State->CoefBitRate = State->CoefBitRate*(1.0f-RateDecayFactor) + nZCoefCost*RateDecayFactor;
-	}
-
-	//! Return block size
-	return BlockBits;
+	int nNzCoef = Block_Transform(State, SrcData, PowerDecay);
+	return Block_Encode(State, DstBuffer, nNzCoef, RateKbps);
 }
 
 /**************************************/
