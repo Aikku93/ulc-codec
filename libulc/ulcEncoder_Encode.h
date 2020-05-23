@@ -9,26 +9,8 @@
 #include "Fourier.h"
 #include "ulcEncoder.h"
 /**************************************/
-#include "ulcEncoder_Analysis.h"
-#include "ulcEncoder_Quantizer.h"
-/**************************************/
 
-//! Returns the block size (in bits) and the number of coded (non-zero) coefficients
-static inline int Block_Encode_Quantize(float v, float q) {
-	float av = ABS(v);
-	int vq = (int)(sqrtf(av*q) + 0.5f);
-#if 1 //! Optimal rounding
-	//! NOTE: Handle vq+1 first in case vq==0, as dl and dr would be equal, and
-	//! so if vq-1 was handled first, it would set vq=-1, which would sign-flip
-	float dl = ABS(av*q - SQR(vq-1)); int vql = vq-1;
-	float d  = ABS(av*q - SQR(vq  ));
-	float dr = ABS(av*q - SQR(vq+1)); int vqr = vq+1;
-	if(dr < d) vq = vqr, d = dr;
-	if(dl < d) vq = vql;
-#endif
-	return (v < 0.0f) ? (-vq) : (+vq);
-}
-static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
+static inline __attribute__((always_inline)) void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
 	//! Push nybble
 	*(*Dst) >>= 4;
 	*(*Dst)  |= x << 4;
@@ -37,9 +19,9 @@ static inline void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size)
 	//! Next byte?
 	if((*Size)%8u == 0) (*Dst)++;
 }
-static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer, int *Size, int Lead) {
+static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(int qi, uint8_t **DstBuffer, int *Size, int Lead) {
 	//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
-	int s = (int)log2f(Quant) - 5;
+	int s = qi - 5;
 	if(Lead) {
 		Block_Encode_WriteNybble(0x8, DstBuffer, Size);
 		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
@@ -51,129 +33,225 @@ static inline void Block_Encode_WriteQuantizer(float Quant, uint8_t **DstBuffer,
 		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
 	}
 }
-static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nKeys, int *_nNzCoded) {
-	//! Spill state to local variables to make things easier to read
-	//! PONDER: Hopefully the compiler realizes that State is const and
-	//!         doesn't just copy the whole thing out to the stack :/
-	int     nChan           = State->nChan;
-	int     BlockSize       = State->BlockSize;
-	float **TransformBuffer = State->TransformBuffer;
-	struct AnalysisKey_t *Keys = State->AnalysisKeys;
 
-	//! Group the coefficients into quantizer zones
-	Block_Encode_ProcessQuantizerZones(State, nKeys);
+/**************************************/
 
-	//! Start coding
-	int Chan;
-	int Key      = 0;
-	int Size     = 0; //! Block size (in bits)
-	int nNzCoded = 0; //! Coded non-zero coefficients
-	Block_Encode_WriteNybble(State->ThisOverlap, &DstBuffer, &Size);
-	for(Chan=0;Chan<nChan;Chan++) {
-		//! Code the coefficients
-		//! NOTE:
-		//!  Check Key < nKeys: If the last channel is silent, this avoids trying to code it by accident
-		//!  Check Key.Chan==Chan: This correctly codes silent channels
-		if(Key < nKeys && Keys[Key].Chan == Chan) {
-			//! Code the first quantizer ([8h,0h,]0h..Eh) and start coding
-			int   NextBand  = 0;
-			float LastQuant = Keys[Key].Quant;
-			Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 0);
-			do {
-				//! Unpack key data
-				//! If we cross to the next channel, break out
-				int tChan = Keys[Key].Chan; if(tChan != Chan) break;
-				int tBand = Keys[Key].Band;
+//! Build quantizer from weighted average
+//! NOTE: The quantizer scale is 2^-x, so when this is set to the minimum scaling
+//!       (ie. x==5, setting q=1/32), then the maximum codeable value becomes
+//!       7^2/32 == 1.53125. This is higher than 1.0, so we use this extra space
+//!       as a sort of headroom, and shift the rounding point accordingly.
+//! NOTE: The average is performed over the Neper-domain coefficients, so there is
+//!       no need to apply a further logarithm here to get the base-2 logarithm.
+static inline int Block_Encode_BuildQuantizer(float Sum, float Weight) {
+	//! NOTE: `q` will always be greater than 5 due to the bias
+	int q = (int)(0x1.675768p2f - 0x1.715476p0f*Sum / Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
+	if(q < 5) q = 5; //! Sometimes happens because of overflow?
+	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
+	return q;
+}
 
-				//! Update quantizer?
-				if(Keys[Key].Quant != 0.0f && Keys[Key].Quant != LastQuant) {
-					LastQuant = Keys[Key].Quant;
-					Block_Encode_WriteQuantizer(LastQuant, &DstBuffer, &Size, 1);
-				}
+//! Quantize coefficient
+static inline int Block_Encode_Quantize(float v, float q) {
+	float av = ABS(v);
+	int vq = (int)(sqrtf(av*q) + 0.5f);
+	if(vq == 0) return vq;
+#if 1 //! Optimal rounding; the above only ever goes /over/ by +1, and never under
+	float dl = ABS(av*q - SQR(vq-1));
+	float d  = ABS(av*q - SQR(vq  ));
+	vq -= (dl < d);
+#endif
+	return (v < 0.0f) ? (-vq) : (+vq);
+}
 
-				//! As we don't do an optimization pass over the coefficients, this
-				//! key might collapse to 0. So check for this first, as if it does
-				//! collapse, we can extend the zero run further for bit savings
-				if(ABS(Block_Encode_Quantize(TransformBuffer[Chan][tBand], LastQuant)) == 0) continue;
+/**************************************/
 
-				//! Code the zero runs
-				//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
-				//!       This is because two zero coefficients can be coded as 0h,0h, so
-				//!       we instead use 8h,0h for the 'stop' code. This also allows coding
-				//!       of some coefficients we may have missed (see below)
-				int zR = tBand - NextBand;
-				while(zR >= 4) {
-					//! Encode optimal run
-					int n = zR;
-					if(n < 28+2) {
-						//! 8h,1h..Dh:  4.. 28 zeros (Step: 2)
-						n = (n-2)/2u;
-						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
-						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
-						n = n*2+2;
-					} else if(n < 90+4) {
-						//! 8h,Eh,Xh:  30.. 90 zeros (Step: 4)
-						n = (n-30)/4u;
-						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
-						Block_Encode_WriteNybble(0xE, &DstBuffer, &Size);
-						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
-						n = n*4+30;
-					} else {
-						//! 8h,Fh,Xh:  94..214 zeros (Step: 8)
-						n = (n-94)/8u; if(n > 0xF) n = 0xF;
-						Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
-						Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
-						Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
-						n = n*8+94;
-					}
-
-					//! Insert zeros
-					NextBand += n;
-					zR       -= n;
-				}
-
-				//! Insert coded coefficients
-				//! NOTE:
-				//!  We might still have more coefficients marked for skipping,
-				//!  but this didn't take into account the actual statistics of
-				//!  the coded zero runs. This means that the coefficients might
-				//!  actually not collapse to 0, so we may as well code them anyway
-				//!  as it would cost the same either way (though they might quantize
-				//!  sub-optimally from not being considered originally)
-				do {
-					//! Get quantized coefficient
-					//! -7h..+7h
-					int Qn = Block_Encode_Quantize(TransformBuffer[Chan][NextBand], LastQuant);
-					if(Qn < -7) Qn = -7;
-					if(Qn > +7) Qn = +7;
-
-					//! Write to output
-					Block_Encode_WriteNybble(Qn, &DstBuffer, &Size);
-				} while(++NextBand <= tBand);
-				nNzCoded++;
-			} while(++Key < nKeys);
-
-			//! 8h,0h,Fh: Stop
-			//! If we're at the edge of the block, it might work better to just fill with 0h
-			int n = BlockSize - NextBand;
-			if(n > 3) {
-				Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
-				Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
-				Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
-			} else if(n > 0) {
-				do Block_Encode_WriteNybble(0x0, &DstBuffer, &Size); while(--n);
-			}
-		} else {
-			//! [8h,0h,]Fh: Stop
-			Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
+//! Returns the block size (in bits) and the number of coded (non-zero) coefficients
+static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQuantizerZone(
+	int       CurIdx,
+	int       EndIdx,
+	float     QuantSum,
+	float     QuantWeight,
+	const float *Coef,
+	const int   *CoefIdx,
+	int       NextCodedIdx,
+	int      *PrevQuant,
+	uint8_t **DstBuffer,
+	int      *Size,
+	int       nOutCoef
+) {
+	//! Write/update the quantizer
+	float q; {
+		int qi = Block_Encode_BuildQuantizer(QuantSum, QuantWeight);
+		if(qi != *PrevQuant) {
+			Block_Encode_WriteQuantizer(qi, DstBuffer, Size, *PrevQuant != -1);
+			*PrevQuant = qi;
 		}
+		q = (float)(1u << qi);
 	}
 
-	//! Shift down final byte if needed
-	if(Size % 8u) *DstBuffer >>= 4;
+	//! Write the coefficients
+	do {
+		//! Target coefficient doesn't collapse to 0?
+		if(ABS(Coef[CurIdx]*q) >= SQR(0.5f)) { //! Block_Encode_Quantize(Coef[CurIdx], q) != 0
+			//! Code the zero runs
+			//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
+			//!       This is because two zero coefficients can be coded as 0h,0h, so
+			//!       we instead use 8h,0h for the 'stop' code. This also allows coding
+			//!       of some coefficients we may have missed (see below)
+			int zR = CurIdx - NextCodedIdx;
+			while(zR >= 4) {
+				int n = zR;
+				if(n < 28+2) {
+					//! 8h,1h..Dh:  4.. 28 zeros (Step: 2)
+					n = (n-2)/2u;
+					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+					Block_Encode_WriteNybble(n,   DstBuffer, Size);
+					n = n*2+2;
+				} else if(n < 90+4) {
+					//! 8h,Eh,Xh:  30.. 90 zeros (Step: 4)
+					n = (n-30)/4u;
+					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+					Block_Encode_WriteNybble(0xE, DstBuffer, Size);
+					Block_Encode_WriteNybble(n,   DstBuffer, Size);
+					n = n*4+30;
+				} else {
+					//! 8h,Fh,Xh:  94..214 zeros (Step: 8)
+					n = (n-94)/8u; if(n > 0xF) n = 0xF;
+					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+					Block_Encode_WriteNybble(0xF, DstBuffer, Size);
+					Block_Encode_WriteNybble(n,   DstBuffer, Size);
+					n = n*8+94;
+				}
+				NextCodedIdx += n;
+				zR           -= n;
+			}
 
-	//! Return output size
-	if(_nNzCoded) *_nNzCoded = nNzCoded;
+			//! Insert coded coefficients
+			//! NOTE:
+			//!  We might still have more coefficients marked for skipping,
+			//!  but this didn't take into account the actual statistics of
+			//!  the coded zero runs. This means that the coefficients might
+			//!  actually not collapse to 0, so we may as well code them anyway
+			//!  as it would cost the same either way (though they might quantize
+			//!  sub-optimally from not being considered originally)
+			do {
+				//! Get quantized coefficient
+				//! -7h..+7h
+				int Qn = Block_Encode_Quantize(Coef[NextCodedIdx], q);
+				if(Qn < -7) Qn = -7;
+				if(Qn > +7) Qn = +7;
+
+				//! Write to output
+				Block_Encode_WriteNybble(Qn, DstBuffer, Size);
+			} while(++NextCodedIdx <= CurIdx);
+		}
+
+		//! Move to the next coefficient
+		do CurIdx++; while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef);
+	} while(CurIdx < EndIdx);
+	return NextCodedIdx;
+}
+static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nOutCoef) {
+	int BlockSize   = State->BlockSize;
+	int Chan, nChan = State->nChan;
+	const float *Coef    = State->TransformBuffer;
+	const float *CoefNp  = State->TransformNepers;
+	const int   *CoefIdx = State->TransformIndex;
+
+	//! Begin coding
+	int Idx  = 0;
+	int Size = 0; //! Block size (in bits)
+	Block_Encode_WriteNybble(State->ThisOverlap, &DstBuffer, &Size);
+	for(Chan=0;Chan<nChan;Chan++) {
+		int   NextCodedIdx  = Idx;
+		int   PrevQuant     = -1;
+		int   ChanLastIdx   = Idx + BlockSize;
+		int   QuantStartIdx = -1;
+		float QuantMin      =  1000.0f; //! Start out of range to force a reset
+		float QuantMax      = -1000.0f;
+		float QuantSum      = 0.0f;
+		float QuantWeight   = 0.0f;
+#define WRITE_QUANT_ZONE() \
+	Block_Encode_EncodePass_WriteQuantizerZone(QuantStartIdx, Idx, QuantSum, QuantWeight, Coef, CoefIdx, NextCodedIdx, &PrevQuant, &DstBuffer, &Size, nOutCoef)
+		for(;;Idx++) {
+			//! Seek the next coefficient
+			while(Idx < ChanLastIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
+			if(Idx >= ChanLastIdx) break;
+
+			//! Level out of range in this quantizer zone?
+			const float MaxRange2 = SQR(SQR(7.5f)); //! Maximum quantized range before needing a split, squared
+			float BandCoef2  = SQR(Coef  [Idx]);
+			float BandCoefNp =    (CoefNp[Idx]);
+			if(QuantStartIdx == -1) QuantStartIdx = Idx;
+			if(BandCoef2 < QuantMin) QuantMin = BandCoef2;
+			if(BandCoef2 > QuantMax) QuantMax = BandCoef2;
+			if(QuantMax > QuantMin*MaxRange2) { //! sqrtf(QuantMax/QuantMin) > MaxRange
+				//! Write the quantizer zone we just searched through
+				//! and start a new one from this coefficient
+				NextCodedIdx  = WRITE_QUANT_ZONE();
+				QuantStartIdx = Idx;
+				QuantMin    = BandCoef2;
+				QuantMax    = BandCoef2;
+				QuantSum    = BandCoef2 * BandCoefNp;
+				QuantWeight = BandCoef2;
+			} else {
+				//! Accumulate to the current quantizer zone
+				QuantSum    += BandCoef2 * BandCoefNp;
+				QuantWeight += BandCoef2;
+			}
+		}
+
+		//! If there's anything in the last quantizer, we must write that quantizer zone
+		if(QuantWeight != 0.0f) NextCodedIdx = WRITE_QUANT_ZONE();
+
+		//! 8h,0h,Fh: Stop
+		//! If we're at the edge of the block, it might work better to just fill with 0h
+		int n = ChanLastIdx - NextCodedIdx;
+		if(n > 3) {
+			//! If we coded anything, then we must specify the lead sequence
+			if(PrevQuant != -1) {
+				Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
+				Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+			}
+			Block_Encode_WriteNybble(0xF, &DstBuffer, &Size);
+		} else if(n > 0) {
+			do Block_Encode_WriteNybble(0x0, &DstBuffer, &Size); while(--n);
+		}
+#undef WRITE_QUANT_ZONE
+	}
+
+	//! Pad final byte as needed
+	if(Size % 8u) Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+	return Size;
+}
+static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nNzCoef, float RateKbps) {
+	int Size;
+	int nOutCoef  = -1;
+	int BitBudget = (int)((State->BlockSize * RateKbps) * 1000.0f/State->RateHz); //! NOTE: Truncate
+
+	//! Perform a binary search for the optimal nOutCoef
+	int Lo = 0, Hi = nNzCoef;
+	if(Lo < Hi) {
+		do {
+			nOutCoef = (Lo + Hi) / 2u;
+			Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
+			     if(Size < BitBudget) Lo = nOutCoef+1;
+			else if(Size > BitBudget) Hi = nOutCoef;
+			else {
+				//! Should very, VERY rarely happen, but just in case
+				Hi = nOutCoef+1;
+				break;
+			}
+		} while(Lo < Hi);
+	} else {
+		//! No coefficients
+		Hi = 0+1;
+	}
+
+	//! Avoid going over budget
+	int nOutCoefFinal = Hi-1;
+	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
 
