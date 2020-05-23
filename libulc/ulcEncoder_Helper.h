@@ -11,12 +11,6 @@
 #define SQR(x) ((x)*(x))
 /**************************************/
 
-//! Maximum possible coding rate
-//! NOTE: Does NOT account for quantizers, as these mess up the calculations
-static inline __attribute__((always_inline)) float MaxCodingKbps(int BlockSize, int nChan, int RateHz) {
-	return nChan*(4*BlockSize) * (float)RateHz/BlockSize * (1.0f/1000.0f);
-}
-
 //! Spectral flatness measure
 //! Adapted from "Note on measures for spectral flatness"
 //! DOI: 10.1049/el.2009.1977
