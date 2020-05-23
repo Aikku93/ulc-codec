@@ -15,22 +15,20 @@
 #include <stdint.h>
 /**************************************/
 #include "Fourier.h"
-#include "ulcEncoder_Analysis.h"
 #include "ulcEncoder_Helper.h"
 #include "ulcEncoder_Psycho.h"
 /**************************************/
 
-//! Insert keys for block coefficients
-//! Returns updated number of keys in list
+//! Write the sort values for all coefficients in a block
+//! and return the number of codeable non-zero coefficients
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-static inline void Block_Transform_InsertKeys(
-	struct AnalysisKey_t *Keys,
-	const float *Coef,
-	const float *CoefNp,
+static inline void Block_Transform_WriteSortValues(
+	float *CoefIdx,
+	float *Coef,
+	float *CoefNp,
+	int   *nNzCoef,
 	int   BlockSize,
-	int  *nKeys,
-	int   Chan,
 	float AnalysisPowerNp,
 	float NyquistHz
 ) {
@@ -39,28 +37,23 @@ static inline void Block_Transform_InsertKeys(
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Coef, CoefNp, BlockSize, NyquistHz);
 #else
-	(void)Coef;
 	(void)NyquistHz;
 #endif
-	//! Analyze to create the quantizer zones
 	for(Band=0;Band<BlockSize;Band++) {
-		//! Check that the value is in range of the smallest quantization
-		float ValNp = CoefNp[Band]; if(ValNp == ULC_COEF_NEPER_OUT_OF_RANGE) continue;
+		//! Inside the codeable range?
+		float ValNp = CoefNp[Band];
+		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
 #if ULC_USE_PSYCHOACOUSTICS
-		//! Get the effective energy of this band by removing the background contribution
-		//! NOTE: Not sure why this masking equation is the way it is.
-		//! From experiments, this seems to give the best tradeoff between
-		//! brightness/clarity and tonal stability
-		float Flat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &Flat);
-		ValNp = (2.0f+Flat)*ValNp - (1.0f+Flat)*Mask;
+			//! Get the effective energy of this band by removing the background contribution
+			//! NOTE: Not sure why this equation is the way it is. It was developed
+			//! over 8 hours of experimentation to find what worked best in all cases
+			float InvFlat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &InvFlat);
+			ValNp += (expf(0x1.62E430p-1f*InvFlat))*(ValNp - Mask); //! 0x1.62E430p-1 = Log[2], to get 2^x
 #endif
-		//! Insert key for this band
-		//! NOTE: It is not necessary to re-map back to the linear
-		//! domain, as this value is only used for sorting
-		Keys[*nKeys].Band  = Band;
-		Keys[*nKeys].Chan  = Chan;
-		Keys[*nKeys].Val   = 2.0f*ValNp + AnalysisPowerNp;
-		(*nKeys)++;
+			//! Store the sort value for this coefficient
+			CoefIdx[Band] = ValNp + AnalysisPowerNp;
+			(*nNzCoef)++;
+		} else CoefIdx[Band] = -1.0e30f; //! Unusable coefficient; map to the end of the list
 	}
 }
 
@@ -119,8 +112,6 @@ static inline int Block_Transform_GetLogOverlapScale(
 
 	//! Analyze sample energy to build a log-domain ratio
 	int OverlapScale; {
-		//! Calculate the energy leading up to the transient point
-
 		//! Get the squared step energy for each sample, and then
 		//! apply a window to the step energy to get a weighted sum
 		//! of squares. As far as MDCT is concerned, this current
@@ -131,9 +122,10 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! NOTE: There is no point in normalizing, as these energy
 		//! values will be divided by the previous block's, and as
 		//! they have the same normalization factor, it cancels out.
-		//! NOTE: Do NOT count 'release' jumps; these are very easily
-		//! masked and a larger overlap generally provides better
-		//! perceived audio quality.
+		//! TODO: Try using different highpass filters; this filter
+		//! (using the step energy) does not give very good bandpass
+		//! selectivity, which may be affecting results; LAME uses a
+		//! filter that rejects all frequencies below Fs/2 @ -50dB.
 		float LastEnergy   = *LastSampleEnergy;
 		float EnergyCenter = 1.0e-30f; //! Add a small bias to avoid division by zero
 		float EnergyEdge   = 1.0e-30f;
@@ -145,10 +137,8 @@ static inline int Block_Transform_GetLogOverlapScale(
 			float c = *--WinC;
 			float d = v - LastEnergy;
 			LastEnergy = v;
-			if(d > 0.0f) {
-				EnergyCenter += s*SQR(d);
-				EnergyEdge   += c*SQR(d);
-			}
+			EnergyCenter += s*SQR(d);
+			EnergyEdge   += c*SQR(d);
 		}
 		*LastSampleEnergy = LastEnergy;
 
@@ -162,8 +152,10 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! When a transient is extremely sharp/poppy, then we can decrease the
 		//! overlap a lot further, as the transient itself will be masking any
 		//! discontinuity artifacts from too narrow of an overlap.
+		//! NOTE: Correctly map EnergyCenter/EnergyEdge via the square-root. Not
+		//! doing this tends to overdo poppy transients in smooth regions.
 		if(EnergyCenter > *LastBlockEnergy) {
-			float LogRatio = (EnergyCenter / EnergyEdge) * logf(EnergyCenter / *LastBlockEnergy);
+			float LogRatio = sqrtf(EnergyCenter / EnergyEdge) * logf(EnergyCenter / *LastBlockEnergy);
 			OverlapScale = (int)(0x1.715476p0f*LogRatio + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
 			if(OverlapScale > 0xF) OverlapScale = 0xF;
 		} else OverlapScale = 0;
@@ -178,23 +170,23 @@ static inline int Block_Transform_GetLogOverlapScale(
 
 /**************************************/
 
-//! Apply block transform
-//!  -Fetches data
-//!  -Applies MDCT
-//!  -Stores keys for block coefficients
-//! Returns the number of keys stored
-static inline void Block_Transform_ScaleAndToNepers(float *Dst, float *Src, int BlockSize) {
-	int Band;
-	for(Band=0;Band<BlockSize;Band++) {
-		float v = Src[Band] * 2.0f/BlockSize;
-		Dst[Band] = (ABS(v) < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
-		Src[Band] = v;
+//! Transform a block and prepare its coefficients
+static float *Block_Transform_SortComparator_KeysArray;
+static int Block_Transform_SortComparator(const void *a, const void *b) {
+	const float *BufferIdx = Block_Transform_SortComparator_KeysArray;
+	return (BufferIdx[*(int*)a] < BufferIdx[*(int*)b]) ? (+1) : (-1);
+}
+static inline void Block_Transform_ScaleAndToNepers(float *Coef, float *CoefNp, int N) {
+	int n;
+	for(n=0;n<N;n++) {
+		float v = Coef[n] * 2.0f/N;
+		Coef  [n] = v;
+		CoefNp[n] = (ABS(v) < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
 	}
 }
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
-	float AnalysisPowerNp = 0.0f; PowerDecay = logf(PowerDecay);
 
 	//! Get the overlap scaling for this block
 	int OverlapScale = State->ThisOverlap = Block_Transform_GetLogOverlapScale(
@@ -209,31 +201,61 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 	);
 
 	//! Transform channels and insert keys for each codeable coefficient
-	int Chan;
-	int nKeys = 0;
-	for(Chan=0;Chan<nChan;Chan++) {
-		float *BufferTransform = State->TransformBuffer[Chan];
-		float *BufferNepers    = State->TransformNepers[Chan];
-		float *BufferFwdLap    = State->TransformFwdLap[Chan];
+	//! It's not /strictly/ required to calculate nNzCoef, but it can
+	//! speed things up in the rate-control step
+	int nNzCoef = 0; {
+		int Chan;
+		float  AnalysisPowerNp = 0.0f; PowerDecay = logf(PowerDecay);
+		float *BufferTransform = State->TransformBuffer;
+		float *BufferNepers    = State->TransformNepers;
+		float *BufferIndex     = (float*)State->TransformIndex;
+		float *BufferFwdLap    = State->TransformFwdLap;
 		float *BufferTemp      = State->TransformTemp;
+		for(Chan=0;Chan<nChan;Chan++) {
+			//! Apply transform and write the sort values
+			Fourier_MDCT(
+				BufferTransform,
+				Data,
+				BufferFwdLap,
+				BufferTemp,
+				BlockSize,
+				BlockSize >> OverlapScale
+			);
+			Block_Transform_ScaleAndToNepers(BufferTransform, BufferNepers, BlockSize);
+			Block_Transform_WriteSortValues(
+				BufferIndex,
+				BufferTransform,
+				BufferNepers,
+				&nNzCoef,
+				BlockSize,
+				AnalysisPowerNp,
+				State->RateHz * 0.5f
+			);
 
-		//! Apply transforms and insert keys
-		Fourier_MDCT(BufferTransform, Data + Chan*BlockSize, BufferFwdLap, BufferTemp, BlockSize, BlockSize >> OverlapScale);
-		Block_Transform_ScaleAndToNepers(BufferNepers, BufferTransform, BlockSize);
-		Block_Transform_InsertKeys(
-			State->AnalysisKeys,
-			BufferTransform,
-			BufferNepers,
-			BlockSize,
-			&nKeys,
-			Chan,
-			AnalysisPowerNp,
-			State->RateHz * 0.5f
-		);
-		AnalysisPowerNp += PowerDecay;
+			//! Move to the next channel
+			Data            += BlockSize;
+			BufferTransform += BlockSize;
+			BufferNepers    += BlockSize;
+			BufferIndex     += BlockSize;
+			BufferFwdLap    += BlockSize/2u;
+			AnalysisPowerNp += PowerDecay;
+		}
 	}
-	Analysis_KeysValSort(State->AnalysisKeys, nKeys);
-	return nKeys;
+
+	//! Create the coefficient sorting indices
+	//! TODO: Be more efficient; this is suboptimal, but
+	//! fixing would require implementing a customized
+	//! sorting routine
+	{
+		int Idx, nIdx = nChan * BlockSize;
+		int *BufferTmp = (int*)State->TransformTemp;
+		int *BufferIdx = State->TransformIndex;
+		for(Idx=0;Idx<nIdx;Idx++) BufferTmp[Idx] = Idx;
+		Block_Transform_SortComparator_KeysArray = (float*)State->TransformIndex;
+		qsort(BufferTmp, nIdx, sizeof(int), Block_Transform_SortComparator);
+		for(Idx=0;Idx<nIdx;Idx++) BufferIdx[BufferTmp[Idx]] = Idx;
+	}
+	return nNzCoef;
 }
 
 /**************************************/
