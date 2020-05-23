@@ -35,32 +35,24 @@ struct ULC_EncoderState_t {
 	int MaxOverlap;  //! Block overlap (maximum)
 	int ThisOverlap; //! Overlap scale for currently-processed block (BlockSize * 2^-ThisOverlap)
 
-	//! Rate control state
-	float BitBudget;   //! Bit budget left over from previous block (similar to a bit reservoir)
-	float CoefBitRate; //! Reciprocal of average bits per non-zero coefficient
-
 	//! Encoding state
 	//! Buffer memory layout:
 	//!  Data:
-	//!   char          _Padding[];
-	//!   float         TransformBuffer[nChan][BlockSize]
-	//!   float         TransformNepers[nChan][BlockSize]
-	//!   float         TransformFwdLap[nChan][BlockSize/2]
-	//!   float         TransformTemp  [BlockSize]
-	//!   AnalysisKey_t AnalysisKeys   [nChan*BlockSize]
-	//!  Followed by MD-array pointers:
-	//!   float *_TransformBuffer[nChan]
-	//!   float *_TransformNepers[nChan]
-	//!   float *_TransformFwdLap[nChan]
-	//! BufferData contains the pointer returned by malloc()
-	void   *BufferData;
-	float **TransformBuffer;
-	float **TransformNepers;
-	float **TransformFwdLap;
-	float  *TransformTemp;
-	void   *AnalysisKeys;
-	float   LastBlockEnergy;
-	float   LastSampleEnergy;
+	//!   char  _Padding[];
+	//!   float TransformBuffer[nChan*BlockSize]
+	//!   float TransformNepers[nChan*BlockSize]
+	//!   float TransformFwdLap[nChan*BlockSize/2]
+	//!   float TransformTemp  [nChan*BlockSize]
+	//!   int   TransformIndex [nChan*BlockSize]
+	//! BufferData contains the original pointer returned by malloc()
+	void  *BufferData;
+	float *TransformBuffer;
+	float *TransformNepers;
+	float *TransformFwdLap;
+	float *TransformTemp;
+	int   *TransformIndex;
+	float  LastBlockEnergy;
+	float  LastSampleEnergy;
 };
 
 /**************************************/
