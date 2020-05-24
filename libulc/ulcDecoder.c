@@ -134,13 +134,16 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			//! Unpack escape code
 			v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
 			if(v != 0x0) {
-				//! 8h,1h..Dh:  4.. 28 zeros (Step: 2)
-				//! 8h,Eh,Xh:  30.. 90 zeros (Step: 4)
-				//! 8h,Fh,Xh:  94..214 zeros (Step: 8)
+				//! Short run?
 				int nZ;
-				     if(v == 0xF) nZ = 94 + 8*(Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-				else if(v == 0xE) nZ = 30 + 4*(Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-				else              nZ =  2 + 2*v;
+				if(v != 0xF) nZ = v + 2; //! 8h,1h..Eh: 3 .. 16 zeros
+				else {
+					//! 8h,Fh,Yh,Xh: 17 .. 272 zeros
+					//! Read 16-zeros chunks followed by the tail
+					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (nZ<<4);
+					nZ += 17;
+				}
 
 				//! Clipping to avoid buffer overflow on corrupted blocks
 				if(nZ > CoefRem) nZ = CoefRem;
