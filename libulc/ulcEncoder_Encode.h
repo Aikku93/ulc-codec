@@ -95,34 +95,26 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 		//! Target coefficient doesn't collapse to 0?
 		if(ABS(Coef[CurIdx]*q) >= SQR(0.5f)) { //! Block_Encode_Quantize(Coef[CurIdx], q) != 0
 			//! Code the zero runs
-			//! NOTE: Escape-code-coded zero runs have a minimum size of 4 coefficients
-			//!       This is because two zero coefficients can be coded as 0h,0h, so
-			//!       we instead use 8h,0h for the 'stop' code. This also allows coding
-			//!       of some coefficients we may have missed (see below)
 			int zR = CurIdx - NextCodedIdx;
-			while(zR >= 4) {
-				int n = zR;
-				if(n < 28+2) {
-					//! 8h,1h..Dh:  4.. 28 zeros (Step: 2)
-					n = (n-2)/2u;
-					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-					Block_Encode_WriteNybble(n,   DstBuffer, Size);
-					n = n*2+2;
-				} else if(n < 90+4) {
-					//! 8h,Eh,Xh:  30.. 90 zeros (Step: 4)
-					n = (n-30)/4u;
-					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-					Block_Encode_WriteNybble(0xE, DstBuffer, Size);
-					Block_Encode_WriteNybble(n,   DstBuffer, Size);
-					n = n*4+30;
+			while(zR >= 3) {
+				Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+
+				//! Determine which run type to use and  get the number of zeros coded
+				int n;
+				if(zR < 17) {
+					//! 8h,1h..Eh: 3 .. 16 zeros
+					n = zR;
+					Block_Encode_WriteNybble(n-2, DstBuffer, Size);
 				} else {
-					//! 8h,Fh,Xh:  94..214 zeros (Step: 8)
-					n = (n-94)/8u; if(n > 0xF) n = 0xF;
-					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-					Block_Encode_WriteNybble(0xF, DstBuffer, Size);
-					Block_Encode_WriteNybble(n,   DstBuffer, Size);
-					n = n*8+94;
+					//! 8h,Fh,Yh,Xh: 17 .. 272 zeros
+					int v = zR-17; if(v > 0xFF) v = 0xFF;
+					n = v + 17;
+					Block_Encode_WriteNybble(0xF,  DstBuffer, Size);
+					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
+					Block_Encode_WriteNybble(v,    DstBuffer, Size);
 				}
+
+				//! Skip the zeros
 				NextCodedIdx += n;
 				zR           -= n;
 			}
@@ -236,21 +228,18 @@ static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuff
 		do {
 			nOutCoef = (Lo + Hi) / 2u;
 			Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
-			     if(Size < BitBudget) Lo = nOutCoef+1;
-			else if(Size > BitBudget) Hi = nOutCoef;
+			     if(Size < BitBudget) Lo = nOutCoef;
+			else if(Size > BitBudget) Hi = nOutCoef-1;
 			else {
 				//! Should very, VERY rarely happen, but just in case
-				Hi = nOutCoef+1;
+				Lo = nOutCoef;
 				break;
 			}
-		} while(Lo < Hi);
-	} else {
-		//! No coefficients
-		Hi = 0+1;
+		} while(Lo < Hi-1);
 	}
 
 	//! Avoid going over budget
-	int nOutCoefFinal = Hi-1;
+	int nOutCoefFinal = Lo;
 	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
