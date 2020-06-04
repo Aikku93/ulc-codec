@@ -97,10 +97,42 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
 
 /**************************************/
 
-//! Encode block
-int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay) {
-	int nNzCoef = Block_Transform(State, SrcData, PowerDecay);
-	return Block_Encode(State, DstBuffer, nNzCoef, RateKbps);
+//! Encode block (CBR mode)
+int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay) {
+	int Size;
+	int nOutCoef  = -1;
+	int BitBudget = (int)((State->BlockSize * RateKbps) * 1000.0f/State->RateHz); //! NOTE: Truncate
+
+	//! Perform a binary search for the optimal nOutCoef
+	int Lo = 0, Hi = Block_Transform(State, SrcData, PowerDecay);
+	if(Lo < Hi) {
+		do {
+			nOutCoef = (Lo + Hi) / 2u;
+			Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
+			     if(Size < BitBudget) Lo = nOutCoef;
+			else if(Size > BitBudget) Hi = nOutCoef-1;
+			else {
+				//! Should very, VERY rarely happen, but just in case
+				Lo = nOutCoef;
+				break;
+			}
+		} while(Lo < Hi-1);
+	}
+
+	//! Avoid going over budget
+	int nOutCoefFinal = Lo;
+	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
+	return Size;
+}
+
+/**************************************/
+
+//! Encode block (VBR mode)
+int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality, float PowerDecay) {
+	int nOutCoef = (int)(Quality*(1.0f/100.0f) * State->nChan * State->BlockSize + 0x1.FFFFFFp-1f); //! NOTE: Ceiling
+	int MaxCoef  = Block_Transform(State, SrcData, PowerDecay);
+	if(nOutCoef > MaxCoef) nOutCoef = MaxCoef;
+	return Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
 }
 
 /**************************************/

@@ -102,7 +102,7 @@ int main(int argc, const char *argv[]) {
 		printf("ERROR: Invalid playback rate.\n");
 		return -1;
 	}
-	if(RateKbps < 1 || RateKbps > 0xFFFF) {
+	if(RateKbps == 0 || RateKbps > 0xFFFF) {
 		printf("ERROR: Invalid coding rate.\n");
 		return -1;
 	}
@@ -221,7 +221,9 @@ int main(int argc, const char *argv[]) {
 			//! Encode block
 			//! Reuse BlockBuffer[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockBuffer;
-			int Size = ULC_EncodeBlock(&Encoder, EncData, BlockBuffer, RateKbps, MidSideXfm ? SideScale : 1.0f);
+			int Size;
+			if(RateKbps > 0) Size = ULC_EncodeBlock_CBR(&Encoder, EncData, BlockBuffer,  RateKbps, MidSideXfm ? SideScale : 1.0f);
+			else             Size = ULC_EncodeBlock_VBR(&Encoder, EncData, BlockBuffer, -RateKbps, MidSideXfm ? SideScale : 1.0f);
 			TotalSize += Size;
 
 			//! Copy what we can into the cache
@@ -248,13 +250,17 @@ int main(int argc, const char *argv[]) {
 		fwrite(CacheMem, sizeof(uint8_t), CacheIdx, OutFile);
 
 		//! Show statistics
+		size_t nEncodedSamples = BlockSize * (nBlk+1);
 		printf(
 			"\e[2K\r" //! Clear line before CR
 			"Total size = %.2fKiB\n"
-			"Avg rate = %.5fkbps (%.5f bits/sample)\n",
+			"Avg rate = %.5fkbps (%.5f bits/sample)\n"
+			"Max rate = %.5fkbps (%.5f bits/sample)\n",
 			TotalSize/8.0 / 1024,
-			TotalSize*1.0 * RateHz/1000.0 / nSamp,
-			TotalSize*1.0 / nSamp
+			TotalSize               * 1.0 * RateHz/1000.0 / nEncodedSamples,
+			TotalSize               * 1.0 / nEncodedSamples,
+			FileHeader.MaxBlockSize * 8.0 * RateHz/1000.0 / BlockSize,
+			FileHeader.MaxBlockSize * 8.0 / BlockSize
 		);
 
 		//! Destroy encoder

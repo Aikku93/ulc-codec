@@ -85,7 +85,8 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!   channels are increasingly 'less important'. Pass 1.0 if
 //!   all channels are equally important.
 //! Returns the block size in bits
-int ULC_EncodeBlock(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay);
+int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay);
+int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality,  float PowerDecay);
 
 /**************************************/
 //! EOF
