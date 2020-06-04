@@ -37,15 +37,14 @@ static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(in
 /**************************************/
 
 //! Build quantizer from weighted average
-//! NOTE: The quantizer scale is 2^-x, so when this is set to the minimum scaling
-//!       (ie. x==5, setting q=1/32), then the maximum codeable value becomes
-//!       7^2/32 == 1.53125. This is higher than 1.0, so we use this extra space
-//!       as a sort of headroom, and shift the rounding point accordingly.
 //! NOTE: The average is performed over the Neper-domain coefficients, so there is
 //!       no need to apply a further logarithm here to get the base-2 logarithm.
 static inline int Block_Encode_BuildQuantizer(float Sum, float Weight) {
-	//! NOTE: `q` will always be greater than 5 due to the bias
-	int q = (int)(0x1.675768p2f - 0x1.715476p0f*Sum / Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
+	//! NOTE: Rounding threhsold at 0.75 to favour larger coefficients
+	//! over smaller ones.
+	//! NOTE: `q` will always be greater than 5 due to the bias so
+	//! the quantizer code range is adjusted accordingly.
+	int q = (int)(5.25f - 0x1.715476p0f*Sum/Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
 	if(q < 5) q = 5; //! Sometimes happens because of overflow?
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -172,19 +171,19 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(Idx >= ChanLastIdx) break;
 
 			//! Level out of range in this quantizer zone?
-			const float MaxRange2 = SQR(SQR(7.5f)); //! Maximum quantized range before needing a split, squared
+			const float LogMaxRange = 0x1.0941FFp2f; //! Maximum Neper range before needing a split (0x1.0941FFp2 = 36dB)
 			float BandCoef2  = SQR(Coef  [Idx]);
 			float BandCoefNp =    (CoefNp[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
-			if(BandCoef2 < QuantMin) QuantMin = BandCoef2;
-			if(BandCoef2 > QuantMax) QuantMax = BandCoef2;
-			if(QuantMax > QuantMin*MaxRange2) { //! sqrtf(QuantMax/QuantMin) > MaxRange
+			if(BandCoefNp < QuantMin) QuantMin = BandCoefNp;
+			if(BandCoefNp > QuantMax) QuantMax = BandCoefNp;
+			if(QuantMax-QuantMin > LogMaxRange) { //! sqrtf(QuantMax/QuantMin) > MaxRange
 				//! Write the quantizer zone we just searched through
 				//! and start a new one from this coefficient
 				NextCodedIdx  = WRITE_QUANT_ZONE();
 				QuantStartIdx = Idx;
-				QuantMin    = BandCoef2;
-				QuantMax    = BandCoef2;
+				QuantMin    = BandCoefNp;
+				QuantMax    = BandCoefNp;
 				QuantSum    = BandCoef2 * BandCoefNp;
 				QuantWeight = BandCoef2;
 			} else {
@@ -215,32 +214,6 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 
 	//! Pad final byte as needed
 	if(Size % 8u) Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
-	return Size;
-}
-static int Block_Encode(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nNzCoef, float RateKbps) {
-	int Size;
-	int nOutCoef  = -1;
-	int BitBudget = (int)((State->BlockSize * RateKbps) * 1000.0f/State->RateHz); //! NOTE: Truncate
-
-	//! Perform a binary search for the optimal nOutCoef
-	int Lo = 0, Hi = nNzCoef;
-	if(Lo < Hi) {
-		do {
-			nOutCoef = (Lo + Hi) / 2u;
-			Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
-			     if(Size < BitBudget) Lo = nOutCoef;
-			else if(Size > BitBudget) Hi = nOutCoef-1;
-			else {
-				//! Should very, VERY rarely happen, but just in case
-				Lo = nOutCoef;
-				break;
-			}
-		} while(Lo < Hi-1);
-	}
-
-	//! Avoid going over budget
-	int nOutCoefFinal = Lo;
-	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
 
