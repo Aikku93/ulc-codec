@@ -45,11 +45,11 @@ static inline void Block_Transform_WriteSortValues(
 		float ValNp = CoefNp[Band];
 		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
 #if ULC_USE_PSYCHOACOUSTICS
-			//! Get the effective energy of this band by removing the background contribution
-			//! NOTE: Not sure why this equation is the way it is. It was developed
-			//! over 8 hours of experimentation to find what worked best in all cases
-			float InvFlat, Mask = Block_Transform_UpdateMaskingThreshold(&MaskingState, Coef, CoefNp, Band, BlockSize, &InvFlat);
-			ValNp += (expf(0x1.62E430p-1f*InvFlat))*(ValNp - Mask); //! 0x1.62E430p-1 = Log[2], to get 2^x
+			//! Get the effective energy of this band in the linear domain
+			ValNp = Block_Transform_GetMaskedLevel(&MaskingState, Coef, CoefNp, Band, BlockSize);
+#else
+			//! Convert to the squared value
+			ValNp *= 2.0f; //! Log[x^2] == 2*Log[x]
 #endif
 			//! Store the sort value for this coefficient
 			CoefIdx[Band] = ValNp + AnalysisPowerNp;
@@ -127,39 +127,42 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! (using the step energy) does not give very good bandpass
 		//! selectivity, which may be affecting results; LAME uses a
 		//! filter that rejects all frequencies below Fs/2 @ -50dB.
-		float LastEnergy   = *LastSampleEnergy;
 		float EnergyCenter = 1.0e-30f; //! Add a small bias to avoid division by zero
-		float EnergyEdge   = 1.0e-30f;
-		const float *WinS = Fourier_SinTableN(BlockSize);
-		const float *WinC = WinS + BlockSize;
-		for(n=0;n<BlockSize;n++) {
-			float v = sqrtf(*EnergyBuffer++);
-			float s = *WinS++;
-			float c = *--WinC;
-			float d = v - LastEnergy;
-			LastEnergy = v;
-			EnergyCenter += s*SQR(d);
-			EnergyEdge   += c*SQR(d);
+		float EnergyEdge   = 1.0e-30f; {
+			float LastEnergy   = *LastSampleEnergy;
+			const float *WinS = Fourier_SinTableN(BlockSize);
+			const float *WinC = WinS + BlockSize;
+			for(n=0;n<BlockSize;n++) {
+				float v = sqrtf(EnergyBuffer[n]);
+				float s = *WinS++;
+				float c = *--WinC;
+				float d = v - LastEnergy;
+				LastEnergy = v;
+				EnergyCenter += s*SQR(d);
+				EnergyEdge   += c*SQR(d);
+			}
+			*LastSampleEnergy = LastEnergy;
 		}
-		*LastSampleEnergy = LastEnergy;
 
 		//! Relate the average step size of this block to that of the last block
-		//! NOTE: If the energy decayed in this block, don't shrink this block's
-		//! overlap; release transients are easily masked, and if it wasn't really
-		//! a transient, then it was very likely a simple volume envelope.
 		//! NOTE: Scaling by EnergyCenter/EnergyEdge gives better results, as this
 		//! basically controls just how far we can narrow the overlap without any
 		//! click/pop artifacts from discontinuities at the overlap boundaries.
 		//! When a transient is extremely sharp/poppy, then we can decrease the
 		//! overlap a lot further, as the transient itself will be masking any
 		//! discontinuity artifacts from too narrow of an overlap.
-		//! NOTE: Correctly map EnergyCenter/EnergyEdge via the square-root. Not
-		//! doing this tends to overdo poppy transients in smooth regions.
-		if(EnergyCenter > *LastBlockEnergy) {
-			float LogRatio = sqrtf(EnergyCenter / EnergyEdge) * logf(EnergyCenter / *LastBlockEnergy);
-			OverlapScale = (int)(0x1.715476p0f*LogRatio + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
-			if(OverlapScale > 0xF) OverlapScale = 0xF;
-		} else OverlapScale = 0;
+		//! NOTE: Correctly map the log ratio through a square root. Not doing this
+		//! tends to make transients a bit too jarring. Note that this square root
+		//! can be factored out to after the logarithm, only needing multiplication.
+		{
+			float a =  EnergyCenter    * EnergyCenter;
+			float b = *LastBlockEnergy * EnergyEdge;
+			if(a > b) {
+				float LogRatio2 = logf(a / b);
+				OverlapScale = (int)(0x1.715476p0f*0.5f*LogRatio2 + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+				if(OverlapScale > 0xF) OverlapScale = 0xF;
+			} else OverlapScale = 0;
+		}
 		*LastBlockEnergy = EnergyEdge;
 	}
 
