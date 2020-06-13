@@ -16,36 +16,36 @@ NB: The encoder is expected to handle all scaling, such that the inverse transfo
 ### Syntax
 ***
 
-| Nybble sequence    | Explanation        | Effect                                       |
-| ------------------ | ------------------ | -------------------------------------------- |
-| ```-7h..+7h```     | Normal coefficient | Insert ```Coef[n++] = Sign[Nybble]*Nybble^2 * Quantizer``` |
-| ```8h,0h,0h..Dh``` | Quantizer change   | Set ```Quantizer = 2^-(4+X)```               |
-| ```8h,0h,Eh,Xh```  | Quantizer change   | Set ```Quantizer = 2^-(4+14+X)```            |
-| ```8h,0h,Fh```     | Stop               | Stop reading coefficients; fill rest with 0  |
-| ```8h,1h..Bh```    | Zeros run (short)  | Insert zeros                                 |
-| ```8h,Ch..Fh,Xh``` | Zeros run (long)   | Insert zeros                                 |
+| Nybble sequence       | Explanation        | Effect                                       |
+| --------------------- | ------------------ | -------------------------------------------- |
+| ```-7h..+7h```        | Normal coefficient | Insert ```Coef[n++] = Sign[Nybble]*Nybble^2 * Quantizer``` |
+| ```8h,0h,0h..Dh```    | Quantizer change   | Set ```Quantizer = 2^-(5+X)```               |
+| ```8h,0h,Eh,0h..Ch``` | Quantizer change   | Set ```Quantizer = 2^-(5+14+X)```            |
+| ```8h,0h,Fh```        | Stop               | Stop reading coefficients; fill rest with 0  |
+| ```8h,1h..Eh```       | Zeros run (short)  | Insert zeros                                 |
+| ```8h,Fh,Yh,Xh```     | Zeros run (long)   | Insert zeros                                 |
 
 #### ```-7h..+7h```: Normal coefficient
 
-This is a quantized coefficient. To unpack, take the (signed) squared value, scale by the current quantizer, and move to the next coefficient.
+This is a quantized coefficient. To unpack, take the signed squared value (ie. ```x*ABS(x)```), scale by the current quantizer, and move to the next coefficient.
 
 If we've received as many coefficients as there are in a transform block (eg. 2048 coefficients), this channel's coefficients are finished, and we can move on to inverse transforming.
 
-#### ```8h,0h,0h..Dh```, ```8h,0h,Eh,Xh```: Quantizer change
+#### ```8h,0h,0h..Dh```, ```8h,0h,Eh,0h..Ch```: Quantizer change
 
 This modifies the current quantizer.
 
 When the third nybble is between ```0h..Dh```, this signals a normal quantizer change; at average audio levels, these are the most common quantization scalers.
 
-```Quantizer = 2^-(4 + [third nybble])```
+```Quantizer = 2^-(5 + [third nybble])```
 
-(Note the bias of 4: This is because no coefficient can be larger than 1.0, and the possibly (non-zero) quantized coefficients are ```{1,4,9,16,25,36,49}```, the log2 of the mean of which is approximately 4. If the bias wasn't used, there would be quantizer values that would never be used by the encoding tools, representing loss of efficiency)
+(Note the bias of 5)
 
-When the nybble is ```Eh```, however, this signals that the quantizer needs to be smaller still, and so is followed by an extra nybble to afford a so-called 'extended-precision quantizer', allowing a maximum quantization scale of 2^-(4 + 14 + 15).
+When the nybble is ```Eh```, however, this signals that the quantizer needs to be smaller still, and so is followed by an extra nybble to afford a so-called 'extended-precision quantizer', allowing a maximum quantization scale of 2^-31.
 
-```Quantizer = 2^-(4 + 14 + [fourth nybble])```
+```Quantizer = 2^-(5 + 14 + [fourth nybble])```
 
-This can be considered to result in a floating-point value containing a sign bit, 3 bits of mantissa, and circa 5 bits of exponent, with the minimum possible coefficient value being ±1.0×2^-33 (approximately 0.00000000012).
+This can be considered to result in a floating-point value containing a sign bit, 3 bits of mantissa, and 5 bits of exponent, with the minimum possible coefficient value being ±1.0×2^-31.
 
 Each channel begins with a nybble specifying the initial quantizer, akin to a silent ```8h,0h``` at the start (extended-precision quantizers are also allowed for this first quantizer band).
 
@@ -55,23 +55,19 @@ This signals that the remaining coefficients for this channel should be zeroed o
 
 A channel's block may begin with ```[8h,0h,]Fh```; this means that the channel is silent.
 
-#### ```8h,1h..Bh```: Zeros run (short)
+#### ```8h,1h..Eh```: Zeros run (short)
 
 This inserts coefficients with a value of 0. As these are fairly common after quantization, we use a compact format to code runs of them.
 
-To increase density, these runs are always in multiples of 2, starting at 4 (eg. 4, 6, 8, 10...24). This results in an average code length of 2.5 nybbles per zero run, if we assume that there's a 50:50 chance of even:odd runs (8h,Xh = 2 nybbles, 8h,Xh,0h: 3 nybbles).
+To unpack: ```n = [second nybble] + 2```. This allows 3..16 zeros to be coded with two nybbles.
 
-To unpack: ```n = [second nybble] * 2 + 2```
-
-#### ```8h,Ch..Fh,Xh```: Zeros run (long)
+#### ```8h,Fh,Yh,Xh```: Zeros run (long)
 
 Further refinement on the above. This in particular is more common at lower bitrates, where quantization becomes too aggressive and/or we must cull large swathes of frequency bands in order to meet the target bitrate.
 
-Like the above short run, this also runs in multiples of 2 (average length of 3.5 nybbles). However, we supply an extra nybble to extend the range much further.
+Because a short run can already code up to 16 zeros at once, a long run codes 17..272 zeros at once.
 
-Because a short run can already code up to 24 zeros at once, a long run codes 26,28,30...152 zeros at once.
-
-To unpack: ```n = (([second nybble] - Ch)<<4 | [third nybble]) * 2 + 26```
+To unpack: ```n = ([second nybble]<<4 | [third nybble]) + 17```
 
 ### Inverse transform process
 ***
@@ -85,4 +81,4 @@ The IMDCT used in this codec follows the normal IMDCT formula found on any maths
     y[n] =  Sum[X[k]*Cos[(n+1/2 + N/2 + N*2)(k+1/2)*Pi/N], {k,0,N-1}]
          = -Sum[X[k]*Cos[(n+1/2 + N/2      )(k+1/2)*Pi/N], {k,0,N-1}]
     
-The windowing function used is a sine window, with the overlap amount based on the block size scaled by the nybble at the start of the block (see the `Overview` section). To use a different window, the MDCT and IMDCT functions of the source code must be modified to accomodate such (this is not too difficult, and only involves loading the sine/cosine values with appropriate data).
+The windowing function used is a sine window, with the overlap amount based on the block size scaled by the nybble at the start of the block (see the `Overview` section). To use a different window, the MDCT and IMDCT functions of the source code must be modified to accomodate such (this is not too difficult, and only involves loading the sine/cosine values with appropriate data). Note that using a sine window allows reuse of the DCT coefficients table, whereas a different window cannot reuse these coefficients and so needs double the storage space.
