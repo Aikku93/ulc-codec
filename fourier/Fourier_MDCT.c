@@ -13,7 +13,7 @@
 #include "Fourier.h"
 /**************************************/
 
-void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap) {
+void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST) {
 	int i;
 	const float *WinS = Fourier_SinTableN(Overlap);
 	const float *WinC = WinS + Overlap;
@@ -109,6 +109,20 @@ void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTm
 	}
 #endif
 	//! Do actual transform
+	if(BufMDST) {
+		//! Use aliased data to compute the DST via
+		//! a DCT using trigonometric relations
+		for(i=0;i<N;i+=2) {
+			BufMDST[i  ] =  BufOut[i  ];
+			BufMDST[i+1] = -BufOut[i+1];
+		}
+		Fourier_DCT4(BufMDST, BufTmp, N);
+		for(i=0;i<N/2;i++) {
+			float t = BufMDST[i];
+			BufMDST[i]     = BufMDST[N-1-i];
+			BufMDST[N-1-i] = t;
+		}
+	}
 	Fourier_DCT4(BufOut, BufTmp, N);
 }
 

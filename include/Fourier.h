@@ -46,6 +46,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N);
 //!  BufIn[N]
 //!  BufLap[N/2]
 //!  BufTmp[N]
+//!  BufMDST[N]
 //! Implemented transforms (matrix form):
 //!  mtxMDCT  = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
 //!  mtxIMDCT = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k,2N}, {n, N}]
@@ -58,7 +59,9 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N);
 //!   relative to 'normal' I/MDCT calculations.
 //!   Negate input (MDCT) and output (IMDCT) if
 //!   'correct' I/MDCT coefficients are needed
-void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
+//!  -Simultaneous MDST calculation allows re-use of
+//!   the aliased data. Pass NULL if undesired.
+void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST);
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 
 /**************************************/
