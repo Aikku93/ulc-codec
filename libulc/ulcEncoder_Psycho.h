@@ -12,84 +12,81 @@
 #include "ulcEncoder_Helper.h"
 /**************************************/
 
-//! Masking threshold estimation
+//! Simultaneous masking-compensated energy estimation
 //! NOTE: ERB calculations are inlined as an optimization
 struct Block_Transform_MaskingState_t {
-	double SumLin;
-	double SumLog;
-	float BwBase;
-	int   BandBeg;
-	int   BandEnd;
+	double Energy;
+	double Nepers;
+	float  BwBase;
+	int    BandBeg;
+	int    BandEnd;
 };
 static inline void Block_Transform_MaskingState_Init(
 	struct Block_Transform_MaskingState_t *State,
-	const float *Coef,
-	const float *CoefNp,
+	const float *Energy,
+	const float *EnergyNp,
 	int   BlockSize,
 	float NyquistHz
 ) {
-	State->SumLin = SQR(Coef[0]);
-	State->SumLog = SQR(Coef[0]) * CoefNp[0];
-	State->BwBase = 24.7f*BlockSize/NyquistHz;
+	State->Energy = Energy[0];
+	State->Nepers = Energy[0] * EnergyNp[0];
+	State->BwBase  = 24.7f*BlockSize/NyquistHz + 0.0539695f; //! Offset at Band+0.5
 	State->BandBeg = 0;
 	State->BandEnd = 0;
 }
 static inline float Block_Transform_GetMaskedLevel(
 	struct Block_Transform_MaskingState_t *State,
-	const float *Coef,
-	const float *CoefNp,
+	const float *Energy,
+	const float *EnergyNp,
 	int   Band,
 	int   BlockSize
 ) {
 	//! These settings are mostly based on trial and error
-	float Bw  = State->BwBase + 0.107939f*Band;
-	int   BandBeg = Band - (int)(Bw * 0.25f);
-	int   BandEnd = Band + (int)(Bw * 0.75f);
-	if(BandBeg <          0) BandBeg = 0;
-	if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
+	int BandBeg, BandEnd; {
+		//! Because lower frequencies mask higher frequencies more
+		//! than higher frequencies mask lower ones, the frequency
+		//! bands below the current band are critical for analysis
+		//! and the masking bandwidth is thus much larger there
+		float Bw = State->BwBase + 0.107939f*Band;
+		BandBeg = Band - (int)(Bw * 0.5f + 0x1.FFFFFFp-1f); //! Add 0.99999... for ceiling
+		BandEnd = Band + (int)(Bw * 0.5f + 0x1.FFFFFFp-1f);
+		if(BandBeg <          0) BandBeg = 0;
+		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
+	}
 
-	//! Update masking calculations
+	//! Update energy for this critical band
 	//! NOTE: Double-precision is necessary here to reduce
 	//! catastrophic cancellation. Integer maths would be
 	//! ideal (as all subtractions would cancel exactly),
-	//! but may give suboptimal results. Alternatively, a
+	//! but the weighted geometric mean we are computing
+	//! here is hard to get right. Alternatively, a
 	//! convolution may be performed per call to this
 	//! function, but this is much more costly.
-	double SumLin = State->SumLin;
-	double SumLog = State->SumLog;
+	double EnergySum = State->Energy;
+	double EnergyLog = State->Nepers;
 	{
-#define ADD_TO_STATE(Val, ValNp) SumLin += SQR(Val), SumLog += SQR(Val)*(ValNp)
-#define SUB_TO_STATE(Val, ValNp) SumLin -= SQR(Val), SumLog -= SQR(Val)*(ValNp)
+#define ADD_TO_STATE(Band) EnergySum += Energy[Band], EnergyLog += Energy[Band] * EnergyNp[Band]
+#define SUB_TO_STATE(Band) EnergySum -= Energy[Band], EnergyLog -= Energy[Band] * EnergyNp[Band]
 		int Beg = State->BandBeg, End = State->BandEnd;
-		while(BandBeg < Beg) --Beg, ADD_TO_STATE(Coef[Beg], CoefNp[Beg]); //! Expand
-		while(BandEnd > End) ++End, ADD_TO_STATE(Coef[End], CoefNp[End]);
-		while(BandBeg > Beg) SUB_TO_STATE(Coef[Beg], CoefNp[Beg]), Beg++; //! Contract
-		while(BandEnd < End) SUB_TO_STATE(Coef[End], CoefNp[End]), End--;
+		while(BandBeg < Beg) --Beg, ADD_TO_STATE(Beg); //! Expand
+		while(BandEnd > End) ++End, ADD_TO_STATE(End);
+		while(BandBeg > Beg) SUB_TO_STATE(Beg), Beg++; //! Contract
+		while(BandEnd < End) SUB_TO_STATE(End), End--;
 		State->BandBeg = BandBeg, State->BandEnd = BandEnd;
 #undef SUB_TO_STATE
 #undef ADD_TO_STATE
 	}
-	State->SumLin = SumLin;
-	State->SumLog = SumLog;
+	State->Energy = EnergySum;
+	State->Nepers = EnergyLog;
 
-	//! Get final masked amplitude after mapping from the psychoacoustic
-	//! domain to the linear domain
-	//! NOTE: SumLin can never be 0, as this update routine is only
-	//! called upon encountering a valid non-zero coefficient, which is
-	//! included in the calculations. Thus, division by 0 cannot occur.
-	//! NOTE: The idea behind these equations is to translate and scale
-	//! the coefficient power using the classical formula of:
-	//!  x' = NewOrigin + Scale*(x - OldOrigin)
-	//! OldOrigin is the psychoacoustic domain, and NewOrigin is the
-	//! linear domain. Scale is set in such a way that the power of
-	//! the coefficients scales proportionally with the psychoacoustic
-	//! power such that it matches overall.
-	//! NOTE: Using squared inputs seems to be critical for maximizing
-	//! brightness at low bitrates.
-	float nSumLog = 2.0f * SumLog / SumLin;
-	float LogSumLin = logf(SumLin / (BandEnd - BandBeg + 1));
-	float Curve = expf(nSumLog - LogSumLin);
-	return LogSumLin + Curve*(2.0f*CoefNp[Band] - nSumLog);
+	//! De/emphasize band energy relative to the background
+	//! level. This is similar in effect to a gamma correction
+	//! filter in image processing, where we wish to use it to
+	//! extract 'important' information from a noisy background.
+	//! Note that the curve is exaggerated as these values will
+	//! be added to the raw MDCT coefficient level.
+	float BandNp = EnergyNp[Band];
+	return BandNp + 8.0f*(BandNp - EnergyLog/EnergySum);
 }
 
 /**************************************/
