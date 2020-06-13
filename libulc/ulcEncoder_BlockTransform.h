@@ -25,7 +25,8 @@
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
 static inline void Block_Transform_WriteSortValues(
 	float *CoefIdx,
-	const float *Coef,
+	const float *Energy,
+	const float *EnergyNp,
 	const float *CoefNp,
 	int   *nNzCoef,
 	int   BlockSize,
@@ -35,21 +36,21 @@ static inline void Block_Transform_WriteSortValues(
 	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
 	struct Block_Transform_MaskingState_t MaskingState;
-	Block_Transform_MaskingState_Init(&MaskingState, Coef, CoefNp, BlockSize, NyquistHz);
+	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize, NyquistHz);
 #else
-	(void)Coef;
+	(void)Energy;
+	(void)EnergyNp;
 	(void)NyquistHz;
 #endif
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Inside the codeable range?
 		float ValNp = CoefNp[Band];
 		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
+			//! Convert to the energy domain
+			ValNp *= 2.0f;
 #if ULC_USE_PSYCHOACOUSTICS
-			//! Get the effective energy of this band in the linear domain
-			ValNp = Block_Transform_GetMaskedLevel(&MaskingState, Coef, CoefNp, Band, BlockSize);
-#else
-			//! Convert to the squared value
-			ValNp *= 2.0f; //! Log[x^2] == 2*Log[x]
+			//! Apply psychoacoustic corrections to this band energy
+			ValNp += Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
 #endif
 			//! Store the sort value for this coefficient
 			CoefIdx[Band] = ValNp + AnalysisPowerNp;
@@ -79,43 +80,27 @@ static inline int Block_Transform_GetLogOverlapScale(
 ) {
 	int n, Chan;
 
-	//! Combine all channel energy into a single buffer
+	//! Combine all step energy into a single buffer
 	for(n=0;n<BlockSize;n++) EnergyBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-#if defined(__AVX__)
-		for(n=0;n<BlockSize;n+=8) {
-			__m256 v = _mm256_load_ps(Data + Chan*BlockSize + n);
-			__m256 b = _mm256_load_ps(EnergyBuffer + n);
-#if defined(__FMA__)
-			b = _mm256_fmadd_ps(v, v, b);
-#else
-			v = _mm256_mul_ps(v, v);
-			b = _mm256_add_ps(b, v);
-#endif
-			_mm256_store_ps(EnergyBuffer + n, b);
+		//! TODO: Try using different highpass filters; LAME uses a
+		//! filter that rejects all frequencies below Fs/2 @ -50dB,
+		//! whereas this filter (H(z) = 1 - 0.5z^-1) only rejects
+		//! DC @ -9.54dB and has a -3dB point at F_n=0.460964.
+		const float *Src = Data + Chan*BlockSize;
+		float EnergyLast = LastSampleEnergy[Chan];
+		for(n=0;n<BlockSize;n++) {
+			float v = Src[n];
+			EnergyBuffer[n] += SQR(v - 0.5f*EnergyLast);
+			EnergyLast = v;
 		}
-#elif defined(__SSE__)
-		for(n=0;n<BlockSize;n+=4) {
-			__m128 v = _mm_load_ps(Data + Chan*BlockSize + n);
-			__m128 b = _mm_load_ps(EnergyBuffer + n);
-#if defined(__FMA__)
-			b = _mm_fmadd_ps(v, v, b);
-#else
-			v = _mm_mul_ps(v, v);
-			b = _mm_add_ps(b, v);
-#endif
-			_mm_store_ps(EnergyBuffer + n, b);
-		}
-#else
-		for(n=0;n<BlockSize;n++) EnergyBuffer[n] += SQR(Data[Chan*BlockSize + n]);
-#endif
+		LastSampleEnergy[Chan] = EnergyLast;
 	}
 
 	//! Analyze sample energy to build a log-domain ratio
 	int OverlapScale; {
-		//! Get the squared step energy for each sample, and then
-		//! apply a window to the step energy to get a weighted sum
-		//! of squares. As far as MDCT is concerned, this current
+		//! Get the weighted step energy, modulating for fade-in
+		//! and fade-out. As far as MDCT is concerned, this current
 		//! block will be fading in, and so the important transient
 		//! energy is towards the end of the block. The previous
 		//! block is simultaneously fading out, so the transient
@@ -123,25 +108,16 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! NOTE: There is no point in normalizing, as these energy
 		//! values will be divided by the previous block's, and as
 		//! they have the same normalization factor, it cancels out.
-		//! TODO: Try using different highpass filters; this filter
-		//! (using the step energy) does not give very good bandpass
-		//! selectivity, which may be affecting results; LAME uses a
-		//! filter that rejects all frequencies below Fs/2 @ -50dB.
 		float EnergyCenter = 1.0e-30f; //! Add a small bias to avoid division by zero
-		float EnergyEdge   = 1.0e-30f; {
-			float LastEnergy   = *LastSampleEnergy;
-			const float *WinS = Fourier_SinTableN(BlockSize);
-			const float *WinC = WinS + BlockSize;
-			for(n=0;n<BlockSize;n++) {
-				float v = sqrtf(EnergyBuffer[n]);
-				float s = *WinS++;
-				float c = *--WinC;
-				float d = v - LastEnergy;
-				LastEnergy = v;
-				EnergyCenter += s*SQR(d);
-				EnergyEdge   += c*SQR(d);
-			}
-			*LastSampleEnergy = LastEnergy;
+		float EnergyEdge   = 1.0e-30f;
+		const float *WinS = Fourier_SinTableN(BlockSize);
+		const float *WinC = WinS + BlockSize;
+		for(n=0;n<BlockSize;n++) {
+			float s = WinS[n];
+			float c = WinC[-1-n];
+			float d = EnergyBuffer[n];
+			EnergyCenter += s*d;
+			EnergyEdge   += c*d;
 		}
 
 		//! Relate the average step size of this block to that of the last block
@@ -151,19 +127,24 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! When a transient is extremely sharp/poppy, then we can decrease the
 		//! overlap a lot further, as the transient itself will be masking any
 		//! discontinuity artifacts from too narrow of an overlap.
-		//! NOTE: Correctly map the log ratio through a square root. Not doing this
-		//! tends to make transients a bit too jarring. Note that this square root
-		//! can be factored out to after the logarithm, only needing multiplication.
 		{
 			float a =  EnergyCenter    * EnergyCenter;
 			float b = *LastBlockEnergy * EnergyEdge;
 			if(a > b) {
-				float LogRatio2 = logf(a / b);
-				OverlapScale = (int)(0x1.715476p0f*0.5f*LogRatio2 + 0.5f); //! 0x1.715476p0 = 1/Log[2], to get the log base-2
+				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+				//! NOTE: If the highpass filter from earlier has
+				//! good band reject properties, then it works better
+				//! to map through a square root. However, the filter
+				//! currently in use was designed to 'leak' a fairly
+				//! decent amount, so as to avoid breaking continuous
+				//! waves where possible, while still reducing the
+				//! overlap where needed/possible. This results in
+				//! needing to scale the logarithm to account for it.
+				OverlapScale = (int)(0x1.715476p0f*logf(a / b) + 0.5f);
 				if(OverlapScale > 0xF) OverlapScale = 0xF;
 			} else OverlapScale = 0;
 		}
-		*LastBlockEnergy = EnergyEdge;
+		*LastBlockEnergy = EnergyCenter;
 	}
 
 	//! Use the above-derived ratio to set an overlap amount for this block
@@ -188,6 +169,15 @@ static inline void Block_Transform_ScaleAndToNepers(float *Coef, float *CoefNp, 
 		CoefNp[n] = (ABS(v) < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
 	}
 }
+static inline void Block_Transform_ComputePowerSpectrum(float *Power, float *PowerNp, const float *Re, const float *Im, int N) {
+	int i;
+	float Scale2 = SQR(2.0f/N);
+	for(i=0;i<N;i++) {
+		float v = Scale2 * (SQR(Re[i]) + SQR(Im[i]));
+		Power  [i] = v;
+		PowerNp[i] = (ABS(v) < SQR(0.5f*ULC_COEF_EPS)) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
+	}
+}
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
@@ -197,7 +187,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		Data,
 		State->TransformTemp,
 		&State->LastBlockEnergy,
-		&State->LastSampleEnergy,
+		State->LastSampleEnergy,
 		BlockSize,
 		State->MinOverlap,
 		State->MaxOverlap,
@@ -215,20 +205,31 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		float *BufferIndex     = (float*)State->TransformIndex;
 		float *BufferFwdLap    = State->TransformFwdLap;
 		float *BufferTemp      = State->TransformTemp;
+		float *BufferEnergy    = BufferTemp;
+		float *BufferEnergyNp  = BufferTemp + BlockSize;
 		for(Chan=0;Chan<nChan;Chan++) {
-			//! Apply transform and write the sort values
+			//! Do transform processing and write the sort values
 			Fourier_MDCT(
 				BufferTransform,
 				Data,
 				BufferFwdLap,
 				BufferTemp,
 				BlockSize,
-				BlockSize >> OverlapScale
+				BlockSize >> OverlapScale,
+#if ULC_USE_PSYCHOACOUSTICS
+				BufferNepers //! MDST coefficients stored here temporarily
+#else
+				NULL
+#endif
 			);
+#if ULC_USE_PSYCHOACOUSTICS
+			Block_Transform_ComputePowerSpectrum(BufferEnergy, BufferEnergyNp, BufferTransform, BufferNepers, BlockSize);
+#endif
 			Block_Transform_ScaleAndToNepers(BufferTransform, BufferNepers, BlockSize);
 			Block_Transform_WriteSortValues(
 				BufferIndex,
-				BufferTransform,
+				BufferEnergy,
+				BufferEnergyNp,
 				BufferNepers,
 				&nNzCoef,
 				BlockSize,
