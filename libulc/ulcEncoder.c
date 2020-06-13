@@ -51,36 +51,39 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal
+	//! NOTE: Psychoacoustics needs at least two BlockSize temporary buffers
+	//! to store the energy information (raw/linear and log-domain)
 	int TransformBuffer_Size  = sizeof(float) * (nChan* BlockSize   );
 	int TransformNepers_Size  = sizeof(float) * (nChan* BlockSize   );
 	int TransformFwdLap_Size  = sizeof(float) * (nChan*(BlockSize/2));
-	int TransformTemp_Size    = sizeof(float) * (nChan* BlockSize   );
+	int TransformTemp_Size    = sizeof(float) * ((nChan + ULC_USE_PSYCHOACOUSTICS*(nChan < 2))* BlockSize);
 	int TransformIndex_Size   = sizeof(int)   * (nChan* BlockSize   );
+	int LastSampleEnergy_Size = sizeof(float) * (nChan              );
 	int TransformBuffer_Offs  = 0;
-	int TransformNepers_Offs  = TransformBuffer_Offs + TransformBuffer_Size;
-	int TransformFwdLap_Offs  = TransformNepers_Offs + TransformNepers_Size;
-	int TransformTemp_Offs    = TransformFwdLap_Offs + TransformFwdLap_Size;
-	int TransformIndex_Offs   = TransformTemp_Offs   + TransformTemp_Size;
-	int AllocSize             = TransformIndex_Offs  + TransformIndex_Size;
+	int TransformNepers_Offs  = TransformBuffer_Offs  + TransformBuffer_Size;
+	int TransformFwdLap_Offs  = TransformNepers_Offs  + TransformNepers_Size;
+	int TransformTemp_Offs    = TransformFwdLap_Offs  + TransformFwdLap_Size;
+	int TransformIndex_Offs   = TransformTemp_Offs    + TransformTemp_Size;
+	int LastSampleEnergy_Offs = TransformIndex_Offs   + TransformIndex_Size;
+	int AllocSize             = LastSampleEnergy_Offs + LastSampleEnergy_Size;
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
 	if(!Buf) return -1;
 
-	//! Set initial state
-	State->LastBlockEnergy  = 1.0e-30f;
-	State->LastSampleEnergy = 0.0f;
-
 	//! Initialize pointers
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
-	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
-	State->TransformNepers = (float*)(Buf + TransformNepers_Offs);
-	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
-	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
-	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
+	State->TransformBuffer  = (float*)(Buf + TransformBuffer_Offs);
+	State->TransformNepers  = (float*)(Buf + TransformNepers_Offs);
+	State->TransformFwdLap  = (float*)(Buf + TransformFwdLap_Offs);
+	State->TransformTemp    = (float*)(Buf + TransformTemp_Offs);
+	State->TransformIndex   = (int  *)(Buf + TransformIndex_Offs);
+	State->LastSampleEnergy = (float*)(Buf + LastSampleEnergy_Offs);
 
-	//! Clear the lapping buffer
+	//! Set initial state
 	int i;
+	State->LastBlockEnergy  = 1.0e-30f;
+	for(i=0;i<nChan;i++) State->LastSampleEnergy[i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
 
 	//! Success
