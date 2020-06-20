@@ -112,15 +112,65 @@ void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTm
 	if(BufMDST) {
 		//! Use aliased data to compute the DST via
 		//! a DCT using trigonometric relations
-		for(i=0;i<N;i+=2) {
-			BufMDST[i  ] =  BufOut[i  ];
-			BufMDST[i+1] = -BufOut[i+1];
+		{
+#if defined(__AVX__)
+			__m256 v, NegMask = _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f);
+			for(i=0;i<N;i+=8) {
+				v = _mm256_load_ps(BufOut + i);
+				v = _mm256_xor_ps(v, NegMask);
+				_mm256_store_ps(BufMDST + i, v);
+			}
+#elif defined(__SSE__)
+			__m128 v, NegMask = _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f);
+			for(i=0;i<N;i+=4) {
+				v = _mm_load_ps(BufOut + i);
+				v = _mm_xor_ps(v, NegMask);
+				_mm_store_ps(BufMDST + i, v);
+			}
+#else
+			for(i=0;i<N;i+=2) {
+				BufMDST[i  ] =  BufOut[i  ];
+				BufMDST[i+1] = -BufOut[i+1];
+			}
+#endif
 		}
 		Fourier_DCT4(BufMDST, BufTmp, N);
-		for(i=0;i<N/2;i++) {
-			float t = BufMDST[i];
-			BufMDST[i]     = BufMDST[N-1-i];
-			BufMDST[N-1-i] = t;
+		{
+			float *BufLo = BufMDST;
+			float *BufHi = BufMDST + N;
+#if defined(__AVX_)
+			__m256 v0, v1;
+			for(i=0;i<N/2;i+=8) {
+				BufHi -= 8;
+				v0 = _mm256_load_ps(BufLo);
+				v1 = _mm256_load_ps(BufHi);
+				v0 = _mm256_shuffle_ps(v0, v0, 0x1B);
+				v1 = _mm256_shuffle_ps(v1, v1, 0x1B);
+				v0 = _mm256_permute2f128_ps(v0, v0, 0x01);
+				v1 = _mm256_permute2f128_ps(v1, v1, 0x01);
+				_mm256_store_ps(BufHi, v0);
+				_mm256_store_ps(BufLo, v1);
+				BufLo += 8;
+			}
+#elif defined(__SSE__)
+			__m128 v0, v1;
+			for(i=0;i<N/2;i+=4) {
+				BufHi -= 4;
+				v0 = _mm_load_ps(BufLo);
+				v1 = _mm_load_ps(BufHi);
+				_mm_storer_ps(BufHi, v0);
+				_mm_storer_ps(BufLo, v1);
+				BufLo += 4;
+			}
+#else
+			for(i=0;i<N/2;i++) {
+				BufHi--;
+				float t = *BufLo;
+				*BufLo = *BufHi;
+				*BufHi = t;
+				BufLo++;
+			}
+#endif
 		}
 	}
 	Fourier_DCT4(BufOut, BufTmp, N);
