@@ -39,12 +39,12 @@ struct ULC_EncoderState_t {
 	//! Buffer memory layout:
 	//!  Data:
 	//!   char  _Padding[];
-	//!   float TransformBuffer [nChan*BlockSize]
-	//!   float TransformNepers [nChan*BlockSize]
-	//!   float TransformFwdLap [nChan*BlockSize/2]
-	//!   float TransformTemp   [MAX(2,nChan)*BlockSize]
-	//!   int   TransformIndex  [nChan*BlockSize]
-	//!   float LastSampleEnergy[nChan]
+	//!   float TransformBuffer[nChan*BlockSize]
+	//!   float TransformNepers[nChan*BlockSize]
+	//!   float TransformFwdLap[nChan*BlockSize/2]
+	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
+	//!   int   TransformIndex [nChan*BlockSize]
+	//!   float LastBlockSample[nChan]
 	//! BufferData contains the original pointer returned by malloc()
 	void  *BufferData;
 	float *TransformBuffer;
@@ -52,7 +52,7 @@ struct ULC_EncoderState_t {
 	float *TransformFwdLap;
 	float *TransformTemp;
 	int   *TransformIndex;
-	float *LastSampleEnergy;
+	float *LastBlockSample;
 	float  LastBlockEnergy;
 };
 
