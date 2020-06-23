@@ -82,12 +82,7 @@ static inline int Block_Transform_GetLogOverlapScale(
 ) {
 	int n, Chan;
 
-	//! Get the weighted step energy, modulating for fade-in
-	//! and fade-out. As far as MDCT is concerned, this current
-	//! block will be fading in, and so the important transient
-	//! energy is towards the end of the block. The previous
-	//! block is simultaneously fading out, so the transient
-	//! energy to analyze against should use a reversed window.
+	//! Get the weighted step energy, accounting for overlap
 	//! NOTE: There is no point in normalizing, as these energy
 	//! values will be divided by the previous block's, and as
 	//! they have the same normalization factor, it cancels out.
@@ -95,39 +90,34 @@ static inline int Block_Transform_GetLogOverlapScale(
 	float EnergyEdge   = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 		float SampleLast = LastBlockSample[Chan];
-		const float *Src  = Data + Chan*BlockSize;
-		const float *WinS = Fourier_SinTableN(BlockSize);
-		const float *WinC = WinS + BlockSize;
-		for(n=0;n<BlockSize;n++) {
-			//! NOTE: From testing, it appears that taking the difference
-			//! between non-linearly-mapped samples works much better than
-			//! using the samples directly.
-			//! NOTE: It is important to remove the sign from the input
-			//! values prior to doing anything with them. As an extreme
-			//! example of what happens when this is not done: Consider a
-			//! sine wave at Nyquist frequency; this results in a very
-			//! large step energy accumulation that may cause selection of
-			//! a very narrow overlap, despite audible distortion.
-			float v = ABS(Src[n]); v *= SQR(v);
+		const float *Src = Data + Chan*BlockSize;
+		for(n=0;n<BlockSize/2;n++) {
+			float v = Src[n];
 			float d = SQR(v - SampleLast);
-			float s = WinS[n];
-			float c = WinC[-1-n];
-			EnergyCenter += s*d;
-			EnergyEdge   += c*d;
+			EnergyEdge += d;
+			SampleLast  = v;
+		}
+		for(;n<BlockSize;n++) {
+			float v = Src[n];
+			float d = SQR(v - SampleLast);
+			EnergyCenter += d;
 			SampleLast    = v;
 		}
 		LastBlockSample[Chan] = SampleLast;
+		EnergyEdge   += EnergyCenter;
+		EnergyCenter *= 2.0f; //! Ideally, we would sum the left half of the next block here, but we don't have it yet
 	}
 
 	//! Relate the average step size of this block to that of the last block
 	int OverlapScale; {
 		float Ra = EnergyCenter;
 		float Rb = *LastBlockEnergy;
-		if(Ra >= Rb*2.0f) { //! Ra/Rb==2.0 is the first ratio to result in OverlapScale > 0
-			if(Ra*0x1.0p-29f < Rb) { //! Ra/Rb >= 2^29 gives the upper limit of OverlapScale == 15
+		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in OverlapScale > 0
+			if(Ra*0x1.6A09E6p-15f < Rb) { //! Ra/Rb >= 2^14.5 gives the upper limit of OverlapScale == 15
 				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+				//! NOTE: It works better to use the squared energy ratio here.
 				float r = Ra / Rb;
-				OverlapScale = (int)(0x1.715476p0f*0.5f*logf(r) + 0.5f);
+				OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
 			} else OverlapScale = 0xF;
 		} else OverlapScale = 0;
 		*LastBlockEnergy = EnergyEdge;
