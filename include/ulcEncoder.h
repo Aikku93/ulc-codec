@@ -17,7 +17,10 @@
 
 //! Used in Neper-scale coefficients
 //! dB calculations would add computational cost for the exact same results,
-//! as logf() is faster than log2f() which is faster than log10f()... somehow
+//! as logf() is faster than log2f() which is faster than log10f()... somehow.
+//! This value is set to 0.0, as the only times that out-of-range coefficients
+//! are used are during MDCT/MDST (and psychoacoustics) calculations, where
+//! these log-domain values are used as part of a weighted geometric mean
 #define ULC_COEF_NEPER_OUT_OF_RANGE 0.0f
 
 /**************************************/
