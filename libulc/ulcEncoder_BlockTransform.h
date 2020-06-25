@@ -147,11 +147,13 @@ static inline void Block_Transform_ScaleAndToNepers(float *Coef, float *CoefNp, 
 }
 static inline void Block_Transform_ComputePowerSpectrum(float *Power, float *PowerNp, const float *Re, const float *Im, int N) {
 	int i;
-	float Scale2 = SQR(2.0f/N);
 	for(i=0;i<N;i++) {
-		float v = Scale2 * (SQR(Re[i]) + SQR(Im[i]));
+		//! `v` should technically be scaled by (2/N)^2, but this power
+		//! spectrum is only used for psychoacoustic analysis on this
+		//! buffer /only/, and so scaling really doesn't matter here
+		float v = SQR(Re[i]) + SQR(Im[i]);
 		Power  [i] = v;
-		PowerNp[i] = (ABS(v) < SQR(0.5f*ULC_COEF_EPS)) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
+		PowerNp[i] = (ABS(v) < 0x1.0p-126) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v)); //! Do not allow subnormals
 	}
 }
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
