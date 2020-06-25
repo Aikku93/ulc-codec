@@ -65,12 +65,17 @@ static inline void Block_Transform_WriteSortValues(
 /**************************************/
 
 //! Get optimal log base-2 overlap scaling for transients
-//! The idea is that with reduced overlap, transients need fewer
-//! coefficients to sound correct (at the cost of distortion)
-//! Transient detection is loosely based on ideas found in:
+//! The idea is that with reduced overlap, some transients
+//! (especially 'pops') come for 'free' and additionally
+//! reduce the amount of spectral distortion that may affect
+//! psychoacoustics calculations.
+//! The original transient detection idea was based off this paper:
 //!  "Codierung von Audiosignalen mit uberlappender Transformation und adaptiven Fensterfunktionen"
 //!  (Coding of Audio Signals with Overlapping Block Transform and Adaptive Window Functions)
 //!  DOI: 10.1515/FREQ.1989.43.9.252
+//! However, it has been modified so extensively that the only
+//! takeaway from the paper was the idea of dividing the
+//! averaged high-passed energy as a measure of transientness.
 static inline int Block_Transform_GetLogOverlapScale(
 	const float *Data,
 	float *LastBlockEnergy,
@@ -86,32 +91,50 @@ static inline int Block_Transform_GetLogOverlapScale(
 	//! NOTE: There is no point in normalizing, as these energy
 	//! values will be divided by the previous block's, and as
 	//! they have the same normalization factor, it cancels out.
-	float EnergyCenter = 0.0f;
-	float EnergyEdge   = 0.0f;
-	for(Chan=0;Chan<nChan;Chan++) {
-		float SampleLast = LastBlockSample[Chan];
-		const float *Src = Data + Chan*BlockSize;
-		for(n=0;n<BlockSize/2;n++) {
-			float v = Src[n];
-			float d = SQR(v - SampleLast);
-			EnergyEdge += d;
-			SampleLast  = v;
+	float EnergyLapped;
+	float EnergyCenter; {
+		//! Get step energy for this block (first and second half)
+		float aIn = 0.0f, aOut = 0.0f;
+		float bIn = 0.0f, bOut = 0.0f;
+		const float *Sin = Fourier_SinTableN(BlockSize/2);
+		const float *Cos = Sin + BlockSize/2; //! Accessed backwards
+		for(Chan=0;Chan<nChan;Chan++) {
+			const float *Src = Data + Chan*BlockSize;
+			float v, d, SampleLast = LastBlockSample[Chan];
+			for(n=0;n<BlockSize/2;n++) {
+				v = Src[n];
+				d = v - SampleLast;
+				aIn  += SQR(d*Sin[n]);
+				aOut += SQR(d*Cos[-1-n]);
+				SampleLast = v;
+			}
+			for(;n<BlockSize;n++) {
+				v = Src[n];
+				d = v - SampleLast;
+				bIn  += SQR(d*Sin[n]);
+				bOut += SQR(d*Cos[-1-n]);
+				SampleLast = v;
+			}
+			LastBlockSample[Chan] = SampleLast;
 		}
-		for(;n<BlockSize;n++) {
-			float v = Src[n];
-			float d = SQR(v - SampleLast);
-			EnergyCenter += d;
-			SampleLast    = v;
-		}
-		LastBlockSample[Chan] = SampleLast;
-		EnergyEdge   += EnergyCenter;
-		EnergyCenter *= 2.0f; //! Ideally, we would sum the left half of the next block here, but we don't have it yet
+
+		//! EnergyLapped contains the contributions of the second half of
+		//! the last block PLUS the first half of this block, with a peak
+		//! at the midpoint. EnergyCenter contains the contributions of
+		//! both halves of this block, with a peak at the midpoint. This
+		//! allows better detection of transients whilst preserving (as
+		//! much as we can) smoothness in the pre-transient section; any
+		//! block distortion before the transient tends to result in very
+		//! audible artifacts, so these must be minimized.
+		EnergyLapped = *LastBlockEnergy + aOut;
+		EnergyCenter = aIn + bOut;
+		*LastBlockEnergy = bIn;
 	}
 
-	//! Relate the average step size of this block to that of the last block
+	//! Relate the average step energy in this block to that of the last block
 	int OverlapScale; {
 		float Ra = EnergyCenter;
-		float Rb = *LastBlockEnergy;
+		float Rb = EnergyLapped;
 		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in OverlapScale > 0
 			if(Ra*0x1.6A09E6p-15f < Rb) { //! Ra/Rb >= 2^14.5 gives the upper limit of OverlapScale == 15
 				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
@@ -120,7 +143,6 @@ static inline int Block_Transform_GetLogOverlapScale(
 				OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
 			} else OverlapScale = 0xF;
 		} else OverlapScale = 0;
-		*LastBlockEnergy = EnergyEdge;
 	}
 
 	//! Clip to the minimum/maximum allowed overlap
