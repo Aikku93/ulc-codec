@@ -13,6 +13,20 @@
 #include "Fourier.h"
 /**************************************/
 
+//! Implementation notes for MDCT:
+//!  MDCT is implemented via DCT-IV, which can be thought of
+//!  as splitting the MDCT inputs into four regions:
+//!   {A,B,C,D}
+//!  and then taking the DCT-IV of:
+//!   {C_r + D, B_r - A}
+//!  During non-overlap regions, A and D become 0.
+//!  As an optimization, the `C_r + D` region is written to
+//!  in a backwards direction, leading to `D_r + C`; this
+//!  leads to reuse of the trigonometric constants, avoiding
+//!  reading the array of sin/cos twice per call.
+//!  Most of these details got lost in aggressive optimization
+//!  and the code is mostly unreadable at this stage, but this
+//!  was the original starting point.
 void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST) {
 	int i;
 	const float *WinS = Fourier_SinTableN(Overlap);
