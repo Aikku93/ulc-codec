@@ -12,6 +12,10 @@
 //! 1 == Use psychoacoustic model
 #define ULC_USE_PSYCHOACOUSTICS 1
 
+//! 0 == No window switching
+//! 1 == Use window switching
+#define ULC_USE_WINDOW_SWITCHING 1
+
 //! Lowest possible coefficient value
 #define ULC_COEF_EPS (0x1.0p-31f) //! 4+0xE+0xC = Maximum extended-precision quantizer
 
@@ -36,7 +40,8 @@ struct ULC_EncoderState_t {
 	int BlockSize;   //! Transform block size
 	int MinOverlap;  //! Block overlap (minimum)
 	int MaxOverlap;  //! Block overlap (maximum)
-	int ThisOverlap; //! Overlap scale for currently-processed block (BlockSize * 2^-ThisOverlap)
+	int ThisOverlap; //! Overlap scale for this block (BlockSize * 2^-ThisOverlap)
+	int NextOverlap; //! Overlap scale for next block (BlockSize * 2^-NextOverlap)
 
 	//! Encoding state
 	//! Buffer memory layout:
