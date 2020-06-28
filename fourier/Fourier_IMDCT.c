@@ -13,6 +13,22 @@
 #include "Fourier.h"
 /**************************************/
 
+//! Implementation notes for IMDCT:
+//!  IMDCT is implemented via DCT-IV, which can be thought of
+//!  as splitting the MDCT inputs into four regions:
+//!   {A,B,C,D}
+//!  and then taking the DCT-IV of:
+//!   {C_r + D, B_r - A}
+//!  On IMDCT, we get back these latter values following an
+//!  inverse DCT-IV (which is itself a DCT-IV due to its
+//!  involutive nature).
+//!  From a prior call, we keep C_r+D buffered, which becomes
+//!  A_r+B after accounting for movement to the next block.
+//!  We can then state:
+//!   Reverse(A_r + B) -        (B_r - A) = (A + B_r) - (B_r - A) = 2A
+//!          (A_r + B) + Reverse(B_r - A) = (A_r + B) + (B - A_r) = 2B
+//!           ^ Buffered         ^ New input data
+//!  Allowing us to reconstruct the inputs A,B.
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap) {
 	int i;
 	const float *WinS = Fourier_SinTableN(Overlap);
