@@ -82,6 +82,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 
 	//! Set initial state
 	int i;
+	State->NextOverlap     = 0;
 	State->LastBlockEnergy = 0.0f;
 	for(i=0;i<nChan;i++) State->LastBlockSample[i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
