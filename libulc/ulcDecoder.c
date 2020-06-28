@@ -31,7 +31,6 @@
 int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	//! Clear anything that is needed for EncoderState_Destroy()
 	State->BufferData  = NULL;
-	State->NextOverlap = 0;
 
 	//! Verify parameters
 	int nChan     = State->nChan;
@@ -96,6 +95,14 @@ static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, int *Size)
 	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,0h..Ch: Extended-precision quantizer
 	return 1.0f / ((1u<<5) << qi);
 }
+static void DecodeBlock_BufferDeinterleave(float *Buf, float *Tmp, int BlockSize, int nSubBlocks) {
+	int n, SubBlock;
+	int SubBlockSize = BlockSize / nSubBlocks;
+	for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
+	for(SubBlock=0;SubBlock<nSubBlocks;SubBlock++) {
+		for(n=0;n<SubBlockSize;n++) Buf[SubBlock*SubBlockSize+n] = Tmp[n*nSubBlocks+SubBlock];
+	}
+}
 int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
@@ -109,8 +116,16 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 	//! Begin decoding
 	int Chan;
 	int Size = 0;
-	int BlockOverlap = State->NextOverlap;
-	State->NextOverlap = BlockSize >> (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+	int OverlapSize  = BlockSize;
+	int SubBlockSize = BlockSize;
+	int nSubBlocks   = 1; {
+		int OverlapScale = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
+		if(OverlapScale < 0) {
+			SubBlockSize >>= -OverlapScale;
+			nSubBlocks   <<= -OverlapScale;
+			OverlapSize    =  SubBlockSize;
+		} else OverlapSize >>= OverlapScale;
+	}
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Start decoding coefficients
 		int32_t v;
@@ -163,8 +178,51 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			}
 		}
 
-		//! Inverse transform block
-		Fourier_IMDCT(DstData + Chan*BlockSize, TransformBuffer, TransformInvLap[Chan], TransformTemp, BlockSize, BlockOverlap);
+		//! Long block?
+		      float *Dst = DstData + Chan*BlockSize;
+		const float *Src = TransformBuffer;
+		      float *Lap = TransformInvLap[Chan];
+		if(nSubBlocks == 1) {
+			Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+		} else {
+			//! Deinterleave coefficients
+			DecodeBlock_BufferDeinterleave(TransformBuffer, TransformTemp, BlockSize, nSubBlocks);
+
+			//! Output the non-overlap data we had from the previous block
+			int n;
+			for(n=0;n<(BlockSize-SubBlockSize)/2;n++) *Dst++ = Lap[BlockSize/2-1-n];
+
+			//! The lapping buffer is now primed for short transform blocks, so decode
+			//! half of the subblocks out to the stream, and the other half back to the
+			//! lapping buffer
+			float *DstLap = Lap + BlockSize/2;
+			float *LapTemp = TransformTemp + SubBlockSize;
+			for(n=0;n<nSubBlocks/2;n++) {
+				Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+				Dst += SubBlockSize;
+				Src += SubBlockSize;
+			}
+			{
+				//! We now append the first half of this middle block to the
+				//! end of the output block and begin writing back to the
+				//! lapping buffer
+				Fourier_IMDCT(LapTemp, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+				Src    += SubBlockSize;
+				int i;
+				for(i=0;i<SubBlockSize/2;i++) {
+					*Dst++ = LapTemp[i];
+					*--DstLap = LapTemp[i+SubBlockSize/2];
+				}
+			}
+			for(n++;n<nSubBlocks;n++) {
+				Fourier_IMDCT(LapTemp, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+				Src    += SubBlockSize;
+				int i;
+				for(i=0;i<SubBlockSize;i++) {
+					*--DstLap = LapTemp[i];
+				}
+			}
+		}
 	}
 	return Size;
 }
