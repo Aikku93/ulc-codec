@@ -16,8 +16,6 @@ struct ULC_DecoderState_t {
 	//! Global state
 	int nChan;        //! Channels in encoding scheme
 	int BlockSize;    //! Transform block size
-	int BlockOverlap; //! Block overlap (maximum)
-	int NextOverlap;  //! Overlap amount for next decoding block (BlockSize * 2^-NextOverlap)
 
 	//! Encoding state
 	//! Buffer memory layout:
