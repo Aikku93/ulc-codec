@@ -19,7 +19,7 @@
 //!   {A,B,C,D}
 //!  and then taking the DCT-IV of:
 //!   {C_r + D, B_r - A}
-//!  During non-overlap regions, A and D become 0.
+//!  During non-overlap regions, A,B scales by 0.0 and C,D by 1.0.
 //!  As an optimization, the `C_r + D` region is written to
 //!  in a backwards direction, leading to `D_r + C`; this
 //!  leads to reuse of the trigonometric constants, avoiding
@@ -27,6 +27,27 @@
 //!  Most of these details got lost in aggressive optimization
 //!  and the code is mostly unreadable at this stage, but this
 //!  was the original starting point.
+//! Pseudocode:
+//!  Version 1:
+//!    for(n=0;n<(N-Overlap)/2;n++) {
+//!      Buf[N/2-1-n] = New[n];
+//!      Buf[N/2+n]   = Old[N-1-n];
+//!    }
+//!    for(;n<N/2;n++) {
+//!      Buf[N/2-1-n] =  c*New[n] + s*New[N-1-n];
+//!      Buf[N/2+n]   = -s*Old[n] + c*Old[N-1-n];
+//!    }
+//!  Version 2 (half the memory usage for the lapping buffer):
+//!    for(n=0;n<(N-Overlap)/2;n++) {
+//!      Buf[N/2-1-n] = New[n];
+//!      Buf[N/2+n]   = Lap[n];
+//!      Lap[n]       = New[N-1-n];
+//!    }
+//!    for(;n<N/2;n++) {
+//!      Buf[N/2-1-n] =  c*New[n] + s*New[N-1-n];
+//!      Buf[N/2+n]   = Lap[n];
+//!      Lap[n]       = -s*New[n] + c*New[N-1-n];
+//!    }
 void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST) {
 	int i;
 	const float *WinS = Fourier_SinTableN(Overlap);
