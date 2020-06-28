@@ -93,11 +93,11 @@ static inline int Block_Transform_GetLogOverlapScale(
 	//! Get step energy for this block (first and second half)
 	float aIn = 0.0f, aOut = 0.0f;
 	float bIn = 0.0f, bOut = 0.0f;
-	const float *Sin = Fourier_SinTableN(BlockSize/2);
-	const float *Cos = Sin + BlockSize/2; //! Accessed backwards
 	for(Chan=0;Chan<nChan;Chan++) {
-		const float *Src = Data + Chan*BlockSize;
+		const float *Sin, *Cos, *Src = Data + Chan*BlockSize;
 		float v, d, SampleLast = LastBlockSample[Chan];
+		Sin = Fourier_SinTableN(BlockSize/2);
+		Cos = Sin + BlockSize/2; //! Accessed backwards
 		for(n=0;n<BlockSize/2;n++) {
 			v = Src[n];
 			d = v - SampleLast;
@@ -105,6 +105,8 @@ static inline int Block_Transform_GetLogOverlapScale(
 			aOut += SQR(d*Cos[-1-n]);
 			SampleLast = v;
 		}
+		Sin = Fourier_SinTableN(BlockSize);
+		Cos = Sin + BlockSize; //! Accessed backwards
 		for(n=0;n<BlockSize/2;n++) {
 			v = Src[BlockSize/2+n];
 			d = v - SampleLast;
@@ -127,8 +129,8 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! much as we can) smoothness in the pre-transient section; any
 		//! block distortion before the transient tends to result in very
 		//! audible artifacts, so these must be minimized.
-		float Ra = 2.0f*aIn + bOut;
-		float Rb = *LastBlockEnergy + 2.0f*aOut;
+		float Ra = aIn + bOut;
+		float Rb = *LastBlockEnergy + aOut;
 		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in a ratio > 0
 			if(Ra*0x1.6A09E6p-7f < Rb) { //! Ra/Rb >= 2^6.5 gives the upper limit ratio of 7.0
 				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
