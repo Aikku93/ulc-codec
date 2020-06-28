@@ -76,6 +76,8 @@ static inline void Block_Transform_WriteSortValues(
 //! However, it has been modified so extensively that the only
 //! takeaway from the paper was the idea of dividing the
 //! averaged high-passed energy as a measure of transientness.
+//! NOTE: When window switching is used, the function will return
+//! a negative value corresponding to the transform size decimation.
 static inline int Block_Transform_GetLogOverlapScale(
 	const float *Data,
 	float *LastBlockEnergy,
@@ -86,38 +88,37 @@ static inline int Block_Transform_GetLogOverlapScale(
 	int nChan
 ) {
 	int n, Chan;
+	int OverlapScale = 0; //! Default to long block
 
-	//! Get the weighted step energy, accounting for overlap
-	//! NOTE: There is no point in normalizing, as these energy
-	//! values will be divided by the previous block's, and as
-	//! they have the same normalization factor, it cancels out.
-	float EnergyLapped;
-	float EnergyCenter; {
-		//! Get step energy for this block (first and second half)
-		float aIn = 0.0f, aOut = 0.0f;
-		float bIn = 0.0f, bOut = 0.0f;
-		const float *Sin = Fourier_SinTableN(BlockSize/2);
-		const float *Cos = Sin + BlockSize/2; //! Accessed backwards
-		for(Chan=0;Chan<nChan;Chan++) {
-			const float *Src = Data + Chan*BlockSize;
-			float v, d, SampleLast = LastBlockSample[Chan];
-			for(n=0;n<BlockSize/2;n++) {
-				v = Src[n];
-				d = v - SampleLast;
-				aIn  += SQR(d*Sin[n]);
-				aOut += SQR(d*Cos[-1-n]);
-				SampleLast = v;
-			}
-			for(;n<BlockSize;n++) {
-				v = Src[n];
-				d = v - SampleLast;
-				bIn  += SQR(d*Sin[n]);
-				bOut += SQR(d*Cos[-1-n]);
-				SampleLast = v;
-			}
-			LastBlockSample[Chan] = SampleLast;
+	//! Get step energy for this block (first and second half)
+	float aIn = 0.0f, aOut = 0.0f;
+	float bIn = 0.0f, bOut = 0.0f;
+	const float *Sin = Fourier_SinTableN(BlockSize/2);
+	const float *Cos = Sin + BlockSize/2; //! Accessed backwards
+	for(Chan=0;Chan<nChan;Chan++) {
+		const float *Src = Data + Chan*BlockSize;
+		float v, d, SampleLast = LastBlockSample[Chan];
+		for(n=0;n<BlockSize/2;n++) {
+			v = Src[n];
+			d = v - SampleLast;
+			aIn  += SQR(d*Sin[n]);
+			aOut += SQR(d*Cos[-1-n]);
+			SampleLast = v;
 		}
+		for(n=0;n<BlockSize/2;n++) {
+			v = Src[BlockSize/2+n];
+			d = v - SampleLast;
+			bIn  += SQR(d*Sin[n]);
+			bOut += SQR(d*Cos[-1-n]);
+			SampleLast = v;
+		}
+		LastBlockSample[Chan] = SampleLast;
+	}
 
+	//! Overlap switching
+	float OverlapSwitchRatio = 1.0f;
+	if(OverlapScale == 0) {
+		//! Relate the average step energy in this block to that of the last block
 		//! EnergyLapped contains the contributions of the second half of
 		//! the last block PLUS the first half of this block, with a peak
 		//! at the midpoint. EnergyCenter contains the contributions of
@@ -126,28 +127,44 @@ static inline int Block_Transform_GetLogOverlapScale(
 		//! much as we can) smoothness in the pre-transient section; any
 		//! block distortion before the transient tends to result in very
 		//! audible artifacts, so these must be minimized.
-		EnergyLapped = *LastBlockEnergy + aOut;
-		EnergyCenter = aIn + bOut;
-		*LastBlockEnergy = bIn;
-	}
-
-	//! Relate the average step energy in this block to that of the last block
-	int OverlapScale; {
-		float Ra = EnergyCenter;
-		float Rb = EnergyLapped;
-		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in OverlapScale > 0
-			if(Ra*0x1.6A09E6p-15f < Rb) { //! Ra/Rb >= 2^14.5 gives the upper limit of OverlapScale == 15
+		float Ra = 2.0f*aIn + bOut;
+		float Rb = *LastBlockEnergy + 2.0f*aOut;
+		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in a ratio > 0
+			if(Ra*0x1.6A09E6p-7f < Rb) { //! Ra/Rb >= 2^6.5 gives the upper limit ratio of 7.0
 				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
 				//! NOTE: It works better to use the squared energy ratio here.
-				float r = Ra / Rb;
-				OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
+				OverlapSwitchRatio = Ra / Rb;
+				OverlapScale = (int)(0x1.715476p0f*logf(OverlapSwitchRatio) + 0.5f);
 			} else OverlapScale = 0xF;
-		} else OverlapScale = 0;
+			while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
+			while((BlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
+		}
 	}
 
-	//! Clip to the minimum/maximum allowed overlap
-	while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
-	while((BlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
+	//! Window switching (limited to a minimum of 128-sample subblocks)
+	if(ULC_USE_WINDOW_SWITCHING && BlockSize > 128) {
+#if 0 //! The window switching criteria is too poor to be usable at present
+		//! Relate the average step energy in this block to that of the last block,
+		//! but unlike the below overlap switching, use the energy that is present
+		//! in the whole block instead of just the transition region
+		float Ra = aIn + 2.0f*aOut;
+		float Rb = (2.0f*(*LastBlockEnergy) + aIn) * OverlapSwitchRatio;
+		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in a ratio > 0
+			int Scale;
+			if(Ra*0x1.6A09E6p-7f < Rb) { //! Ra/Rb >= 2^6.5 gives the upper limit ratio of 7.0
+				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+				//! NOTE: As above, using the squared ratio works better.
+				float r = Ra / Rb;
+				Scale = (int)(0x1.715476p0f*logf(r) + 0.5f);
+			} else Scale = 7;
+			while((BlockSize >> Scale) < 128) Scale--;
+			OverlapScale = -Scale;
+		}
+#endif
+	}
+
+	//! Save state for next block and return overlap/window switching
+	*LastBlockEnergy = bIn;
 	return OverlapScale;
 }
 
@@ -175,15 +192,24 @@ static inline void Block_Transform_ComputePowerSpectrum(float *Power, float *Pow
 		//! buffer /only/, and so scaling really doesn't matter here
 		float v = SQR(Re[i]) + SQR(Im[i]);
 		Power  [i] = v;
-		PowerNp[i] = (ABS(v) < 0x1.0p-126) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v)); //! Do not allow subnormals
+		PowerNp[i] = (ABS(v) < 0x1.0p-126f) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v)); //! Do not allow subnormals
+	}
+}
+static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int nSubBlocks) {
+	int n, SubBlock;
+	int SubBlockSize = BlockSize / nSubBlocks;
+	for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
+	for(SubBlock=0;SubBlock<nSubBlocks;SubBlock++) {
+		for(n=0;n<SubBlockSize;n++) Buf[n*nSubBlocks+SubBlock] = Tmp[SubBlock*SubBlockSize+n];
 	}
 }
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 
-	//! Get the overlap scaling for this block
-	int OverlapScale = State->ThisOverlap = Block_Transform_GetLogOverlapScale(
+	//! Get the overlap scaling for the next block's transition
+	int ThisOverlapScale = State->ThisOverlap = State->NextOverlap;
+	int NextOverlapScale = State->NextOverlap = Block_Transform_GetLogOverlapScale(
 		Data,
 		&State->LastBlockEnergy,
 		State->LastBlockSample,
@@ -192,12 +218,14 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		State->MaxOverlap,
 		nChan
 	);
-
+#if 0 //! Testing
+	if(ThisOverlapScale < NextOverlapScale) NextOverlapScale = State->NextOverlap = ThisOverlapScale;
+#endif
 	//! Transform channels and insert keys for each codeable coefficient
 	//! It's not /strictly/ required to calculate nNzCoef, but it can
 	//! speed things up in the rate-control step
 	int nNzCoef = 0; {
-		int Chan;
+		int n, Chan, SubBlock;
 		float  AnalysisPowerNp = 0.0f; PowerDecay = logf(PowerDecay);
 		float *BufferTransform = State->TransformBuffer;
 		float *BufferNepers    = State->TransformNepers;
@@ -206,37 +234,124 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		float *BufferTemp      = State->TransformTemp;
 		float *BufferEnergy    = BufferTemp;
 		float *BufferEnergyNp  = BufferTemp + BlockSize;
+		int    OverlapSize     = BlockSize;
+		int    SubBlockSize    = BlockSize;
+		int    nSubBlocks      = 1;
+
+		//! Adjust for window switching (or overlap switching)
+		if(ThisOverlapScale < 0) {
+			SubBlockSize >>= -ThisOverlapScale;
+			nSubBlocks   <<= -ThisOverlapScale;
+			OverlapSize    =  SubBlockSize;
+		} else OverlapSize >>= ABS(NextOverlapScale);
+
+		//! Transform the input data
 		for(Chan=0;Chan<nChan;Chan++) {
-			//! Do transform processing and write the sort values
-			Fourier_MDCT(
-				BufferTransform,
-				Data,
-				BufferFwdLap,
-				BufferTemp,
-				BlockSize,
-				BlockSize >> OverlapScale,
-				BufferNepers //! MDST coefficients stored here temporarily
-			);
-			Block_Transform_ComputePowerSpectrum(BufferEnergy, BufferEnergyNp, BufferTransform, BufferNepers, BlockSize);
-			Block_Transform_ScaleAndToNepers(BufferTransform, BufferNepers, BlockSize);
-			Block_Transform_WriteSortValues(
-				BufferIndex,
-				BufferEnergy,
-				BufferEnergyNp,
-				BufferNepers,
-				&nNzCoef,
-				BlockSize,
-				AnalysisPowerNp,
-				State->RateHz * 0.5f
-			);
+			//! Long block?
+			if(nSubBlocks == 1) {
+				Fourier_MDCT(
+					BufferTransform,
+					Data,
+					BufferFwdLap,
+					BufferTemp,
+					SubBlockSize,
+					OverlapSize,
+					BufferNepers //! MDST coefficients stored here temporarily
+				);
+			} else {
+				//! Transform half the subblocks from the lapping buffer
+				//! and the other half from the first half of this block
+				float *DataTemp = BufferTemp + SubBlockSize;
+				float *LapBuf = BufferFwdLap + (BlockSize-SubBlockSize)/2;
+				for(SubBlock=0;SubBlock<nSubBlocks/2-1;SubBlock++) {
+					for(n=0;n<SubBlockSize;n++) DataTemp[n] = *--LapBuf;
+					Fourier_MDCT(
+						BufferTransform,
+						DataTemp,
+						BufferFwdLap + (BlockSize-SubBlockSize)/2,
+						BufferTemp,
+						SubBlockSize,
+						OverlapSize,
+						BufferNepers //! MDST coefficients stored here temporarily
+					);
+					BufferTransform += SubBlockSize;
+					BufferNepers    += SubBlockSize;
+				}
+				{
+					for(n=0;n<SubBlockSize/2;n++) {
+						DataTemp[n] = *--LapBuf;
+						DataTemp[SubBlockSize/2+n] = Data[n];
+					}
+					Fourier_MDCT(
+						BufferTransform,
+						DataTemp,
+						BufferFwdLap + (BlockSize-SubBlockSize)/2,
+						BufferTemp,
+						SubBlockSize,
+						OverlapSize,
+						BufferNepers //! MDST coefficients stored here temporarily
+					);
+					BufferTransform += SubBlockSize;
+					BufferNepers    += SubBlockSize;
+				}
+				for(SubBlock++;SubBlock<nSubBlocks;SubBlock++) {
+					Fourier_MDCT(
+						BufferTransform,
+						Data + SubBlock*SubBlockSize + SubBlockSize/2 - BlockSize/2,
+						BufferFwdLap + (BlockSize-SubBlockSize)/2,
+						BufferTemp,
+						SubBlockSize,
+						OverlapSize,
+						BufferNepers //! MDST coefficients stored here temporarily
+					);
+					BufferTransform += SubBlockSize;
+					BufferNepers    += SubBlockSize;
+				}
+				BufferTransform -= BlockSize;
+				BufferNepers    -= BlockSize;
+
+				//! Refill the lapping buffer with samples from this block
+				for(n=0;n<(BlockSize-SubBlockSize)/2;n++) BufferFwdLap[n] = Data[BlockSize-1-n];
+			}
+
+			//! Perform analysis of the subblocks
+			for(SubBlock=0;SubBlock<nSubBlocks;SubBlock++) {
+				Block_Transform_ComputePowerSpectrum(BufferEnergy, BufferEnergyNp, BufferTransform, BufferNepers, SubBlockSize);
+				Block_Transform_ScaleAndToNepers(BufferTransform, BufferNepers, SubBlockSize);
+				Block_Transform_WriteSortValues(
+					BufferIndex,
+					BufferEnergy,
+					BufferEnergyNp,
+					BufferNepers,
+					&nNzCoef,
+					SubBlockSize,
+					AnalysisPowerNp,
+					State->RateHz * 0.5f
+				);
+
+				//! Move to the next subblock
+				BufferTransform += SubBlockSize;
+				BufferNepers    += SubBlockSize;
+				BufferIndex     += SubBlockSize;
+			}
 
 			//! Move to the next channel
 			Data            += BlockSize;
+			BufferFwdLap    += BlockSize/2u;
+			AnalysisPowerNp += PowerDecay;
+		}
+
+		//! Interleave the transform data for coding
+		BufferTransform = State->TransformBuffer;
+		BufferNepers    = State->TransformNepers;
+		BufferIndex     = (float*)State->TransformIndex;
+		if(nSubBlocks > 1) for(Chan=0;Chan<nChan;Chan++) {
+			Block_Transform_BufferInterleave(BufferTransform, BufferTemp, BlockSize, nSubBlocks);
+			Block_Transform_BufferInterleave(BufferNepers,    BufferTemp, BlockSize, nSubBlocks);
+			Block_Transform_BufferInterleave(BufferIndex,     BufferTemp, BlockSize, nSubBlocks);
 			BufferTransform += BlockSize;
 			BufferNepers    += BlockSize;
 			BufferIndex     += BlockSize;
-			BufferFwdLap    += BlockSize/2u;
-			AnalysisPowerNp += PowerDecay;
 		}
 	}
 
