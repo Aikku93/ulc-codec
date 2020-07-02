@@ -35,6 +35,7 @@ static inline void Block_Transform_WriteSortValues(
 ) {
 	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
+	float Gamma = logf(2*BlockSize); //! 0.5 * Log2[2*BlockSize]
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize, NyquistHz);
 #else
@@ -45,11 +46,9 @@ static inline void Block_Transform_WriteSortValues(
 		//! Inside the codeable range?
 		float ValNp = CoefNp[Band];
 		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
-			//! Convert to the energy domain
-			ValNp *= 2.0f;
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
-			ValNp += Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
+			ValNp += Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize, Gamma);
 #else
 			//! Not so much a psychoacoustic optimization as an MDCT
 			//! energy correction factor
@@ -78,6 +77,17 @@ static inline void Block_Transform_WriteSortValues(
 //! averaged high-passed energy as a measure of transientness.
 //! NOTE: When window switching is used, the function will return
 //! a negative value corresponding to the transform size decimation.
+static inline float Block_Transform_GetLogOverlapScale_LogRatioFromValues(float a, float b, float *Ratio) {
+	//! a/b==Sqrt[2] is the first ratio to result in a ratio > 0
+	if(a*0x1.6A09E6p-1f >= b) {
+		//! a/b >= 2^6.5 gives the upper limit ratio of 7.0
+		if(a*0x1.6A09E6p-7f < b) {
+			//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+			float r = a / b; if(Ratio) *Ratio = r;
+			return (int)(0x1.715476p0f*logf(r) + 0.5f);
+		} else return 7;
+	} else return 0;
+}
 static inline int Block_Transform_GetLogOverlapScale(
 	const float *Data,
 	float *LastBlockEnergy,
@@ -90,83 +100,65 @@ static inline int Block_Transform_GetLogOverlapScale(
 	int n, Chan;
 	int OverlapScale = 0; //! Default to long block
 
-	//! Get step energy for this block (first and second half)
-	float aIn = 0.0f, aOut = 0.0f;
-	float bIn = 0.0f, bOut = 0.0f;
+	//! Get step energy for this block
+	//! NOTE:
+	//!  StepMid contains the step energy concentrated at the overlap transition
+	//!  StepAll contains the step energy for the whole block
+	//! This is a weighted average, similar to a soft-max function
+	float StepMid = 0.0f, StepMidW = 0.0f;
+	float StepAll = 0.0f, StepAllW = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-		const float *Sin, *Cos, *Src = Data + Chan*BlockSize;
 		float v, d, SampleLast = LastBlockSample[Chan];
-		Sin = Fourier_SinTableN(BlockSize/2);
-		Cos = Sin + BlockSize/2; //! Accessed backwards
+		const float *Sin = Fourier_SinTableN(BlockSize/2);
+		const float *Src = Data + Chan*BlockSize;
 		for(n=0;n<BlockSize/2;n++) {
 			v = Src[n];
 			d = v - SampleLast;
-			aIn  += SQR(d*Sin[n]);
-			aOut += SQR(d*Cos[-1-n]);
+			float s = *Sin++; s *= s;
+			StepMid += s*SQR(d), StepMidW += s*ABS(d);
+			StepAll +=   SQR(d), StepAllW +=   ABS(d);
 			SampleLast = v;
 		}
-		Sin = Fourier_SinTableN(BlockSize);
-		Cos = Sin + BlockSize; //! Accessed backwards
-		for(n=0;n<BlockSize/2;n++) {
-			v = Src[BlockSize/2+n];
+		for(;n<BlockSize;n++) {
+			v = Src[n];
 			d = v - SampleLast;
-			bIn  += SQR(d*Sin[n]);
-			bOut += SQR(d*Cos[-1-n]);
+			float s = *--Sin; s *= s;
+			StepMid += s*SQR(d), StepMidW += s*ABS(d);
+			StepAll +=   SQR(d), StepAllW +=   ABS(d);
 			SampleLast = v;
 		}
 		LastBlockSample[Chan] = SampleLast;
 	}
+	if(StepMidW > 0.0f) StepMid /= StepMidW;
+	if(StepAllW > 0.0f) StepAll /= StepAllW;
 
 	//! Overlap switching
-	float OverlapSwitchRatio = 1.0f;
-	if(OverlapScale == 0) {
+	{
 		//! Relate the average step energy in this block to that of the last block
-		//! EnergyLapped contains the contributions of the second half of
-		//! the last block PLUS the first half of this block, with a peak
-		//! at the midpoint. EnergyCenter contains the contributions of
-		//! both halves of this block, with a peak at the midpoint. This
-		//! allows better detection of transients whilst preserving (as
-		//! much as we can) smoothness in the pre-transient section; any
-		//! block distortion before the transient tends to result in very
-		//! audible artifacts, so these must be minimized.
-		float Ra = aIn + bOut;
-		float Rb = *LastBlockEnergy + aOut;
-		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in a ratio > 0
-			if(Ra*0x1.6A09E6p-7f < Rb) { //! Ra/Rb >= 2^6.5 gives the upper limit ratio of 7.0
-				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-				//! NOTE: It works better to use the squared energy ratio here.
-				OverlapSwitchRatio = Ra / Rb;
-				OverlapScale = (int)(0x1.715476p0f*logf(OverlapSwitchRatio) + 0.5f);
-			} else OverlapScale = 0xF;
+		float Ra = StepMid;
+		float Rb = *LastBlockEnergy;
+		if(Ra < Rb && Ra < 0.1f*Rb) { float t = Ra; Ra = 0.1f*Rb, Rb = t; } //! Ultra-sharp decays are valid for overlap switching
+		Ra *= 2.0f; //! Emphasis
+		if(Ra > Rb) {
+			OverlapScale = Block_Transform_GetLogOverlapScale_LogRatioFromValues(Ra, Rb, NULL);
 			while((BlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 			while((BlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
 		}
 	}
 
 	//! Window switching (limited to a minimum of 128-sample subblocks)
-	if(ULC_USE_WINDOW_SWITCHING && BlockSize > 128) {
-#if 0 //! The window switching criteria is too poor to be usable at present
+	if(ULC_USE_WINDOW_SWITCHING && BlockSize > 128 && StepMid < StepAll) {
 		//! Relate the average step energy in this block to that of the last block,
-		//! but unlike the below overlap switching, use the energy that is present
+		//! but unlike the above overlap switching, use the energy that is present
 		//! in the whole block instead of just the transition region
-		float Ra = aIn + 2.0f*aOut;
-		float Rb = (2.0f*(*LastBlockEnergy) + aIn) * OverlapSwitchRatio;
-		if(Ra*0x1.6A09E6p-1f >= Rb) { //! Ra/Rb==Sqrt[2] is the first ratio to result in a ratio > 0
-			int Scale;
-			if(Ra*0x1.6A09E6p-7f < Rb) { //! Ra/Rb >= 2^6.5 gives the upper limit ratio of 7.0
-				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-				//! NOTE: As above, using the squared ratio works better.
-				float r = Ra / Rb;
-				Scale = (int)(0x1.715476p0f*logf(r) + 0.5f);
-			} else Scale = 7;
-			while((BlockSize >> Scale) < 128) Scale--;
-			OverlapScale = -Scale;
-		}
-#endif
+		float Ra = StepAll;
+		float Rb = *LastBlockEnergy;
+		if(Ra < Rb) { float t = Ra; Ra = Rb, Rb = t; } //! Decays are equally valid for window switching
+		if(Ra > Rb) OverlapScale = -2; //! TODO: Determine location of transient to select this
 	}
 
 	//! Save state for next block and return overlap/window switching
-	*LastBlockEnergy = bIn;
+	*LastBlockEnergy = StepAll;
 	return OverlapScale;
 }
 
@@ -220,9 +212,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		State->MaxOverlap,
 		nChan
 	);
-#if 0 //! Testing
-	if(ThisOverlapScale < NextOverlapScale) NextOverlapScale = State->NextOverlap = ThisOverlapScale;
-#endif
+
 	//! Transform channels and insert keys for each codeable coefficient
 	//! It's not /strictly/ required to calculate nNzCoef, but it can
 	//! speed things up in the rate-control step
