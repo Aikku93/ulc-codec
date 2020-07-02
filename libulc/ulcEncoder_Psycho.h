@@ -39,7 +39,8 @@ static inline float Block_Transform_GetMaskedLevel(
 	const float *Energy,
 	const float *EnergyNp,
 	int   Band,
-	int   BlockSize
+	int   BlockSize,
+	float Gamma
 ) {
 	//! These settings are mostly based on trial and error
 	int BandBeg, BandEnd; {
@@ -83,10 +84,8 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! level. This is similar in effect to a gamma correction
 	//! filter in image processing, where we wish to use it to
 	//! extract 'important' information from a noisy background.
-	//! Note that the curve is exaggerated as these values will
-	//! be added to the raw MDCT coefficient level.
 	float BandNp = EnergyNp[Band];
-	return BandNp + 8.0f*(BandNp - EnergyLog/EnergySum);
+	return BandNp + Gamma*(BandNp - EnergyLog/EnergySum);
 }
 
 /**************************************/
