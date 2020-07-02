@@ -41,7 +41,7 @@ int main(int argc, const char *argv[]) {
 			" -blocksize:2048  - Set number of coefficients per block (must be a power of 2).\n"
 			" -minoverlap:0    - Set minimum number of overlap samples (must be a power of 2).\n"
 			" -maxoverlap:2048 - Set maximum number of overlap samples (must be a power of 2).\n"
-			" -sidescale:0.9   - Set side-channel importance (when using M/S stereo).\n"
+			" -sidescale:1.0   - Set side-channel importance (when using M/S stereo).\n"
 			"Multi-channel data must be interleaved.\n"
 			"Note that minimum overlap may be clipped by the encoder.\n"
 		);
@@ -56,7 +56,7 @@ int main(int argc, const char *argv[]) {
 	int   nChan      = 1;
 	int   RateHz     = atoi(argv[3]);
 	int   RateKbps   = atoi(argv[4]);
-	float SideScale  = 0.9f; {
+	float SideScale  = 1.0f; {
 		int n;
 		for(n=5;n<argc;n++) {
 			if(!memcmp(argv[n], "-nc:", 4)) {
