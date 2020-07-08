@@ -11,11 +11,12 @@
 //! Decoder state structure
 //! NOTE:
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
-//!  -{nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
+//!  -{nChan, BlockSize} must not change after calling ULC_EncoderState_Init()
 struct ULC_DecoderState_t {
 	//! Global state
-	int nChan;        //! Channels in encoding scheme
-	int BlockSize;    //! Transform block size
+	int nChan;       //! Channels in encoding scheme
+	int BlockSize;   //! Transform block size
+	int OverlapSize; //! Cached overlap from last block
 
 	//! Encoding state
 	//! Buffer memory layout:
