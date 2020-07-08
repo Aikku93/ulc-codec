@@ -61,6 +61,8 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N);
 //!   'correct' I/MDCT coefficients are needed
 //!  -Simultaneous MDST calculation allows re-use of
 //!   the aliased data. Pass NULL if undesired.
+//!  -BufIn can be the same as BufTmp. However, this
+//!   implies trashing of the buffer contents.
 void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST);
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 
