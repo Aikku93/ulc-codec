@@ -35,18 +35,19 @@
 //!  -{RateHz, nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
 struct ULC_EncoderState_t {
 	//! Global state
-	int RateHz;      //! Playback rate (used for rate control)
-	int nChan;       //! Channels in encoding scheme
-	int BlockSize;   //! Transform block size
-	int MinOverlap;  //! Block overlap (minimum)
-	int MaxOverlap;  //! Block overlap (maximum)
-	int ThisOverlap; //! Overlap scale for this block (BlockSize * 2^-ThisOverlap)
-	int NextOverlap; //! Overlap scale for next block (BlockSize * 2^-NextOverlap)
+	int RateHz;     //! Playback rate (used for rate control)
+	int nChan;      //! Channels in encoding scheme
+	int BlockSize;  //! Transform block size
+	int MinOverlap; //! Block overlap (minimum)
+	int MaxOverlap; //! Block overlap (maximum)
+	int WindowCtrl; //! Window control parameter
+	int NextWindowCtrl;
 
 	//! Encoding state
 	//! Buffer memory layout:
 	//!  Data:
 	//!   char  _Padding[];
+	//!   float SampleBuffer   [nChan*BlockSize]
 	//!   float TransformBuffer[nChan*BlockSize]
 	//!   float TransformNepers[nChan*BlockSize]
 	//!   float TransformFwdLap[nChan*BlockSize/2]
@@ -55,6 +56,7 @@ struct ULC_EncoderState_t {
 	//!   float LastBlockSample[nChan]
 	//! BufferData contains the original pointer returned by malloc()
 	void  *BufferData;
+	float *SampleBuffer;
 	float *TransformBuffer;
 	float *TransformNepers;
 	float *TransformFwdLap;
