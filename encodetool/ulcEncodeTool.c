@@ -17,7 +17,7 @@
 /**************************************/
 
 //! Header magic value
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'h'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'i'<<24)
 
 /**************************************/
 
@@ -37,7 +37,6 @@ int main(int argc, const char *argv[]) {
 			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [Options]\n"
 			"Options:\n"
 			" -nc:1            - Set number of channels.\n"
-			" -nomidside       - Disable M/S stereo coding.\n"
 			" -blocksize:2048  - Set number of coefficients per block (must be a power of 2).\n"
 			" -minoverlap:0    - Set minimum number of overlap samples (must be a power of 2).\n"
 			" -maxoverlap:2048 - Set maximum number of overlap samples (must be a power of 2).\n"
@@ -49,7 +48,6 @@ int main(int argc, const char *argv[]) {
 	}
 
 	//! Parse parameters
-	int   MidSideXfm = 1;
 	int   BlockSize  = 2048;
 	int   MinOverlap = 0;
 	int   MaxOverlap = BlockSize;
@@ -63,10 +61,6 @@ int main(int argc, const char *argv[]) {
 				int x = atoi(argv[n] + 4);
 				if(n > 0 && n < 65535) nChan = x;
 				else printf("WARNING: Ignoring invalid parameter to number of channels (%d)\n", x);
-			}
-
-			else if(!memcmp(argv[n], "-nomidside", 11)) {
-				MidSideXfm = 0;
 			}
 
 			else if(!memcmp(argv[n], "-blocksize:", 11)) {
@@ -193,9 +187,9 @@ int main(int argc, const char *argv[]) {
 		//! Process blocks
 		int n, Chan;
 		int CacheIdx = 0;
-		size_t Blk, nBlk = (nSamp + BlockSize-1) / BlockSize;
+		size_t Blk, nBlk = (nSamp + BlockSize-1) / BlockSize + 2; //! +1 to account for coding delay, +1 to account for MDCT delay
 		uint64_t TotalSize = 0;
-		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
+		for(Blk=0;Blk<nBlk;Blk++) {
 			//! Show progress
 			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
 			if(Blk%4u == 0) {
@@ -211,7 +205,7 @@ int main(int argc, const char *argv[]) {
 			}
 
 			//! Apply M/S transform
-			if(MidSideXfm && nChan == 2) for(n=0;n<BlockSize;n++) {
+			if(nChan == 2) for(n=0;n<BlockSize;n++) {
 				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
 				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
 				*a = (va + vb) * 0.5f;
@@ -222,8 +216,8 @@ int main(int argc, const char *argv[]) {
 			//! Reuse BlockBuffer[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockBuffer;
 			int Size;
-			if(RateKbps > 0) Size = ULC_EncodeBlock_CBR(&Encoder, EncData, BlockBuffer,  RateKbps, MidSideXfm ? SideScale : 1.0f);
-			else             Size = ULC_EncodeBlock_VBR(&Encoder, EncData, BlockBuffer, -RateKbps, MidSideXfm ? SideScale : 1.0f);
+			if(RateKbps > 0) Size = ULC_EncodeBlock_CBR(&Encoder, EncData, BlockBuffer,  RateKbps, SideScale);
+			else             Size = ULC_EncodeBlock_VBR(&Encoder, EncData, BlockBuffer, -RateKbps, SideScale);
 			TotalSize += Size;
 
 			//! Copy what we can into the cache
@@ -250,7 +244,7 @@ int main(int argc, const char *argv[]) {
 		fwrite(CacheMem, sizeof(uint8_t), CacheIdx, OutFile);
 
 		//! Show statistics
-		size_t nEncodedSamples = BlockSize * (nBlk+1);
+		size_t nEncodedSamples = BlockSize * nBlk;
 		printf(
 			"\e[2K\r" //! Clear line before CR
 			"Total size = %.2fKiB\n"

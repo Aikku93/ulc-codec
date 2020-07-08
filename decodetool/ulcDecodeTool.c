@@ -17,7 +17,7 @@
 #endif
 /**************************************/
 
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'h'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'i'<<24)
 
 /**************************************/
 
@@ -107,14 +107,11 @@ static void StateCacheAdvance(struct DecodeState_t *State, int nBytes, int MinSi
 
 int main(int argc, const char *argv[]) {
 	//! Check arguments
-	int MidSideXfm = 1;
-	if(argc > 3) MidSideXfm = (!strcmp(argv[3], "-nomidside")) ? 0 : (-1);
-	if(argc < 3 || argc > 4 || MidSideXfm == -1) {
+	if(argc != 3) {
 		printf(
 			"ulcDecodeTool - Ultra-Low Complexity Codec Decoding Tool\n"
-			"Usage: ulcdecodetool Input.ulc Output.sw [-nomidside]\n"
+			"Usage: ulcdecodetool Input.ulc Output.sw\n"
 			"Multi-channel data will be interleaved.\n"
-			"-nomidside disables M/S stereo.\n"
 		);
 		return 1;
 	}
@@ -166,18 +163,21 @@ int main(int argc, const char *argv[]) {
 		int      BlockSize   = Header.BlockSize;
 		float   *BlockBuffer = State.BlockBuffer;
 		int16_t *BlockOutput = State.BlockOutput;
-		size_t   Blk, nBlk = (Header.nSamp + BlockSize-1) / BlockSize;
-		for(Blk=0;Blk<nBlk+1;Blk++) { //! +1 to account for coding delay
+		size_t   Blk, nBlk = (Header.nSamp + BlockSize-1) / BlockSize + 2; //! +1 to account for coding delay, +1 to account for MDCT delay
+		for(Blk=0;Blk<nBlk;Blk++) {
 			//! Show progress
-			printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
-			fflush(stdout);
+			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
+			if(Blk%4u == 0) {
+				printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
+				fflush(stdout);
+			}
 
 			//! Decode block
 			int Size = ULC_DecodeBlock(&Decoder, BlockBuffer, State.CacheNext);
 			StateCacheAdvance(&State, (Size + 7) / 8u, Header.MaxBlockSize);
 
 			//! Apply M/S transform
-			if(MidSideXfm && nChan == 2) for(n=0;n<BlockSize;n++) {
+			if(nChan == 2) for(n=0;n<BlockSize;n++) {
 				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
 				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
 				*a = va + vb;
