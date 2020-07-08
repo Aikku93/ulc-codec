@@ -11,6 +11,40 @@
 #define SQR(x) ((x)*(x))
 /**************************************/
 
+//! Pattern for decimated subblocks
+//! Usage:
+//!  PatternBase = &PatternTable[DecimationNybble >> 1];
+//!  PatternNext = PatternBase;
+//!  for(Coef in Coefs) {
+//!   *Buffer = Coef; Buffer += BlockSize >> (*PatternNext++);
+//!   if(Buffer >= BufferEnd) Buffer -= BufferSize-1, PatternNext = PatternBase;
+//!  }
+//! The decimation nybble comes from Block_Transform_GetLogOverlapScale(),
+//! corresponding to the upper/second nybble for decimated blocks.
+static inline const int8_t *ULC_Helper_SubBlockDecimationPattern(int Decimation) {
+	static const int8_t Pattern[8][4] = {
+		{0},          //! 0001: N/1
+		{1, 1},       //! 001x: N/2,N/2
+		{2, 2, 1},    //! 010x: N/4,N/4,N/2
+		{1, 2, 2},    //! 011x: N/2,N/4,N/4
+		{3, 3, 2, 1}, //! 100x: N/8,N/8,N/4,N/2
+		{2, 3, 3, 1}, //! 101x: N/4,N/8,N/8,N/2
+		{1, 3, 3, 2}, //! 110x: N/2,N/8,N/8,N/4
+		{1, 2, 3, 3}, //! 111x: N/2,N/4,N/8,N/8
+	};
+	return Pattern[Decimation >> 1];
+}
+
+//! Transient subblock index from decimation pattern
+//! Due to the way the decimation pattern is built, the
+//! subblock index is conveniently obtained via a
+//! POPCNT (minus one for the unary 'stop' bit).
+static inline int ULC_Helper_TransientSubBlockIndex(int Decimation) {
+	return __builtin_popcount(Decimation) - 1;
+}
+
+/**************************************/
+
 //! Spectral flatness measure
 //! Adapted from "Note on measures for spectral flatness"
 //! DOI: 10.1049/el.2009.1977
@@ -37,7 +71,7 @@
 //!   g = (1/a)*f - log_b(a)
 //!  As the sums are independent, this can be performed in a single step.
 //! NOTE: Unused, and only here for reference
-static inline __attribute__((always_inline)) float SpectralFlatness(const float *Buf, int N) {
+static inline __attribute__((always_inline)) float ULC_Helper_SpectralFlatness(const float *Buf, int N) {
 	int i;
 	float a = 0.0f, f = 0.0f;
 	for(i=0;i<N;i++) {
@@ -51,7 +85,7 @@ static inline __attribute__((always_inline)) float SpectralFlatness(const float 
 
 //! Masking bandwidth estimation
 //! NOTE: Unused, and only here for reference
-static inline __attribute__((always_inline)) float MaskingBandwidth(float Fc) {
+static inline __attribute__((always_inline)) float ULC_Helper_MaskingBandwidth(float Fc) {
 #if 0 //! Bark scale
 	return 50.21f + Fc*(1.0f/8.73f + Fc*(1.0f/93945.23f));
 #else
