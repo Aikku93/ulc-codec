@@ -9,10 +9,10 @@
 /**************************************/
 #include "Fourier.h"
 #include "ulcEncoder.h"
+#include "ulcHelper.h"
 /**************************************/
 #include "ulcEncoder_BlockTransform.h"
 #include "ulcEncoder_Encode.h"
-#include "ulcEncoder_Helper.h"
 /**************************************/
 #if defined(__AVX__)
 # define BUFFER_ALIGNMENT 32u //! __mm256
@@ -53,13 +53,15 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! PONDER: This... is probably not ideal
 	//! NOTE: Psychoacoustics needs at least two BlockSize temporary buffers
 	//! to store the energy information (raw/linear and log-domain)
+	int SampleBuffer_Size     = sizeof(float) * (nChan* BlockSize   );
 	int TransformBuffer_Size  = sizeof(float) * (nChan* BlockSize   );
 	int TransformNepers_Size  = sizeof(float) * (nChan* BlockSize   );
 	int TransformFwdLap_Size  = sizeof(float) * (nChan*(BlockSize/2));
 	int TransformTemp_Size    = sizeof(float) * ((nChan + (nChan < 2)) * BlockSize);
 	int TransformIndex_Size   = sizeof(int)   * (nChan* BlockSize   );
 	int LastBlockSample_Size  = sizeof(float) * (nChan              );
-	int TransformBuffer_Offs  = 0;
+	int SampleBuffer_Offs     = 0;
+	int TransformBuffer_Offs  = SampleBuffer_Offs    + SampleBuffer_Size;
 	int TransformNepers_Offs  = TransformBuffer_Offs + TransformBuffer_Size;
 	int TransformFwdLap_Offs  = TransformNepers_Offs + TransformNepers_Size;
 	int TransformTemp_Offs    = TransformFwdLap_Offs + TransformFwdLap_Size;
@@ -73,6 +75,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 
 	//! Initialize pointers
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
+	State->SampleBuffer    = (float*)(Buf + SampleBuffer_Offs);
 	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
 	State->TransformNepers = (float*)(Buf + TransformNepers_Offs);
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
@@ -82,10 +85,11 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 
 	//! Set initial state
 	int i;
-	State->NextOverlap     = 0;
+	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
 	State->LastBlockEnergy = 0.0f;
 	for(i=0;i<nChan;i++) State->LastBlockSample[i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
+	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer[i] = 0.0f;
 
 	//! Success
 	return 1;

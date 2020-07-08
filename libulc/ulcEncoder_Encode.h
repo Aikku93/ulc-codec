@@ -152,7 +152,8 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 	//! Begin coding
 	int Idx  = 0;
 	int Size = 0; //! Block size (in bits)
-	Block_Encode_WriteNybble(State->ThisOverlap, &DstBuffer, &Size);
+	Block_Encode_WriteNybble(State->WindowCtrl, &DstBuffer, &Size);
+	if(State->WindowCtrl & 0x8) Block_Encode_WriteNybble(State->WindowCtrl >> 4, &DstBuffer, &Size);
 	for(Chan=0;Chan<nChan;Chan++) {
 		int   NextCodedIdx  = Idx;
 		int   PrevQuant     = -1;
