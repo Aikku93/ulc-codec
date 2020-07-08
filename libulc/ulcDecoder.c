@@ -9,6 +9,7 @@
 /**************************************/
 #include "Fourier.h"
 #include "ulcDecoder.h"
+#include "ulcHelper.h"
 /**************************************/
 #if defined(__AVX__)
 # define BUFFER_ALIGNMENT 32u //! __mm256
@@ -55,9 +56,10 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
 	if(!Buf) return -1;
 
-	//! Initialize pointers
+	//! Initialize state
 	int i, Chan;
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
+	State->OverlapSize     = BlockSize;
 	State->TransformBuffer = (float *)(Buf + TransformBuffer_Offs);
 	State->TransformTemp   = (float *)(Buf + TransformTemp_Offs);
 	State->TransformInvLap = (float**)(Buf + _TransformInvLap_Offs);
@@ -95,12 +97,97 @@ static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, int *Size)
 	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,0h..Ch: Extended-precision quantizer
 	return 1.0f / ((1u<<5) << qi);
 }
-static void DecodeBlock_BufferDeinterleave(float *Buf, float *Tmp, int BlockSize, int nSubBlocks) {
-	int n, SubBlock;
-	int SubBlockSize = BlockSize / nSubBlocks;
-	for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
-	for(SubBlock=0;SubBlock<nSubBlocks;SubBlock++) {
-		for(n=0;n<SubBlockSize;n++) Buf[SubBlock*SubBlockSize+n] = Tmp[n*nSubBlocks+SubBlock];
+static void DecodeBlock_BufferDeinterleave(float *Dst, const float *Src, int BlockSize, int Decimation) {
+	//! The interleaving patterns here were chosen to try and
+	//! optimize coefficient clustering across block sizes
+	int n;
+	int n2 = BlockSize/2;
+	int n4 = BlockSize/4;
+	int n8 = BlockSize/8;
+	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
+		//! 001x: a=N/2, b=N/2
+		case 0b001: {
+			for(n=0;n<n2;n++) {
+				Dst[  +n] = *Src++; //! a
+				Dst[n2+n] = *Src++; //! b
+			}
+		} break;
+
+		//! 010x: a=N/4, b=N/4, c=N/2
+		case 0b010: {
+			for(n=0;n<n4;n++) {
+				Dst[  +n*1+0] = *Src++; //! a
+				Dst[n4+n*1+0] = *Src++; //! b
+				Dst[n2+n*2+0] = *Src++; //! c0
+				Dst[n2+n*2+1] = *Src++; //! c1
+			}
+		} break;
+
+		//! 011x: a=N/2, b=N/4, c=N/4
+		case 0b011: {
+			for(n=0;n<n4;n++) {
+				Dst[     +n*2+0] = *Src++; //! a0
+				Dst[     +n*2+1] = *Src++; //! a1
+				Dst[n2   +n*1+0] = *Src++; //! b
+				Dst[n2+n4+n*1+0] = *Src++; //! c
+			}
+		} break;
+
+		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
+		case 0b100: {
+			for(n=0;n<n8;n++) {
+				Dst[  +n*1+0] = *Src++; //! a
+				Dst[n8+n*1+0] = *Src++; //! b
+				Dst[n4+n*2+0] = *Src++; //! c0
+				Dst[n4+n*2+1] = *Src++; //! c1
+				Dst[n2+n*4+0] = *Src++; //! d0
+				Dst[n2+n*4+1] = *Src++; //! d1
+				Dst[n2+n*4+2] = *Src++; //! d2
+				Dst[n2+n*4+3] = *Src++; //! d3
+			}
+		} break;
+
+		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
+		case 0b101: {
+			for(n=0;n<n8;n++) {
+				Dst[     +n*2+0] = *Src++; //! a0
+				Dst[     +n*2+1] = *Src++; //! a1
+				Dst[n4   +n*1+0] = *Src++; //! b
+				Dst[n4+n8+n*1+0] = *Src++; //! c
+				Dst[n2   +n*4+0] = *Src++; //! d0
+				Dst[n2   +n*4+1] = *Src++; //! d1
+				Dst[n2   +n*4+2] = *Src++; //! d2
+				Dst[n2   +n*4+3] = *Src++; //! d3
+			}
+		} break;
+
+		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
+		case 0b110: {
+			for(n=0;n<n8;n++) {
+				Dst[     +n*4+0] = *Src++; //! a0
+				Dst[     +n*4+1] = *Src++; //! a1
+				Dst[     +n*4+2] = *Src++; //! a2
+				Dst[     +n*4+3] = *Src++; //! a3
+				Dst[n2   +n*1+0] = *Src++; //! b
+				Dst[n2+n8+n*1+0] = *Src++; //! c
+				Dst[n2+n4+n*2+0] = *Src++; //! d0
+				Dst[n2+n4+n*2+1] = *Src++; //! d1
+			}
+		} break;
+
+		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
+		case 0b111: {
+			for(n=0;n<n8;n++) {
+				Dst[        +n*4+0] = *Src++; //! a0
+				Dst[        +n*4+1] = *Src++; //! a1
+				Dst[        +n*4+2] = *Src++; //! a2
+				Dst[        +n*4+3] = *Src++; //! a3
+				Dst[n2      +n*2+0] = *Src++; //! b0
+				Dst[n2      +n*2+1] = *Src++; //! b1
+				Dst[n2+n4   +n*1+0] = *Src++; //! c
+				Dst[n2+n4+n8+n*1+0] = *Src++; //! d
+			}
+		} break;
 	}
 }
 int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
@@ -114,22 +201,23 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 	float **TransformInvLap = State->TransformInvLap;
 
 	//! Begin decoding
-	int Chan;
-	int Size = 0;
-	int OverlapSize  = BlockSize;
-	int SubBlockSize = BlockSize;
-	int nSubBlocks   = 1; {
-		int OverlapScale = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
-		if(OverlapScale < 0) {
-			SubBlockSize >>= -OverlapScale;
-			nSubBlocks   <<= -OverlapScale;
-			OverlapSize    =  SubBlockSize;
-		} else OverlapSize >>= OverlapScale;
+	int Chan, Size = 0;
+	int NextOverlapSize = 0; //! <- Shuts gcc up
+	int WindowCtrl; {
+		//! Read window control information
+		WindowCtrl = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
+		if(WindowCtrl & 0x8) WindowCtrl |= (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) << 4;
+		else                 WindowCtrl |= 1 << 4;
 	}
 	for(Chan=0;Chan<nChan;Chan++) {
+		//! Reset overlap scaling for this channel
+		NextOverlapSize = State->OverlapSize;
+
 		//! Start decoding coefficients
+		//! NOTE: If the block is decimated, then output coefficients to the
+		//! temp buffer, so that they interleave to the transform buffer.
 		int32_t v;
-		float *CoefDst = TransformBuffer;
+		float *CoefDst = (WindowCtrl & 0x8) ? TransformTemp : TransformBuffer;
 		int    CoefRem = BlockSize;
 		float  Quant   = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
 		if(Quant == 0.0f) {
@@ -154,7 +242,6 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				if(v != 0xF) nZ = v + 2; //! 8h,1h..Eh: 3 .. 16 zeros
 				else {
 					//! 8h,Fh,Yh,Xh: 17 .. 272 zeros
-					//! Read 16-zeros chunks followed by the tail
 					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (nZ<<4);
 					nZ += 17;
@@ -178,52 +265,57 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			}
 		}
 
-		//! Long block?
+		//! Deinterleave coefficients as needed
+		if(WindowCtrl & 0x8) DecodeBlock_BufferDeinterleave(TransformBuffer, TransformTemp, BlockSize, WindowCtrl >> 4);
+
+		//! Process subblocks
+		int SubBlockIdx, TransientSubBlockIdx = ULC_Helper_TransientSubBlockIndex(WindowCtrl >> 4);
+		const int8_t *DecimationPattern = ULC_Helper_SubBlockDecimationPattern(WindowCtrl >> 4);
 		      float *Dst = DstData + Chan*BlockSize;
-		const float *Src = TransformBuffer;
+		const float *Src = TransformBuffer, *SrcEnd = TransformBuffer + BlockSize;
 		      float *Lap = TransformInvLap[Chan];
-		if(nSubBlocks == 1) {
-			Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
-		} else {
-			//! Deinterleave coefficients
-			DecodeBlock_BufferDeinterleave(TransformBuffer, TransformTemp, BlockSize, nSubBlocks);
+		for(SubBlockIdx=0;(Src < SrcEnd);SubBlockIdx++) {
+			//! Get the subblock size and overlap, then update for the next subblock
+			int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
+			int OverlapSize  = NextOverlapSize;
+			if(SubBlockIdx == TransientSubBlockIdx) {
+				NextOverlapSize = SubBlockSize >> (WindowCtrl & 0x7);
+			} else {
+				NextOverlapSize = SubBlockSize;
+			}
 
-			//! Output the non-overlap data we had from the previous block
-			int n;
-			for(n=0;n<(BlockSize-SubBlockSize)/2;n++) *Dst++ = Lap[BlockSize/2-1-n];
+			//! If the overlap from the last block is larger than this subblock,
+			//! limit it.
+			//! NOTE: This is the complement to the encoder changing the overlap
+			//! for a proceeding block, and is the reason for the coding delay.
+			if(OverlapSize > SubBlockSize) OverlapSize = SubBlockSize;
 
-			//! The lapping buffer is now primed for short transform blocks, so decode
-			//! half of the subblocks out to the stream, and the other half back to the
-			//! lapping buffer
-			float *DstLap = Lap + BlockSize/2;
-			float *LapTemp = TransformTemp + SubBlockSize;
-			for(n=0;n<nSubBlocks/2;n++) {
+			//! A single long block can be read straight into the output buffer
+			if(SubBlockSize == BlockSize) {
 				Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
-				Dst += SubBlockSize;
-				Src += SubBlockSize;
+				break;
 			}
-			{
-				//! We now append the first half of this middle block to the
-				//! end of the output block and begin writing back to the
-				//! lapping buffer
-				Fourier_IMDCT(LapTemp, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
-				Src    += SubBlockSize;
-				int i;
-				for(i=0;i<SubBlockSize/2;i++) {
-					*Dst++ = LapTemp[i];
-					*--DstLap = LapTemp[i+SubBlockSize/2];
-				}
-			}
-			for(n++;n<nSubBlocks;n++) {
-				Fourier_IMDCT(LapTemp, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
-				Src    += SubBlockSize;
-				int i;
-				for(i=0;i<SubBlockSize;i++) {
-					*--DstLap = LapTemp[i];
-				}
-			}
+
+			//! For small blocks, we store the decoded data to a scratch buffer
+			float *DecBuf = TransformTemp + SubBlockSize;
+			Fourier_IMDCT(DecBuf, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+			Src += SubBlockSize;
+
+			//! Output samples from the lapping buffer, and cycle
+			//! the new samples through it for the next call
+			float *LapBuf = Lap + BlockSize/2;
+			int n, LapExtra = (BlockSize - SubBlockSize) / 2;
+			int LapCopy = (LapExtra < SubBlockSize) ? LapExtra : SubBlockSize;
+			for(n=0;n<LapCopy;n++)   *Dst++ = LapBuf[-1-n];
+			for(;n<SubBlockSize;n++) *Dst++ = *DecBuf++;
+			int NewCopy = LapExtra - LapCopy;
+			for(n=0;n<NewCopy;n++) LapBuf[-1-n] = LapBuf[-1-n-LapCopy];
+			for(;n<LapExtra;n++) LapBuf[-1-n] = *DecBuf++;
 		}
 	}
+
+	//! Store the last overlap size obtained, and return the number of bits read
+	State->OverlapSize = NextOverlapSize;
 	return Size;
 }
 
