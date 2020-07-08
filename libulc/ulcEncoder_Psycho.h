@@ -9,7 +9,7 @@
 #include <stdint.h>
 /**************************************/
 #include "ulcEncoder.h"
-#include "ulcEncoder_Helper.h"
+#include "ulcHelper.h"
 /**************************************/
 
 //! Simultaneous masking-compensated energy estimation
