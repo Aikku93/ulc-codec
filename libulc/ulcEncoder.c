@@ -53,21 +53,19 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! PONDER: This... is probably not ideal
 	//! NOTE: Psychoacoustics needs at least two BlockSize temporary buffers
 	//! to store the energy information (raw/linear and log-domain)
-	int SampleBuffer_Size     = sizeof(float) * (nChan* BlockSize   );
-	int TransformBuffer_Size  = sizeof(float) * (nChan* BlockSize   );
-	int TransformNepers_Size  = sizeof(float) * (nChan* BlockSize   );
-	int TransformFwdLap_Size  = sizeof(float) * (nChan*(BlockSize/2));
-	int TransformTemp_Size    = sizeof(float) * ((nChan + (nChan < 2)) * BlockSize);
-	int TransformIndex_Size   = sizeof(int)   * (nChan* BlockSize   );
-	int LastBlockSample_Size  = sizeof(float) * (nChan              );
-	int SampleBuffer_Offs     = 0;
-	int TransformBuffer_Offs  = SampleBuffer_Offs    + SampleBuffer_Size;
-	int TransformNepers_Offs  = TransformBuffer_Offs + TransformBuffer_Size;
-	int TransformFwdLap_Offs  = TransformNepers_Offs + TransformNepers_Size;
-	int TransformTemp_Offs    = TransformFwdLap_Offs + TransformFwdLap_Size;
-	int TransformIndex_Offs   = TransformTemp_Offs   + TransformTemp_Size;
-	int LastBlockSample_Offs  = TransformIndex_Offs  + TransformIndex_Size;
-	int AllocSize             = LastBlockSample_Offs + LastBlockSample_Size;
+	int SampleBuffer_Size    = sizeof(float) * (nChan* BlockSize   );
+	int TransformBuffer_Size = sizeof(float) * (nChan* BlockSize   );
+	int TransformNepers_Size = sizeof(float) * (nChan* BlockSize   );
+	int TransformFwdLap_Size = sizeof(float) * (nChan*(BlockSize/2));
+	int TransformTemp_Size   = sizeof(float) * ((nChan + (nChan < 2)) * BlockSize);
+	int TransformIndex_Size  = sizeof(int)   * (nChan* BlockSize   );
+	int SampleBuffer_Offs    = 0;
+	int TransformBuffer_Offs = SampleBuffer_Offs    + SampleBuffer_Size;
+	int TransformNepers_Offs = TransformBuffer_Offs + TransformBuffer_Size;
+	int TransformFwdLap_Offs = TransformNepers_Offs + TransformNepers_Size;
+	int TransformTemp_Offs   = TransformFwdLap_Offs + TransformFwdLap_Size;
+	int TransformIndex_Offs  = TransformTemp_Offs   + TransformTemp_Size;
+	int AllocSize            = TransformIndex_Offs  + TransformIndex_Size;
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
@@ -81,13 +79,10 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
-	State->LastBlockSample = (float*)(Buf + LastBlockSample_Offs);
 
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
-	State->LastBlockEnergy = 0.0f;
-	for(i=0;i<nChan;i++) State->LastBlockSample[i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer[i] = 0.0f;
 

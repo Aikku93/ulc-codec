@@ -53,7 +53,6 @@ struct ULC_EncoderState_t {
 	//!   float TransformFwdLap[nChan*BlockSize/2]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
-	//!   float LastBlockSample[nChan]
 	//! BufferData contains the original pointer returned by malloc()
 	void  *BufferData;
 	float *SampleBuffer;
@@ -62,8 +61,6 @@ struct ULC_EncoderState_t {
 	float *TransformFwdLap;
 	float *TransformTemp;
 	int   *TransformIndex;
-	float *LastBlockSample;
-	float  LastBlockEnergy;
 };
 
 /**************************************/
