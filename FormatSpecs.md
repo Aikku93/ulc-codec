@@ -9,11 +9,37 @@ The encoding tools align each block (that is, including all channels) to byte bo
 
 These blocks code MDCT coefficients that have been pre-normalized. So to decode, one must simply apply an unnormalized IMDCT to return the decoded PCM stream.
 
-NOTE: Each block always starts with a single nybble specifying the block overlap scaling. This sets the number of overlap samples to `BlockSize * 2^-X`, where `X` is the nybble that is read.
+Each block always starts with a window control code before any coefficients are coded. This controls the window lengths and shapes, and is explained in the `Block header` section.
 
 NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization).
 
-### Syntax
+### Block header
+
+Each block starts with a nybble that encodes overlap scaling, with the high bit being a decimation (window switch) toggle.
+
+| Nybble sequence    | Window 0 | Window 1 | Window 2 | Window 3 |
+| ------------------ | -------- | -------- | -------- | -------- |
+| ```0h..7h```       | N*       | -        | -        | -        |
+| ```8h..Fh,0010b``` | N/2*     | N/2      | -        | -        |
+| ```8h..Fh,0011b``` | N/2      | N/2*     | -        | -        |
+| ```8h..Fh,0100b``` | N/4*     | N/4      | N/2      | -        |
+| ```8h..Fh,0101b``` | N/4      | N/4*     | N/2      | -        |
+| ```8h..Fh,0110b``` | N/2      | N/4*     | N/4      | -        |
+| ```8h..Fh,0111b``` | N/2      | N/4      | N/4*     | -        |
+| ```8h..Fh,1000b``` | N/8*     | N/8      | N/4      | N/2      |
+| ```8h..Fh,1001b``` | N/8      | N/8*     | N/4      | N/2      |
+| ```8h..Fh,1010b``` | N/4      | N/8*     | N/8      | N/2      |
+| ```8h..Fh,1011b``` | N/4      | N/8      | N/8*     | N/2      |
+| ```8h..Fh,1100b``` | N/2      | N/8*     | N/8      | N/4      |
+| ```8h..Fh,1101b``` | N/2      | N/8      | N/8*     | N/4      |
+| ```8h..Fh,1110b``` | N/2      | N/4      | N/8*     | N/8      |
+| ```8h..Fh,1111b``` | N/2      | N/4      | N/8      | N/8*     |
+
+Overlap scaling (bit0..2 of the first nybble) is applied to the \[sub]block denoted with an asterisk, and results in an overlap of ```50% * 2^-Scale``` for that \[sub]block (that is, ```SubBlockSize * 2^-Scale``` samples of overlap).
+
+Note that the transient subblock index can be easily obtained using a population count (POPCNT) on bit1..3 of the second nybble (minus 1 for 0-based indexing).
+
+### Block syntax
 ***
 
 | Nybble sequence       | Explanation        | Effect                                       |
@@ -74,6 +100,10 @@ To unpack: ```n = ([second nybble]<<4 | [third nybble]) + 17```
 
 Inverse transform takes the above-decoded coefficients and applies the IMDCT to give the output stream.
 
+#### Deinterleaving
+
+Decimated subblocks (ie. when using window switching) have their coefficient interleaved/shuffled to obtain a more compact bitstream. The interleaving pattern groups coefficients of larger subblocks together so that they share the same frequency bands as that of the smallest subblock (for example, if the smallest subblock is N/8 and the largest is N/2, then 4 coefficients of the N/2 subblock are grouped as one), and then ordered by window position (eg. for A=N/2,B=N/4,C=N/8,D=N/8, the following coefficients are coded one after the other: 4 coefficients of A, 2 coefficients of B, 1 coefficient of C, 1 coefficient of D). Deinterleaving must simply undo this ordering to restore all of the subblocks, which may then proceed through IMDCT one after the other.
+
 #### IMDCT
 
 The IMDCT used in this codec follows the normal IMDCT formula found on any maths book, but without any scaling factor in front (as it is moved to the MDCT in the encoder) and with a shifted basis that results in phase inversion (as this results in programming optimizations), ie.
@@ -82,3 +112,5 @@ The IMDCT used in this codec follows the normal IMDCT formula found on any maths
          = -Sum[X[k]*Cos[(n+1/2 + N/2      )(k+1/2)*Pi/N], {k,0,N-1}]
     
 The windowing function used is a sine window, with the overlap amount based on the block size scaled by the nybble at the start of the block (see the `Overview` section). To use a different window, the MDCT and IMDCT functions of the source code must be modified to accomodate such (this is not too difficult, and only involves loading the sine/cosine values with appropriate data). Note that using a sine window allows reuse of the DCT coefficients table, whereas a different window cannot reuse these coefficients and so needs double the storage space.
+
+When using window switching, it is important to note that a subblock's overlap may be larger than allowed by the last subblock. When this happens, the number of overlap samples must be clipped to the size of the previous, smaller subblock. This unfortunately results in an additional block delay for decoding (on top of the MDCT delay), as the encoder must have knowledge about the next \[sub]block to account for this.
