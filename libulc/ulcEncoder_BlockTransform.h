@@ -70,13 +70,7 @@ static inline void Block_Transform_WriteSortValues(
 //! combined with window switching so that the transient lies mostly
 //! in the center of a subblock, at which point overlap scaling does
 //! its job to reduce the pre-echo.
-//! The original transient detection idea was based off this paper:
-//!  "Codierung von Audiosignalen mit uberlappender Transformation und adaptiven Fensterfunktionen"
-//!  (Coding of Audio Signals with Overlapping Block Transform and Adaptive Window Functions)
-//!  DOI: 10.1515/FREQ.1989.43.9.252
-//! However, it has been modified so extensively that the only
-//! takeaway from the paper was the idea of dividing the
-//! averaged high-passed energy as a measure of transientness.
+//! NOTE: StepBuffer must be BlockSize/2+BlockSize in size.
 //! NOTE: Bit codes for transient region coding, and their window sizes:
 //!  First nybble:
 //!   0xxx: No decimation. xxx = Overlap scaling
@@ -103,11 +97,12 @@ static inline void Block_Transform_WriteSortValues(
 //!    0001: N/1*
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
+//! NOTE: There is a lot of cross-multiplication in this function, the purpose
+//! of which is to avoid division and its associated issues (eg. divide-by-0).
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
+	const float *LastBlockData,
 	float *StepBuffer,
-	float *LastBlockEnergy,
-	float *LastBlockSample,
 	int BlockSize,
 	int MinOverlap,
 	int MaxOverlap,
@@ -115,71 +110,110 @@ static inline int Block_Transform_GetWindowCtrl(
 ) {
 	int n, Chan;
 
-	//! Perform a highpass filter on this block to get the step/transient energies
-	//! PONDER: Use a proper halfband filter with cutoff at Fs/4, similar to LAME?
-	for(n=0;n<BlockSize;n++) StepBuffer[n] = 0.0f;
+	//! Perform a highpass filter to get the step/transient energies
+	for(n=0;n<BlockSize/2+BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-		float SampleLast = LastBlockSample[Chan];
-		const float *Src = Data + Chan*BlockSize;
-		for(n=0;n<BlockSize;n++) {
-			float v = Src[n];
-			StepBuffer[n] += ABS(v - SampleLast);
+		float SampleLast, *Dst = StepBuffer;
+		const float *Src;
+
+		//! Get step energy for last block
+		Src = LastBlockData + Chan*BlockSize + BlockSize/2; //! We only need the right half of the last block
+		SampleLast = Src[-1];
+		for(n=0;n<BlockSize/2;n++) {
+			float v = *Src++;
+			(*Dst++) += SQR(v - SampleLast);
 			SampleLast = v;
 		}
-		LastBlockSample[Chan] = SampleLast;
+
+		//! Get step energy for this block
+		Src = Data + Chan*BlockSize;
+		for(n=0;n<BlockSize;n++) {
+			float v = *Src++;
+			(*Dst++) += SQR(v - SampleLast);
+			SampleLast = v;
+		}
 	}
 
 	//! Begin binary search for transient region until it centers within a subblock
 	int   Decimation = 1, SubBlockSize = BlockSize;
-	float StepL, StepLW;
-	float StepM, StepMW;
-	float StepR, StepRW;
-	float StepOld = *LastBlockEnergy, StepOldW = 1.0f;
+	float PulseRatio2L, PulseRatio2LW;
+	float PulseRatio2M, PulseRatio2MW;
+	float PulseRatio2R, PulseRatio2RW;
 	for(;;) {
-		//! Analyze the step energy for this subblock to find where
-		//! the peak transient energy lies (left, middle, right).
-		//! This is a weighted average, similar to a smooth max function
-		StepM = 0.0f, StepMW = 0.0f;
-		StepL = 0.0f, StepLW = 0.0f;
-		StepR = 0.0f, StepRW = 0.0f; {
-			const float *SrcL = StepBuffer;
-			const float *SrcR = StepBuffer + SubBlockSize;
-			const float *Cos = Fourier_SinTableN(SubBlockSize/2) + SubBlockSize/2;
-			const float *Sin = Fourier_SinTableN(SubBlockSize/4);
-			for(n=0;n<SubBlockSize/4;n++) { //! 0..Pi/4 (L/R)
-				float c  = *--Cos;
+		//! Calculate the smooth-max energy of the left/middle/right sections.
+		//! The weights conveniently code for the floor level simultaneously.
+		//! NOTE: StepLL codes for the values in the previous block. These are
+		//! necessary for the ratio calculation of the left side of this block.
+		float StepLL;
+		float StepL = 0.0f, StepLW = 0.0f;
+		float StepM = 0.0f, StepMW = 0.0f;
+		float StepR = 0.0f, StepRW = 0.0f; {
+			const float *SrcL = StepBuffer;         //! Length: SubBlockSize   (symmetric peak at SubBlockSize/2)
+			const float *SrcM = SrcL + BlockSize/2; //! Length: SubBlockSize   (symmetric peak at SubBlockSize/2)
+			const float *SrcR = SrcM + BlockSize/2; //! Length: SubBlockSize/2 (peak at SubBlockSize/2)
+			for(n=0;n<SubBlockSize/2;n++) {
 				float dL = *SrcL++;
-				float dR = *--SrcR;
-				StepL += c*SQR(dL), StepLW += c*dL;
-				StepR += c*SQR(dR), StepRW += c*dR;
+				float dM = *SrcM++;
+				float dR = *SrcR++;
+				StepL += SQR(dL), StepLW += dL;
+				StepM += SQR(dM), StepMW += dM;
+				StepR += SQR(dR), StepRW += dR;
 			}
-			for(n=0;n<SubBlockSize/4;n++) { //! Pi/4..Pi/2 (L/R + Mid)
-				float s  = *Sin++;
-				float c  = *--Cos;
+			StepLL = StepL;
+			for(;n<SubBlockSize;n++) {
 				float dL = *SrcL++;
-				float dR = *--SrcR;
-				StepL += c*SQR(dL), StepLW += c*dL;
-				StepR += c*SQR(dR), StepRW += c*dR;
-				StepM += s*(SQR(dL) + SQR(dR)), StepMW += s*(dL + dR);
+				float dM = *SrcM++;
+				StepL += SQR(dL), StepLW += dL;
+				StepM += SQR(dM), StepMW += dM;
 			}
 		}
+
+		//! Compute the pulse-to-floor ratios for each segment. Note
+		//! that the 'floor' is sampled from the prior segment.
+		//! NOTE: The floor is computed as (for example):
+		//!  Floor = StepL / SubBlockSize
+		//! Because we are dividing by Floor, we instead multiply the
+		//! ratio by SubBlockSize in the cross-multiplication.
+		//! Note that StepLL is normalized as:
+		//!  FloorLL = StepLL / (SubBlockSize/2)
+		//! This is due to only having half as many coefficients in
+		//! its sum. StepR normalizes the same way, but we only use
+		//! it for the smooth-max energy which is self-normalizing.
+		PulseRatio2L = SQR(StepL)*(SubBlockSize/2), PulseRatio2LW = SQR(StepLW)*StepLL;
+		PulseRatio2M = SQR(StepM)*(SubBlockSize  ), PulseRatio2MW = SQR(StepMW)*StepL;
+		PulseRatio2R = SQR(StepR)*(SubBlockSize  ), PulseRatio2RW = SQR(StepRW)*StepM;
 
 		//! Can we use window switching at all?
 		//! NOTE: Limited to a minimum subblock size of 128 samples, and
 		//! maximum decimation of 1/8 (Decimation > 8h: 1yyy = Decimation by 1/8)
-		//! NOTE: Avoid division (and divide-by-0 errors) by cross-multiplying.
 		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize > 128 && Decimation < 0x8) {
-			//! Check to see if the peak is at the center yet (MaxRatio(StepM/Step[L/R]) >= 0.5)
-			float tL = StepM*StepLW, tLW = StepL*StepMW;
-			float tR = StepM*StepRW, tRW = StepR*StepMW;
-			if(tL < 0.5f*tLW || tLW < 0.5f*tL || tR < 0.5f*tRW || tRW < 0.5f*tR) {
-				//! Decimate further and update the decimation pattern
+			enum { POS_L, POS_M, POS_R};
+
+			//! Determine the transient position from the peak ratio
+			int   PulsePos = POS_M;
+			float Pulse2V  = PulseRatio2M;
+			float Pulse2W  = PulseRatio2MW;
+			if(PulseRatio2L*Pulse2W > Pulse2V*PulseRatio2LW) {
+				PulsePos = POS_L;
+				Pulse2V  = PulseRatio2L;
+				Pulse2W  = PulseRatio2LW;
+			}
+			if(PulseRatio2R*Pulse2W > Pulse2V*PulseRatio2RW) {
+				PulsePos = POS_R;
+				Pulse2V  = PulseRatio2R;
+				Pulse2W  = PulseRatio2RW;
+			}
+
+			//! If the transient is not in the middle and it's
+			//! significant, decimate the subblock further.
+			if(PulsePos != POS_M) if(Pulse2V > SQR(2.25f)*Pulse2W) {
+				//! Update the decimation pattern and continue
+				if(PulsePos == POS_L)
+					Decimation  = (Decimation<<1) | 0;
+				else
+					Decimation  = (Decimation<<1) | 1,
+					StepBuffer += SubBlockSize/2;
 				SubBlockSize /= 2;
-				if(StepL*StepRW > StepR*StepLW) Decimation  = (Decimation<<1) | 0;
-				else                            Decimation  = (Decimation<<1) | 1,
-				                                StepBuffer += SubBlockSize,
-				                                StepOld     = StepL,
-				                                StepOldW    = StepLW;
 				continue;
 			}
 		}
@@ -191,23 +225,23 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Use the jump to the middle from the last [sub]block to judge the overlap
-	//! NOTE: As above, minimize division here by cross-multiplying instead.
 	int OverlapScale;
-	float Ra = StepM  * StepOldW;
-	float Rb = StepMW * StepOld;
-	if(Ra*0x1.6A09E6p-1f >= Rb) { //! a/b==Sqrt[2] is the first ratio to result in a ratio > 0
-		//! a/b >= 2^6.5 gives the upper limit ratio of 7.0
-		if(Ra*0x1.6A09E6p-7f < Rb) {
+	float Ra = PulseRatio2M;
+	float Rb = PulseRatio2MW;
+	if(Ra*0x1.0p-2f >= Rb) { //! a/b==2^2 is the first ratio to result in a ratio > 0
+		//! a/b >= 2^26 gives the upper limit ratio of 7.0
+		if(Ra*0x1.0p-26f < Rb) {
 			//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+			//! Scale by 0.5 to account for squaring the transientness, and
+			//! again by 0.5 to account for the step energy being squared
 			float r = Ra / Rb;
-			OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
+			OverlapScale = (int)(0x1.715476p-2f*logf(r) + 0.5f);
 		} else OverlapScale = 7;
 		while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 		while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
 	} else OverlapScale = 0;
 
 	//! Return the combined overlap+window switching parameters
-	*LastBlockEnergy = (StepRW > 0.0f) ? (StepR / StepRW) : 0.0f;
 	return OverlapScale + 0x8*(SubBlockSize != BlockSize) + 0x10*Decimation;
 }
 
@@ -339,21 +373,17 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 	int WindowCtrl     = State->WindowCtrl     = State->NextWindowCtrl;
 	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
 		Data,
+		State->SampleBuffer,
 		State->TransformTemp,
-		&State->LastBlockEnergy,
-		State->LastBlockSample,
 		BlockSize,
 		State->MinOverlap,
 		State->MaxOverlap,
 		nChan
 	);
-	int NextSubBlockOverlap = BlockSize; {
+	int NextBlockSubBlockSize = BlockSize; {
 		//! Adjust for the first [sub]block's size
 		int NextDecimation = NextWindowCtrl >> 4;
-		NextSubBlockOverlap >>= ULC_Helper_SubBlockDecimationPattern(NextDecimation)[0];
-
-		//! Adjust for 'first [sub]block is transient'
-		if(ULC_Helper_TransientSubBlockIndex(NextDecimation) == 0) NextSubBlockOverlap >>= (NextWindowCtrl & 0x7);
+		NextBlockSubBlockSize >>= ULC_Helper_SubBlockDecimationPattern(NextDecimation)[0];
 	}
 
 	//! Transform channels and insert keys for each codeable coefficient
@@ -386,8 +416,11 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 				//! this one, set overlap to the smaller of the two.
 				//! NOTE: This is literally THE ONLY reason that there is a
 				//! coding delay in this codec (and most MDCT codecs).
-				if(BufferTransform+SubBlockSize == BufferTransformEnd) {
-					if(NextSubBlockOverlap < OverlapSize) OverlapSize = NextSubBlockOverlap;
+				if(BufferTransform+SubBlockSize < BufferTransformEnd) {
+					int NextSubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx+1];
+					if(OverlapSize > NextSubBlockSize) OverlapSize = NextSubBlockSize;
+				} else {
+					if(OverlapSize > NextBlockSubBlockSize) OverlapSize = NextBlockSubBlockSize;
 				}
 
 				//! If we have a long block, all the data is prepared and
