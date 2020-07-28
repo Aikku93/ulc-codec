@@ -14,6 +14,7 @@ Each block always starts with a window control code before any coefficients are 
 NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization).
 
 ### Block header
+***
 
 Each block starts with a nybble that encodes overlap scaling, with the high bit being a decimation (window switch) toggle.
 
