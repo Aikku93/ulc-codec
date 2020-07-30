@@ -70,7 +70,7 @@ static inline void Block_Transform_WriteSortValues(
 //! combined with window switching so that the transient lies mostly
 //! in the center of a subblock, at which point overlap scaling does
 //! its job to reduce the pre-echo.
-//! NOTE: StepBuffer must be BlockSize/2+BlockSize in size.
+//! NOTE: StepBuffer must be 2*BlockSize in size.
 //! NOTE: Bit codes for transient region coding, and their window sizes:
 //!  First nybble:
 //!   0xxx: No decimation. xxx = Overlap scaling
@@ -109,17 +109,24 @@ static inline int Block_Transform_GetWindowCtrl(
 	int nChan
 ) {
 	int n, Chan;
+	float StepData[8]; //! StepL[W], StepM[W], StepR[W]. Janky setup for vectorization
+#define STEP_L  StepData[0]
+#define STEP_LW StepData[1]
+#define STEP_M  StepData[2]
+#define STEP_MW StepData[3]
+#define STEP_R  StepData[4]
+#define STEP_RW StepData[5]
 
 	//! Perform a highpass filter to get the step/transient energies
-	for(n=0;n<BlockSize/2+BlockSize;n++) StepBuffer[n] = 0.0f;
+	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 		float SampleLast, *Dst = StepBuffer;
 		const float *Src;
 
 		//! Get step energy for last block
-		Src = LastBlockData + Chan*BlockSize + BlockSize/2; //! We only need the right half of the last block
-		SampleLast = Src[-1];
-		for(n=0;n<BlockSize/2;n++) {
+		Src = LastBlockData + Chan*BlockSize;
+		SampleLast = Src[0];
+		for(n=0;n<BlockSize;n++) {
 			float v = *Src++;
 			(*Dst++) += SQR(v - SampleLast);
 			SampleLast = v;
@@ -135,53 +142,101 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Begin binary search for transient region until it centers within a subblock
-	int   Decimation = 1, SubBlockSize = BlockSize;
-	float PulseRatio2L, PulseRatio2LW;
-	float PulseRatio2M, PulseRatio2MW;
-	float PulseRatio2R, PulseRatio2RW;
+	//! NOTE: The janky setup for StepX[W] is necessary for efficient vectorization.
+	int Decimation = 1, SubBlockSize = BlockSize;
 	for(;;) {
 		//! Calculate the smooth-max energy of the left/middle/right sections.
 		//! The weights conveniently code for the floor level simultaneously.
-		//! NOTE: StepLL codes for the values in the previous block. These are
-		//! necessary for the ratio calculation of the left side of this block.
-		float StepLL;
-		float StepL = 0.0f, StepLW = 0.0f;
-		float StepM = 0.0f, StepMW = 0.0f;
-		float StepR = 0.0f, StepRW = 0.0f; {
-			const float *SrcL = StepBuffer;         //! Length: SubBlockSize   (symmetric peak at SubBlockSize/2)
-			const float *SrcM = SrcL + BlockSize/2; //! Length: SubBlockSize   (symmetric peak at SubBlockSize/2)
-			const float *SrcR = SrcM + BlockSize/2; //! Length: SubBlockSize/2 (peak at SubBlockSize/2)
-			for(n=0;n<SubBlockSize/2;n++) {
-				float dL = *SrcL++;
-				float dM = *SrcM++;
-				float dR = *SrcR++;
-				StepL += SQR(dL), StepLW += dL;
-				StepM += SQR(dM), StepMW += dM;
-				StepR += SQR(dR), StepRW += dR;
+		//! NOTE: I have absolutely no clue why it is necessary to offset by
+		//! BlockSize/2 here; this improves quality /EXTREMELY/ dramatically.
+		const float *Sin   = Fourier_SinTableN(SubBlockSize);
+		const float *Cos   = Sin + SubBlockSize;
+		const float *SrcLo = StepBuffer + (BlockSize - SubBlockSize)/2;
+		const float *SrcHi = SrcLo + SubBlockSize*2; {
+#if defined(__SSE__)
+			__m128 vStepL = _mm_setzero_ps(), vStepLW = _mm_setzero_ps();
+			__m128 vStepM = _mm_setzero_ps(), vStepMW = _mm_setzero_ps();
+			__m128 vStepR = _mm_setzero_ps(), vStepRW = _mm_setzero_ps();
+			for(n=0;n<SubBlockSize;n+=4) {
+				__m128 s, c;
+				__m128 dL, dH;
+
+				s = _mm_load_ps(Sin); Sin += 4;
+				Cos -= 4; c = _mm_loadr_ps(Cos);
+				dL = _mm_load_ps(SrcLo); SrcLo += 4;
+				SrcHi -= 4; dH = _mm_loadr_ps(SrcHi);
+#if defined(__FMA__)
+				vStepLW = _mm_fmadd_ps(c, dL, vStepLW);
+				vStepMW = _mm_fmadd_ps(s, dL, vStepMW);
+				vStepMW = _mm_fmadd_ps(s, dH, vStepMW);
+				vStepRW = _mm_fmadd_ps(c, dH, vStepRW);
+#else
+				vStepLW = _mm_add_ps(vStepLW, _mm_mul_ps(c, dL));
+				vStepMW = _mm_add_ps(vStepMW, _mm_mul_ps(s, dL));
+				vStepMW = _mm_add_ps(vStepMW, _mm_mul_ps(s, dH));
+				vStepRW = _mm_add_ps(vStepRW, _mm_mul_ps(c, dH));
+#endif
+				dL = _mm_mul_ps(dL, dL);
+				dH = _mm_mul_ps(dH, dH);
+#if defined(__FMA__)
+				vStepL = _mm_fmadd_ps(c, dL, vStepL);
+				vStepM = _mm_fmadd_ps(s, dL, vStepM);
+				vStepM = _mm_fmadd_ps(s, dH, vStepM);
+				vStepR = _mm_fmadd_ps(c, dH, vStepR);
+#else
+				vStepL = _mm_add_ps(vStepL, _mm_mul_ps(c, dL));
+				vStepM = _mm_add_ps(vStepM, _mm_mul_ps(s, dL));
+				vStepM = _mm_add_ps(vStepM, _mm_mul_ps(s, dH));
+				vStepR = _mm_add_ps(vStepR, _mm_mul_ps(c, dH));
+#endif
 			}
-			StepLL = StepL;
-			for(;n<SubBlockSize;n++) {
-				float dL = *SrcL++;
-				float dM = *SrcM++;
-				StepL += SQR(dL), StepLW += dL;
-				StepM += SQR(dM), StepMW += dM;
+			{
+				__m128 a, b, c, d;
+				a = _mm_shuffle_ps(vStepL, vStepLW, 0x88); //! {StepX[0,2],StepXW[0,2]}
+				b = _mm_shuffle_ps(vStepL, vStepLW, 0xDD); //! {StepX[1,3],StepXW[1,3]}
+				c = _mm_add_ps(a, b);                      //! {StepX[0+1],StepX[2+3],StepXW[0+1],StepXW[2+3]}
+				a = _mm_shuffle_ps(vStepM, vStepMW, 0x88);
+				b = _mm_shuffle_ps(vStepM, vStepMW, 0xDD);
+				d = _mm_add_ps(a, b);
+				a = _mm_shuffle_ps(c, d, 0x88);            //! {StepX[0+1],StepXW[0+1],StepY[0+1],StepYW[0+1]}
+				b = _mm_shuffle_ps(c, d, 0xDD);            //! {StepX[2+3],StepXW[2+3],StepY[2+3],StepYW[2+3]}
+				c = _mm_add_ps(a, b);                      //! {StepX,StepXW,StepY,StepYW}
+				_mm_store_ps(StepData, c);
+				a = _mm_shuffle_ps(vStepR, vStepRW, 0x88); //! {StepX[0,2],StepXW[0,2]}
+				b = _mm_shuffle_ps(vStepR, vStepRW, 0xDD); //! {StepX[1,3],StepXW[1,3]}
+				c = _mm_add_ps(a, b);                      //! {StepX[0+1],StepX[2+3],StepXW[0+1],StepXW[2+3]}
+				a = _mm_shuffle_ps(c, c, 0x88);            //! {StepX[0+1],StepXW[0+1],XXX,YYY}
+				b = _mm_shuffle_ps(c, c, 0xDD);            //! {StepX[2+3],StepXW[2+3],XXX,YYY}
+				c = _mm_add_ps(a, b);                      //! {StepX,StepXW,XXX,YYY}
+				_mm_storel_pi((__m64*)(StepData+4), c);
 			}
+#else
+			float StepL = 0.0f, StepLW = 0.0f;
+			float StepM = 0.0f, StepMW = 0.0f;
+			float StepR = 0.0f, StepRW = 0.0f;
+			for(n=0;n<SubBlockSize;n++) {
+				float s  = *Sin++;
+				float c  = *--Cos;
+				float dL = *SrcLo++;
+				float dH = *--SrcHi;
+				StepL += c*SQR(dL), StepLW += c*dL;
+				StepM += s*SQR(dL), StepMW += s*dL;
+				StepM += s*SQR(dH), StepMW += s*dH;
+				StepR += c*SQR(dH), StepRW += c*dH;
+			}
+			STEP_L = StepL, STEP_LW = StepLW;
+			STEP_M = StepM, STEP_MW = StepMW;
+			STEP_R = StepR, STEP_RW = StepRW;
+#endif
 		}
 
-		//! Compute the pulse-to-floor ratios for each segment. Note
-		//! that the 'floor' is sampled from the prior segment.
-		//! NOTE: The floor is computed as (for example):
-		//!  Floor = StepL / SubBlockSize
-		//! Because we are dividing by Floor, we instead multiply the
-		//! ratio by SubBlockSize in the cross-multiplication.
-		//! Note that StepLL is normalized as:
-		//!  FloorLL = StepLL / (SubBlockSize/2)
-		//! This is due to only having half as many coefficients in
-		//! its sum. StepR normalizes the same way, but we only use
-		//! it for the smooth-max energy which is self-normalizing.
-		PulseRatio2L = SQR(StepL)*(SubBlockSize/2), PulseRatio2LW = SQR(StepLW)*StepLL;
-		PulseRatio2M = SQR(StepM)*(SubBlockSize  ), PulseRatio2MW = SQR(StepMW)*StepL;
-		PulseRatio2R = SQR(StepR)*(SubBlockSize  ), PulseRatio2RW = SQR(StepRW)*StepM;
+		//! Compute the stationarity of each segment, relative to the whole block
+		//! 0x1.45F307p-1 = 2/Pi. This normalizes for a sine window (0 .. Pi).
+		//! Note that 0x1.45F307p0 is used (scaled by 2.0), as the window length
+		//! is actually SubBlockSize*2.
+		float StationarityL = STEP_MW*STEP_LW, StationarityLW = SubBlockSize*0x1.45F307p0f*STEP_L;
+		float StationarityM = STEP_MW*STEP_MW, StationarityMW = SubBlockSize*0x1.45F307p0f*STEP_M;
+		float StationarityR = STEP_MW*STEP_RW, StationarityRW = SubBlockSize*0x1.45F307p0f*STEP_R;
 
 		//! Can we use window switching at all?
 		//! NOTE: Limited to a minimum subblock size of 128 samples, and
@@ -189,26 +244,30 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize > 128 && Decimation < 0x8) {
 			enum { POS_L, POS_M, POS_R};
 
-			//! Determine the transient position from the peak ratio
-			int   PulsePos = POS_M;
-			float Pulse2V  = PulseRatio2M;
-			float Pulse2W  = PulseRatio2MW;
-			if(PulseRatio2L*Pulse2W > Pulse2V*PulseRatio2LW) {
-				PulsePos = POS_L;
-				Pulse2V  = PulseRatio2L;
-				Pulse2W  = PulseRatio2LW;
+			//! Determine which side (L/M/R) is most stationary
+			int   SmoothPos = POS_M;
+			float SmoothV   = StationarityM;
+			float SmoothW   = StationarityMW;
+			if(StationarityL*SmoothW > SmoothV*StationarityLW) {
+				SmoothPos = POS_L;
+				SmoothV   = StationarityL;
+				SmoothW   = StationarityLW;
 			}
-			if(PulseRatio2R*Pulse2W > Pulse2V*PulseRatio2RW) {
-				PulsePos = POS_R;
-				Pulse2V  = PulseRatio2R;
-				Pulse2W  = PulseRatio2RW;
+			if(StationarityR*SmoothW > SmoothV*StationarityRW) {
+				SmoothPos = POS_R;
+				SmoothV   = StationarityR;
+				SmoothW   = StationarityRW;
 			}
 
-			//! If the transient is not in the middle and it's
-			//! significant, decimate the subblock further.
-			if(PulsePos != POS_M) if(Pulse2V > SQR(2.25f)*Pulse2W) {
+			//! If the L or R side become significantly more stationary
+			//! than the middle, then deciamte the subblock further.
+			//! NOTE: It isn't necessary to check that SmoothPos == POS_M,
+			//! as then the stationarity would compare against itself.
+			if(SmoothV*StationarityMW > 1.5f*StationarityM*SmoothW) {
 				//! Update the decimation pattern and continue
-				if(PulsePos == POS_L)
+				//! NOTE: If the smoother side is on the right,
+				//! then subdivide the left side, and vice-versa.
+				if(SmoothPos == POS_R)
 					Decimation  = (Decimation<<1) | 0;
 				else
 					Decimation  = (Decimation<<1) | 1,
@@ -226,16 +285,15 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Use the jump to the middle from the last [sub]block to judge the overlap
 	int OverlapScale;
-	float Ra = PulseRatio2M;
-	float Rb = PulseRatio2MW;
-	if(Ra*0x1.0p-2f >= Rb) { //! a/b==2^2 is the first ratio to result in a ratio > 0
-		//! a/b >= 2^26 gives the upper limit ratio of 7.0
-		if(Ra*0x1.0p-26f < Rb) {
+	float Ra = STEP_R  * STEP_MW;
+	float Rb = STEP_RW * STEP_M;
+	if(Ra*0x1.0p-1f >= Rb) { //! a/b==2^1 is the first ratio to result in a ratio > 0
+		//! a/b >= 2^13 gives the upper limit ratio of 7.0
+		if(Ra*0x1.0p-13f < Rb) {
 			//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-			//! Scale by 0.5 to account for squaring the transientness, and
-			//! again by 0.5 to account for the step energy being squared
+			//! Scale by 0.5 to account for the step energy being squared
 			float r = Ra / Rb;
-			OverlapScale = (int)(0x1.715476p-2f*logf(r) + 0.5f);
+			OverlapScale = (int)(0x1.715476p-1f*logf(r) + 0.5f);
 		} else OverlapScale = 7;
 		while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 		while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
@@ -243,6 +301,12 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(SubBlockSize != BlockSize) + 0x10*Decimation;
+#undef STEP_L
+#undef STEP_LW
+#undef STEP_M
+#undef STEP_MW
+#undef STEP_R
+#undef STEP_RW
 }
 
 /**************************************/
