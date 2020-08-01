@@ -109,13 +109,15 @@ static inline int Block_Transform_GetWindowCtrl(
 	int nChan
 ) {
 	int n, Chan;
-	float StepData[8]; //! StepL[W], StepM[W], StepR[W]. Janky setup for vectorization
-#define STEP_L  StepData[0]
-#define STEP_LW StepData[1]
-#define STEP_M  StepData[2]
-#define STEP_MW StepData[3]
-#define STEP_R  StepData[4]
-#define STEP_RW StepData[5]
+	float StepData[8]; //! StepLL[W], StepL[W], StepM[W], StepR[W]. Janky setup for vectorization
+#define STEP_LL  StepData[0]
+#define STEP_LLW StepData[1]
+#define STEP_L   StepData[2]
+#define STEP_LW  StepData[3]
+#define STEP_M   StepData[4]
+#define STEP_MW  StepData[5]
+#define STEP_R   StepData[6]
+#define STEP_RW  StepData[7]
 
 	//! Perform a highpass filter to get the step/transient energies
 	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
@@ -145,98 +147,146 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! NOTE: The janky setup for StepX[W] is necessary for efficient vectorization.
 	int Decimation = 1, SubBlockSize = BlockSize;
 	for(;;) {
-		//! Calculate the smooth-max energy of the left/middle/right sections.
-		//! The weights conveniently code for the floor level simultaneously.
-		//! NOTE: I have absolutely no clue why it is necessary to offset by
-		//! BlockSize/2 here; this improves quality /EXTREMELY/ dramatically.
-		const float *Sin   = Fourier_SinTableN(SubBlockSize);
-		const float *Cos   = Sin + SubBlockSize;
-		const float *SrcLo = StepBuffer + (BlockSize - SubBlockSize)/2;
-		const float *SrcHi = SrcLo + SubBlockSize*2; {
-#if defined(__SSE__)
-			__m128 vStepL = _mm_setzero_ps(), vStepLW = _mm_setzero_ps();
-			__m128 vStepM = _mm_setzero_ps(), vStepMW = _mm_setzero_ps();
-			__m128 vStepR = _mm_setzero_ps(), vStepRW = _mm_setzero_ps();
-			for(n=0;n<SubBlockSize;n+=4) {
-				__m128 s, c;
-				__m128 dL, dH;
+		//! Calculate the smooth-max energy of the left/middle/right sections
+		//! (ie. compute a sparseness-compensating average energy)
+		//! NOTE: Offset by -BlockSize/2 relative to the data pointed to by
+		//! the argument `Data`. This is due to MDCT overlap placing the
+		//! start of the lapping region at this point in time.
+		//! NOTE: It is necessary to add a tiny bias to avoid issues with
+		//! division-by-0 (via cross-multiplication by 0).
+		const float *Src = StepBuffer + BlockSize/2; {
+#if defined(__AVX__)
+			__m256 vStepLL = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepLLW = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
+			__m256 vStepL  = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepLW  = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
+			__m256 vStepM  = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepMW  = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
+			__m256 vStepR  = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepRW  = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
+			for(n=0;n<SubBlockSize/2;n+=8) {
+				__m256 dLL, dL, dM, dR;
 
-				s = _mm_load_ps(Sin); Sin += 4;
-				Cos -= 4; c = _mm_loadr_ps(Cos);
-				dL = _mm_load_ps(SrcLo); SrcLo += 4;
-				SrcHi -= 4; dH = _mm_loadr_ps(SrcHi);
+				dLL = _mm256_load_ps(Src + n - SubBlockSize/2);
+				dL  = _mm256_load_ps(Src + n);
+				dM  = _mm256_load_ps(Src + n + SubBlockSize/2);
+				dR  = _mm256_load_ps(Src + n + SubBlockSize);
+				vStepLLW = _mm256_add_ps(vStepLLW, dLL);
+				vStepLW  = _mm256_add_ps(vStepLW,  dL);
+				vStepMW  = _mm256_add_ps(vStepMW,  dM);
+				vStepRW  = _mm256_add_ps(vStepRW,  dR);
 #if defined(__FMA__)
-				vStepLW = _mm_fmadd_ps(c, dL, vStepLW);
-				vStepMW = _mm_fmadd_ps(s, dL, vStepMW);
-				vStepMW = _mm_fmadd_ps(s, dH, vStepMW);
-				vStepRW = _mm_fmadd_ps(c, dH, vStepRW);
+				vStepLL = _mm256_fmadd_ps(dLL, dLL, vStepLL);
+				vStepL  = _mm256_fmadd_ps(dL,  dL,  vStepL);
+				vStepM  = _mm256_fmadd_ps(dM,  dM,  vStepM);
+				vStepR  = _mm256_fmadd_ps(dR,  dR,  vStepR);
 #else
-				vStepLW = _mm_add_ps(vStepLW, _mm_mul_ps(c, dL));
-				vStepMW = _mm_add_ps(vStepMW, _mm_mul_ps(s, dL));
-				vStepMW = _mm_add_ps(vStepMW, _mm_mul_ps(s, dH));
-				vStepRW = _mm_add_ps(vStepRW, _mm_mul_ps(c, dH));
+				dLL = _mm256_mul_ps(dLL, dLL);
+				dL  = _mm256_mul_ps(dL,  dL);
+				dM  = _mm256_mul_ps(dL,  dM);
+				dR  = _mm256_mul_ps(dR,  dR);
+				vStepLL = _mm256_add_ps(vStepLL, dLL);
+				vStepL  = _mm256_add_ps(vStepL,  dL);
+				vStepM  = _mm256_add_ps(vStepM,  dM);
+				vStepR  = _mm256_add_ps(vStepR,  dH);
 #endif
-				dL = _mm_mul_ps(dL, dL);
-				dH = _mm_mul_ps(dH, dH);
+			}
+			{
+				__m256 a, b, c, d;
+
+				//! a = L: {StepA[0+1],StepA[2+3],StepAW[0+1],StepAW[2+3]}
+				//!     H: {StepA[4+5],StepA[6+7],StepAW[4+5],StepAW[6+7]}
+				//! b = L: {StepB[0+1],StepB[2+3],StepBW[0+1],StepBW[2+3]}
+				//!     H: {StepB[4+5],StepB[6+7],StepBW[4+5],StepBW[6+7]}
+				a = _mm256_hadd_ps(vStepLL, vStepLLW);
+				b = _mm256_hadd_ps(vStepL,  vStepLW);
+				c = _mm256_hadd_ps(vStepM,  vStepMW);
+				d = _mm256_hadd_ps(vStepR,  vStepRW);
+				//! a = L: {StepA[0+1+2+3],StepAW[0+1+2+3],StepB[0+1+2+3],StepBW[0+1+2+3]}
+				//!     H: {StepA[4+5+6+7],StepAW[4+5+6+7],StepB[4+5+6+7],StepBW[4+5+6+7]}
+				a = _mm256_hadd_ps(a, b);
+				b = _mm256_hadd_ps(c, d);
+				//! c = L: {StepA[0+1+2+3],StepAW[0+1+2+3],StepB[0+1+2+3],StepBW[0+1+2+3]}
+				//!     H: {StepC[0+1+2+3],StepCW[0+1+2+3],StepD[0+1+2+3],StepDW[0+1+2+3]}
+				//! d = L: {StepA[4+5+6+7],StepAW[4+5+6+7],StepB[4+5+6+7],StepBW[4+5+6+7]}
+				//!     H: {StepC[4+5+6+7],StepCW[4+5+6+7],StepD[4+5+6+7],StepDW[4+5+6+7]}
+				c = _mm256_permute2f128_ps(a, b, 0x20);
+				d = _mm256_permute2f128_ps(a, b, 0x31);
+				c = _mm256_add_ps(c, d);
+				_mm256_store_ps(StepData, c);
+			}
+#elif defined(__SSE__)
+			__m128 vStepLL = _mm_set_ss(SQR(0x1.0p-32f)), vStepLLW = _mm_set_ss(0x1.0p-32f);
+			__m128 vStepL  = _mm_set_ss(SQR(0x1.0p-32f)), vStepLW  = _mm_set_ss(0x1.0p-32f);
+			__m128 vStepM  = _mm_set_ss(SQR(0x1.0p-32f)), vStepMW  = _mm_set_ss(0x1.0p-32f);
+			__m128 vStepR  = _mm_set_ss(SQR(0x1.0p-32f)), vStepRW  = _mm_set_ss(0x1.0p-32f);
+			for(n=0;n<SubBlockSize/2;n+=4) {
+				__m128 dLL, dL, dM, dR;
+
+				dLL = _mm_load_ps(Src + n - SubBlockSize/2);
+				dL  = _mm_load_ps(Src + n);
+				dM  = _mm_load_ps(Src + n + SubBlockSize/2);
+				dR  = _mm_load_ps(Src + n + SubBlockSize);
+				vStepLLW = _mm_add_ps(vStepLLW, dLL);
+				vStepLW  = _mm_add_ps(vStepLW,  dL);
+				vStepMW  = _mm_add_ps(vStepMW,  dM);
+				vStepRW  = _mm_add_ps(vStepRW,  dR);
 #if defined(__FMA__)
-				vStepL = _mm_fmadd_ps(c, dL, vStepL);
-				vStepM = _mm_fmadd_ps(s, dL, vStepM);
-				vStepM = _mm_fmadd_ps(s, dH, vStepM);
-				vStepR = _mm_fmadd_ps(c, dH, vStepR);
+				vStepLL = _mm_fmadd_ps(dLL, dLL, vStepLL);
+				vStepL  = _mm_fmadd_ps(dL,  dL,  vStepL);
+				vStepM  = _mm_fmadd_ps(dM,  dM,  vStepM);
+				vStepR  = _mm_fmadd_ps(dR,  dR,  vStepR);
 #else
-				vStepL = _mm_add_ps(vStepL, _mm_mul_ps(c, dL));
-				vStepM = _mm_add_ps(vStepM, _mm_mul_ps(s, dL));
-				vStepM = _mm_add_ps(vStepM, _mm_mul_ps(s, dH));
-				vStepR = _mm_add_ps(vStepR, _mm_mul_ps(c, dH));
+				dLL = _mm_mul_ps(dLL, dLL);
+				dL  = _mm_mul_ps(dL,  dL);
+				dM  = _mm_mul_ps(dL,  dM);
+				dR  = _mm_mul_ps(dR,  dR);
+				vStepLL = _mm_add_ps(vStepLL, dLL);
+				vStepL  = _mm_add_ps(vStepL,  dL);
+				vStepM  = _mm_add_ps(vStepM,  dM);
+				vStepR  = _mm_add_ps(vStepR,  dH);
 #endif
 			}
 			{
 				__m128 a, b, c, d;
-				a = _mm_shuffle_ps(vStepL, vStepLW, 0x88); //! {StepX[0,2],StepXW[0,2]}
-				b = _mm_shuffle_ps(vStepL, vStepLW, 0xDD); //! {StepX[1,3],StepXW[1,3]}
-				c = _mm_add_ps(a, b);                      //! {StepX[0+1],StepX[2+3],StepXW[0+1],StepXW[2+3]}
+				a = _mm_shuffle_ps(vStepLL, vStepLLW, 0x88); //! {StepX[0,2],StepXW[0,2]}
+				b = _mm_shuffle_ps(vStepLL, vStepLLW, 0xDD); //! {StepX[1,3],StepXW[1,3]}
+				c = _mm_add_ps(a, b);                        //! {StepX[0+1],StepX[2+3],StepXW[0+1],StepXW[2+3]}
+				a = _mm_shuffle_ps(vStepL, vStepLW, 0x88);
+				b = _mm_shuffle_ps(vStepL, vStepLW, 0xDD);
+				d = _mm_add_ps(a, b);
+				a = _mm_shuffle_ps(c, d, 0x88);              //! {StepX[0+1],StepXW[0+1],StepY[0+1],StepYW[0+1]}
+				b = _mm_shuffle_ps(c, d, 0xDD);              //! {StepX[2+3],StepXW[2+3],StepY[2+3],StepYW[2+3]}
+				c = _mm_add_ps(a, b);                        //! {StepX,StepXW,StepY,StepYW}
+				_mm_store_ps(StepData, c);
 				a = _mm_shuffle_ps(vStepM, vStepMW, 0x88);
 				b = _mm_shuffle_ps(vStepM, vStepMW, 0xDD);
+				c = _mm_add_ps(a, b);
+				a = _mm_shuffle_ps(vStepR, vStepRW, 0x88);
+				b = _mm_shuffle_ps(vStepR, vStepRW, 0xDD);
 				d = _mm_add_ps(a, b);
-				a = _mm_shuffle_ps(c, d, 0x88);            //! {StepX[0+1],StepXW[0+1],StepY[0+1],StepYW[0+1]}
-				b = _mm_shuffle_ps(c, d, 0xDD);            //! {StepX[2+3],StepXW[2+3],StepY[2+3],StepYW[2+3]}
-				c = _mm_add_ps(a, b);                      //! {StepX,StepXW,StepY,StepYW}
-				_mm_store_ps(StepData, c);
-				a = _mm_shuffle_ps(vStepR, vStepRW, 0x88); //! {StepX[0,2],StepXW[0,2]}
-				b = _mm_shuffle_ps(vStepR, vStepRW, 0xDD); //! {StepX[1,3],StepXW[1,3]}
-				c = _mm_add_ps(a, b);                      //! {StepX[0+1],StepX[2+3],StepXW[0+1],StepXW[2+3]}
-				a = _mm_shuffle_ps(c, c, 0x88);            //! {StepX[0+1],StepXW[0+1],XXX,YYY}
-				b = _mm_shuffle_ps(c, c, 0xDD);            //! {StepX[2+3],StepXW[2+3],XXX,YYY}
-				c = _mm_add_ps(a, b);                      //! {StepX,StepXW,XXX,YYY}
-				_mm_storel_pi((__m64*)(StepData+4), c);
+				a = _mm_shuffle_ps(c, d, 0x88);
+				b = _mm_shuffle_ps(c, d, 0xDD);
+				c = _mm_add_ps(a, b);
+				_mm_store_ps(StepData+4, c);
 			}
 #else
-			float StepL = 0.0f, StepLW = 0.0f;
-			float StepM = 0.0f, StepMW = 0.0f;
-			float StepR = 0.0f, StepRW = 0.0f;
-			for(n=0;n<SubBlockSize;n++) {
-				float s  = *Sin++;
-				float c  = *--Cos;
-				float dL = *SrcLo++;
-				float dH = *--SrcHi;
-				StepL += c*SQR(dL), StepLW += c*dL;
-				StepM += s*SQR(dL), StepMW += s*dL;
-				StepM += s*SQR(dH), StepMW += s*dH;
-				StepR += c*SQR(dH), StepRW += c*dH;
+			float StepLL = SQR(0x1.0p-32f), StepLLW = 0x1.0p-32f;
+			float StepL  = SQR(0x1.0p-32f), StepLW  = 0x1.0p-32f;
+			float StepM  = SQR(0x1.0p-32f), StepMW  = 0x1.0p-32f;
+			float StepR  = SQR(0x1.0p-32f), StepRW  = 0x1.0p-32f;
+			for(n=0;n<SubBlockSize/2;n++) {
+				float dLL = Src[n-SubBlockSize/2];
+				float dL  = Src[n];
+				float dM  = Src[n+SubBlockSize/2];
+				float dR  = Src[n+SubBlockSize];
+				StepLL += SQR(dLL), StepLLW += dLL;
+				StepL  += SQR(dL),  StepLW  += dL;
+				StepM  += SQR(dM),  StepMW  += dM;
+				StepR  += SQR(dR),  StepRW  += dR;
 			}
-			STEP_L = StepL, STEP_LW = StepLW;
-			STEP_M = StepM, STEP_MW = StepMW;
-			STEP_R = StepR, STEP_RW = StepRW;
+			STEP_LL = StepLL, STEP_LLW = StepLLW;
+			STEP_L  = StepL,  STEP_LW  = StepLW;
+			STEP_M  = StepM,  STEP_MW  = StepMW;
+			STEP_R  = StepR,  STEP_RW  = StepRW;
 #endif
 		}
-
-		//! Compute the stationarity of each segment, relative to the whole block
-		//! 0x1.45F307p-1 = 2/Pi. This normalizes for a sine window (0 .. Pi).
-		//! Note that 0x1.45F307p0 is used (scaled by 2.0), as the window length
-		//! is actually SubBlockSize*2.
-		float StationarityL = STEP_MW*STEP_LW, StationarityLW = SubBlockSize*0x1.45F307p0f*STEP_L;
-		float StationarityM = STEP_MW*STEP_MW, StationarityMW = SubBlockSize*0x1.45F307p0f*STEP_M;
-		float StationarityR = STEP_MW*STEP_RW, StationarityRW = SubBlockSize*0x1.45F307p0f*STEP_R;
 
 		//! Can we use window switching at all?
 		//! NOTE: Limited to a minimum subblock size of 128 samples, and
@@ -244,30 +294,31 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize > 128 && Decimation < 0x8) {
 			enum { POS_L, POS_M, POS_R};
 
-			//! Determine which side (L/M/R) is most stationary
-			int   SmoothPos = POS_M;
-			float SmoothV   = StationarityM;
-			float SmoothW   = StationarityMW;
-			if(StationarityL*SmoothW > SmoothV*StationarityLW) {
-				SmoothPos = POS_L;
-				SmoothV   = StationarityL;
-				SmoothW   = StationarityLW;
+			//! Determine which segment (L/M/R) is most transient
+			//! NOTE: R corresponds to the end of the block pointed to by
+			//! `Data`, which can use overlap switching to avoid decimation.
+			float tRatioL = STEP_L * STEP_LLW, tRatioLW = STEP_LW * STEP_LL;
+			float tRatioM = STEP_M * STEP_LW,  tRatioMW = STEP_MW * STEP_L;
+			float tRatioR = STEP_R * STEP_MW,  tRatioRW = STEP_RW * STEP_M;
+			int   TransientPos = POS_L;
+			float TransientV   = tRatioL;
+			float TransientW   = tRatioLW;
+			if(tRatioM*TransientW > TransientV*tRatioMW) {
+				TransientPos = POS_M;
+				TransientV   = tRatioM;
+				TransientW   = tRatioMW;
 			}
-			if(StationarityR*SmoothW > SmoothV*StationarityRW) {
-				SmoothPos = POS_R;
-				SmoothV   = StationarityR;
-				SmoothW   = StationarityRW;
+			if(tRatioR*TransientW > TransientV*tRatioRW) {
+				TransientPos = POS_R;
+				TransientV   = tRatioR;
+				TransientW   = tRatioRW;
 			}
 
-			//! If the L or R side become significantly more stationary
-			//! than the middle, then deciamte the subblock further.
-			//! NOTE: It isn't necessary to check that SmoothPos == POS_M,
-			//! as then the stationarity would compare against itself.
-			if(SmoothV*StationarityMW > 1.5f*StationarityM*SmoothW) {
+			//! If the transient is not on overlap boundary and is
+			//! still significant, decimate the subblock further
+			if(TransientPos != POS_R && TransientV > 2.0f*TransientW) {
 				//! Update the decimation pattern and continue
-				//! NOTE: If the smoother side is on the right,
-				//! then subdivide the left side, and vice-versa.
-				if(SmoothPos == POS_R)
+				if(TransientPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
 				else
 					Decimation  = (Decimation<<1) | 1,
@@ -283,24 +334,27 @@ static inline int Block_Transform_GetWindowCtrl(
 		break;
 	}
 
-	//! Use the jump to the middle from the last [sub]block to judge the overlap
-	int OverlapScale;
-	float Ra = STEP_R  * STEP_MW;
-	float Rb = STEP_RW * STEP_M;
-	if(Ra*0x1.0p-1f >= Rb) { //! a/b==2^1 is the first ratio to result in a ratio > 0
-		//! a/b >= 2^13 gives the upper limit ratio of 7.0
-		if(Ra*0x1.0p-13f < Rb) {
-			//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-			//! Scale by 0.5 to account for the step energy being squared
-			float r = Ra / Rb;
-			OverlapScale = (int)(0x1.715476p-1f*logf(r) + 0.5f);
-		} else OverlapScale = 7;
-		while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
-		while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
-	} else OverlapScale = 0;
+	//! Use the energy jump from the last [sub]block to judge the overlap
+	int OverlapScale; {
+		float Ra = STEP_R  * STEP_LLW;
+		float Rb = STEP_RW * STEP_LL;
+		if(Ra*0x1.0p-1f >= Rb) { //! a/b==2^1 is the first ratio to result in a ratio > 0
+			//! a/b >= 2^13 gives the upper limit ratio of 7.0
+			if(Ra*0x1.0p-13f < Rb) {
+				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+				//! Scale by 0.5 to account for the step energy being squared
+				float r = Ra / Rb;
+				OverlapScale = (int)(0x1.715476p-1f*logf(r) + 0.5f);
+			} else OverlapScale = 7;
+			while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
+			while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
+		} else OverlapScale = 0;
+	}
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(SubBlockSize != BlockSize) + 0x10*Decimation;
+#undef STEP_LL
+#undef STEP_LLW
 #undef STEP_L
 #undef STEP_LW
 #undef STEP_M
