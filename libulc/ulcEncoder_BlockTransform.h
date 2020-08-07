@@ -126,9 +126,10 @@ static inline int Block_Transform_GetWindowCtrl(
 		const float *Src;
 
 		//! Get step energy for last block
+		//! NOTE: The first energy sample will always be 0, which is non-ideal.
 		Src = LastBlockData + Chan*BlockSize;
 		SampleLast = Src[0];
-		for(n=0;n<BlockSize;n++) {
+		for(n=1;n<BlockSize;n++) {
 			float v = *Src++;
 			(*Dst++) += SQR(v - SampleLast);
 			SampleLast = v;
@@ -144,7 +145,6 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Begin binary search for transient region until it centers within a subblock
-	//! NOTE: The janky setup for StepX[W] is necessary for efficient vectorization.
 	int Decimation = 1, SubBlockSize = BlockSize;
 	for(;;) {
 		//! Calculate the smooth-max energy of the left/middle/right sections
@@ -152,14 +152,12 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! NOTE: Offset by -BlockSize/2 relative to the data pointed to by
 		//! the argument `Data`. This is due to MDCT overlap placing the
 		//! start of the lapping region at this point in time.
-		//! NOTE: It is necessary to add a tiny bias to avoid issues with
-		//! division-by-0 (via cross-multiplication by 0).
 		const float *Src = StepBuffer + BlockSize/2; {
 #if defined(__AVX__)
-			__m256 vStepLL = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepLLW = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
-			__m256 vStepL  = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepLW  = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
-			__m256 vStepM  = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepMW  = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
-			__m256 vStepR  = _mm256_setr_ps(SQR(0x1.0p-32f),0,0,0,0,0,0,0), vStepRW  = _mm256_setr_ps(0x1.0p-32f,0,0,0,0,0,0,0);
+			__m256 vStepLL = _mm256_setzero_ps(), vStepLLW = _mm256_setzero_ps();
+			__m256 vStepL  = _mm256_setzero_ps(), vStepLW  = _mm256_setzero_ps();
+			__m256 vStepM  = _mm256_setzero_ps(), vStepMW  = _mm256_setzero_ps();
+			__m256 vStepR  = _mm256_setzero_ps(), vStepRW  = _mm256_setzero_ps();
 			for(n=0;n<SubBlockSize/2;n+=8) {
 				__m256 dLL, dL, dM, dR;
 
@@ -212,10 +210,10 @@ static inline int Block_Transform_GetWindowCtrl(
 				_mm256_store_ps(StepData, c);
 			}
 #elif defined(__SSE__)
-			__m128 vStepLL = _mm_set_ss(SQR(0x1.0p-32f)), vStepLLW = _mm_set_ss(0x1.0p-32f);
-			__m128 vStepL  = _mm_set_ss(SQR(0x1.0p-32f)), vStepLW  = _mm_set_ss(0x1.0p-32f);
-			__m128 vStepM  = _mm_set_ss(SQR(0x1.0p-32f)), vStepMW  = _mm_set_ss(0x1.0p-32f);
-			__m128 vStepR  = _mm_set_ss(SQR(0x1.0p-32f)), vStepRW  = _mm_set_ss(0x1.0p-32f);
+			__m128 vStepLL = _mm_setzero_ps(), vStepLLW = _mm_setzero_ps();
+			__m128 vStepL  = _mm_setzero_ps(), vStepLW  = _mm_setzero_ps();
+			__m128 vStepM  = _mm_setzero_ps(), vStepMW  = _mm_setzero_ps();
+			__m128 vStepR  = _mm_setzero_ps(), vStepRW  = _mm_setzero_ps();
 			for(n=0;n<SubBlockSize/2;n+=4) {
 				__m128 dLL, dL, dM, dR;
 
@@ -267,10 +265,10 @@ static inline int Block_Transform_GetWindowCtrl(
 				_mm_store_ps(StepData+4, c);
 			}
 #else
-			float StepLL = SQR(0x1.0p-32f), StepLLW = 0x1.0p-32f;
-			float StepL  = SQR(0x1.0p-32f), StepLW  = 0x1.0p-32f;
-			float StepM  = SQR(0x1.0p-32f), StepMW  = 0x1.0p-32f;
-			float StepR  = SQR(0x1.0p-32f), StepRW  = 0x1.0p-32f;
+			float StepLL = 0.0f, StepLLW = 0.0f;
+			float StepL  = 0.0f, StepLW  = 0.0f;
+			float StepM  = 0.0f, StepMW  = 0.0f;
+			float StepR  = 0.0f, StepRW  = 0.0f;
 			for(n=0;n<SubBlockSize/2;n++) {
 				float dLL = Src[n-SubBlockSize/2];
 				float dL  = Src[n];
@@ -294,12 +292,22 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize > 128 && Decimation < 0x8) {
 			enum { POS_L, POS_M, POS_R};
 
+			//! Determine the transient ratios (ie. how much energy jumps between subblocks)
+			float tRatioL = STEP_L, tRatioLW = STEP_LL;
+			float tRatioM = STEP_M, tRatioMW = STEP_L;
+			float tRatioR = STEP_R, tRatioRW = STEP_M;
+			if(tRatioL < tRatioLW) { float t = tRatioL; tRatioL = tRatioLW, tRatioLW = t; }
+			if(tRatioM < tRatioMW) { float t = tRatioM; tRatioM = tRatioMW, tRatioMW = t; }
+			if(tRatioR < tRatioRW) { float t = tRatioR; tRatioR = tRatioRW, tRatioRW = t; }
+
+			//! Emphasize transient ratios by the 'smooth-max'-to-average ratio
+			tRatioL *= STEP_L * (SubBlockSize/2), tRatioLW *= STEP_LW * STEP_LW;
+			tRatioM *= STEP_M * (SubBlockSize/2), tRatioMW *= STEP_MW * STEP_MW;
+			tRatioR *= STEP_R * (SubBlockSize/2), tRatioRW *= STEP_RW * STEP_RW;
+
 			//! Determine which segment (L/M/R) is most transient
 			//! NOTE: R corresponds to the end of the block pointed to by
 			//! `Data`, which can use overlap switching to avoid decimation.
-			float tRatioL = STEP_L * STEP_LLW, tRatioLW = STEP_LW * STEP_LL;
-			float tRatioM = STEP_M * STEP_LW,  tRatioMW = STEP_MW * STEP_L;
-			float tRatioR = STEP_R * STEP_MW,  tRatioRW = STEP_RW * STEP_M;
 			int   TransientPos = POS_L;
 			float TransientV   = tRatioL;
 			float TransientW   = tRatioLW;
@@ -314,9 +322,9 @@ static inline int Block_Transform_GetWindowCtrl(
 				TransientW   = tRatioRW;
 			}
 
-			//! If the transient is not on overlap boundary and is
-			//! still significant, decimate the subblock further
-			if(TransientPos != POS_R && TransientV > 2.0f*TransientW) {
+			//! If the transient is not on the overlap boundary and
+			//! is still significant, decimate the subblock further
+			if(TransientPos != POS_R && TransientV > SQR(4.0f)*TransientW) {
 				//! Update the decimation pattern and continue
 				if(TransientPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -334,10 +342,11 @@ static inline int Block_Transform_GetWindowCtrl(
 		break;
 	}
 
-	//! Use the energy jump from the last [sub]block to judge the overlap
+	//! Determine the overlap amount for the transient subblock
 	int OverlapScale; {
-		float Ra = STEP_R  * STEP_LLW;
-		float Rb = STEP_RW * STEP_LL;
+		//! NOTE: M+R and LL+L each form a full block's worth of samples.
+		float Ra = STEP_M  + STEP_R;
+		float Rb = STEP_LL + STEP_L;
 		if(Ra*0x1.0p-1f >= Rb) { //! a/b==2^1 is the first ratio to result in a ratio > 0
 			//! a/b >= 2^13 gives the upper limit ratio of 7.0
 			if(Ra*0x1.0p-13f < Rb) {
