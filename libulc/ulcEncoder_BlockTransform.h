@@ -48,16 +48,18 @@ static inline void Block_Transform_WriteSortValues(
 		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
-			ValNp += Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize, Gamma);
+			//! NOTE: Operate in the energy (X^2) domain, as this
+			//! seems to result in slightly improved quality.
+			ValNp += ValNp + Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize, Gamma);
 #else
 			//! Not so much a psychoacoustic optimization as an MDCT
 			//! energy correction factor
-			ValNp += EnergyNp[Band];
+			ValNp += ValNp + EnergyNp[Band];
 #endif
 			//! Store the sort value for this coefficient
 			CoefIdx[Band] = ValNp + AnalysisPowerNp;
 			(*nNzCoef)++;
-		} else CoefIdx[Band] = -1.0e30f; //! Unusable coefficient; map to the end of the list
+		} else CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
 	}
 }
 
@@ -324,7 +326,9 @@ static inline int Block_Transform_GetWindowCtrl(
 
 			//! If the transient is not on the overlap boundary and
 			//! is still significant, decimate the subblock further
-			if(TransientPos != POS_R && TransientV > SQR(4.0f)*TransientW) {
+			//! NOTE: 8.0 = (2 * Sqrt[2])^2 (ie. if one transient
+			//! measure agrees, the other becomes more sensitive).
+			if(TransientPos != POS_R && TransientV > 8.0f*TransientW) {
 				//! Update the decimation pattern and continue
 				if(TransientPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
