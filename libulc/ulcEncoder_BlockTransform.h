@@ -35,7 +35,11 @@ static inline void Block_Transform_WriteSortValues(
 ) {
 	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
-	float Gamma = logf(2*BlockSize);
+#if 0 //! Log2[2*BlockSize] can be done in integer math
+	float Gamma = 0x1.715476p0f*logf(2*BlockSize); //! Log2[2*BlockSize] == Log[2*BlockSize]/Log[2]
+#else
+	float Gamma = (float)(32 - __builtin_clz(BlockSize)); //! Log2[2*x] == 1+Log2[x], Log2[x] == 31-Clz_32bit[x]
+#endif
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize, NyquistHz);
 #else
@@ -108,7 +112,8 @@ static inline int Block_Transform_GetWindowCtrl(
 	int BlockSize,
 	int MinOverlap,
 	int MaxOverlap,
-	int nChan
+	int nChan,
+	int RateHz
 ) {
 	int n, Chan;
 	float StepData[8]; //! StepLL[W], StepL[W], StepM[W], StepR[W]. Janky setup for vectorization
@@ -122,51 +127,65 @@ static inline int Block_Transform_GetWindowCtrl(
 #define STEP_RW  StepData[7]
 
 	//! Perform a highpass filter to get the step/transient energies
-	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
+	for(n=0;n<BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-		float SampleLast, *Dst = StepBuffer;
 		const float *Src;
+		float v, d, SampleLast, *Dst = StepBuffer;
 
 		//! Get step energy for last block
-		//! NOTE: The first energy sample will always be 0, which is non-ideal.
+		//! NOTE: The first step sample will always be zero, but this is ok
+		//! as the formulation is finding a smooth-max rather than average.
 		Src = LastBlockData + Chan*BlockSize;
 		SampleLast = Src[0];
-		for(n=1;n<BlockSize;n++) {
-			float v = *Src++;
-			(*Dst++) += SQR(v - SampleLast);
-			SampleLast = v;
+		for(n=0;n<BlockSize;n++) {
+			v = *Src++, d = v - SampleLast, SampleLast = v, *Dst++ += SQR(d);
 		}
 
 		//! Get step energy for this block
 		Src = Data + Chan*BlockSize;
 		for(n=0;n<BlockSize;n++) {
-			float v = *Src++;
-			(*Dst++) += SQR(v - SampleLast);
-			SampleLast = v;
+			v = *Src++, d = v - SampleLast, SampleLast = v, *Dst++ += SQR(d);
 		}
 	}
 
+	//! Spread the energy backwards a bit to account for pre-echo
+	{
+		//! Pre-echo decay curve: 24dB/ms (in X^2 domain):
+		//!  E^(-Log[10]*1000*(dBDecayPerMs/10) / RateHz)
+		float *Buf = StepBuffer + BlockSize*2;
+		float a = expf(-0x1.596344p12f / RateHz);
+		float b = 1.0f - a;
+		float SampleLast = 0.0f;
+		for(n=0;n<BlockSize*2;n++) {
+			float v = *--Buf;
+			*Buf = SampleLast = a*SampleLast + b*v;
+		}
+	}
+
+	//! NOTE: Offset by -BlockSize/2 relative to the data pointed to by
+	//! `StepBuffer`. This is due to MDCT overlap placing the start of
+	//! the lapping region at this point in time.
+	StepBuffer += /*BlockSize - */BlockSize/2; //! x - x/2 == x/2
+
 	//! Begin binary search for transient region until it centers within a subblock
-	int Decimation = 1, SubBlockSize = BlockSize;
+	//! NOTE: Operating with SubBlockSize/2 should result in more optimized code.
+	int Decimation = 1, SubBlockSize_2 = BlockSize / 2;
 	for(;;) {
 		//! Calculate the smooth-max energy of the left/middle/right sections
 		//! (ie. compute a sparseness-compensating average energy)
-		//! NOTE: Offset by -BlockSize/2 relative to the data pointed to by
-		//! the argument `Data`. This is due to MDCT overlap placing the
-		//! start of the lapping region at this point in time.
-		const float *Src = StepBuffer + BlockSize/2; {
+		{
 #if defined(__AVX__)
 			__m256 vStepLL = _mm256_setzero_ps(), vStepLLW = _mm256_setzero_ps();
 			__m256 vStepL  = _mm256_setzero_ps(), vStepLW  = _mm256_setzero_ps();
 			__m256 vStepM  = _mm256_setzero_ps(), vStepMW  = _mm256_setzero_ps();
 			__m256 vStepR  = _mm256_setzero_ps(), vStepRW  = _mm256_setzero_ps();
-			for(n=0;n<SubBlockSize/2;n+=8) {
+			for(n=0;n<SubBlockSize_2;n+=8) {
 				__m256 dLL, dL, dM, dR;
 
-				dLL = _mm256_load_ps(Src + n - SubBlockSize/2);
-				dL  = _mm256_load_ps(Src + n);
-				dM  = _mm256_load_ps(Src + n + SubBlockSize/2);
-				dR  = _mm256_load_ps(Src + n + SubBlockSize);
+				dLL = _mm256_load_ps(StepBuffer + n - SubBlockSize_2);
+				dL  = _mm256_load_ps(StepBuffer + n);
+				dM  = _mm256_load_ps(StepBuffer + n + SubBlockSize_2);
+				dR  = _mm256_load_ps(StepBuffer + n + SubBlockSize_2*2);
 				vStepLLW = _mm256_add_ps(vStepLLW, dLL);
 				vStepLW  = _mm256_add_ps(vStepLW,  dL);
 				vStepMW  = _mm256_add_ps(vStepMW,  dM);
@@ -179,12 +198,12 @@ static inline int Block_Transform_GetWindowCtrl(
 #else
 				dLL = _mm256_mul_ps(dLL, dLL);
 				dL  = _mm256_mul_ps(dL,  dL);
-				dM  = _mm256_mul_ps(dL,  dM);
+				dM  = _mm256_mul_ps(dM,  dM);
 				dR  = _mm256_mul_ps(dR,  dR);
 				vStepLL = _mm256_add_ps(vStepLL, dLL);
 				vStepL  = _mm256_add_ps(vStepL,  dL);
 				vStepM  = _mm256_add_ps(vStepM,  dM);
-				vStepR  = _mm256_add_ps(vStepR,  dH);
+				vStepR  = _mm256_add_ps(vStepR,  dR);
 #endif
 			}
 			{
@@ -216,13 +235,13 @@ static inline int Block_Transform_GetWindowCtrl(
 			__m128 vStepL  = _mm_setzero_ps(), vStepLW  = _mm_setzero_ps();
 			__m128 vStepM  = _mm_setzero_ps(), vStepMW  = _mm_setzero_ps();
 			__m128 vStepR  = _mm_setzero_ps(), vStepRW  = _mm_setzero_ps();
-			for(n=0;n<SubBlockSize/2;n+=4) {
+			for(n=0;n<SubBlockSize_2;n+=4) {
 				__m128 dLL, dL, dM, dR;
 
-				dLL = _mm_load_ps(Src + n - SubBlockSize/2);
-				dL  = _mm_load_ps(Src + n);
-				dM  = _mm_load_ps(Src + n + SubBlockSize/2);
-				dR  = _mm_load_ps(Src + n + SubBlockSize);
+				dLL = _mm_load_ps(StepBuffer + n - SubBlockSize_2);
+				dL  = _mm_load_ps(StepBuffer + n);
+				dM  = _mm_load_ps(StepBuffer + n + SubBlockSize_2);
+				dR  = _mm_load_ps(StepBuffer + n + SubBlockSize_2*2);
 				vStepLLW = _mm_add_ps(vStepLLW, dLL);
 				vStepLW  = _mm_add_ps(vStepLW,  dL);
 				vStepMW  = _mm_add_ps(vStepMW,  dM);
@@ -235,12 +254,12 @@ static inline int Block_Transform_GetWindowCtrl(
 #else
 				dLL = _mm_mul_ps(dLL, dLL);
 				dL  = _mm_mul_ps(dL,  dL);
-				dM  = _mm_mul_ps(dL,  dM);
+				dM  = _mm_mul_ps(dM,  dM);
 				dR  = _mm_mul_ps(dR,  dR);
 				vStepLL = _mm_add_ps(vStepLL, dLL);
 				vStepL  = _mm_add_ps(vStepL,  dL);
 				vStepM  = _mm_add_ps(vStepM,  dM);
-				vStepR  = _mm_add_ps(vStepR,  dH);
+				vStepR  = _mm_add_ps(vStepR,  dR);
 #endif
 			}
 			{
@@ -271,11 +290,11 @@ static inline int Block_Transform_GetWindowCtrl(
 			float StepL  = 0.0f, StepLW  = 0.0f;
 			float StepM  = 0.0f, StepMW  = 0.0f;
 			float StepR  = 0.0f, StepRW  = 0.0f;
-			for(n=0;n<SubBlockSize/2;n++) {
-				float dLL = Src[n-SubBlockSize/2];
-				float dL  = Src[n];
-				float dM  = Src[n+SubBlockSize/2];
-				float dR  = Src[n+SubBlockSize];
+			for(n=0;n<SubBlockSize_2;n++) {
+				float dLL = StepBuffer[n-SubBlockSize_2];
+				float dL  = StepBuffer[n];
+				float dM  = StepBuffer[n+SubBlockSize_2];
+				float dR  = StepBuffer[n+SubBlockSize_2*2];
 				StepLL += SQR(dLL), StepLLW += dLL;
 				StepL  += SQR(dL),  StepLW  += dL;
 				StepM  += SQR(dM),  StepMW  += dM;
@@ -288,54 +307,56 @@ static inline int Block_Transform_GetWindowCtrl(
 #endif
 		}
 
+		//! Normalize the step values
+		{
+			//! NOTE: Avoid division-by-zero issues by adding a tiny bias.
+			//! NOTE: Keep the bias tiny by scaling up the values prior to biasing.
+			//! The maximum value that STEP_X can take on is (2^2)^2 * (MaxBlockSize/2),
+			//! giving us a large margin to scale into.
+			const float NormScale = 0x1.0p+64f;
+			const float StepBias  = 0x1.0p-63f, StepBias2 = StepBias*StepBias;
+			STEP_LL = (NormScale*STEP_LL + StepBias2) / (NormScale*STEP_LLW + StepBias);
+			STEP_L  = (NormScale*STEP_L  + StepBias2) / (NormScale*STEP_LW  + StepBias);
+			STEP_M  = (NormScale*STEP_M  + StepBias2) / (NormScale*STEP_MW  + StepBias);
+			STEP_R  = (NormScale*STEP_R  + StepBias2) / (NormScale*STEP_RW  + StepBias);
+		}
+
 		//! Can we use window switching at all?
 		//! NOTE: Limited to a minimum subblock size of 128 samples, and
 		//! maximum decimation of 1/8 (Decimation > 8h: 1yyy = Decimation by 1/8)
-		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize > 128 && Decimation < 0x8) {
+		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize_2 > 128/2 && Decimation < 0x8) {
 			enum { POS_L, POS_M, POS_R};
 
 			//! Determine the transient ratios (ie. how much energy jumps between subblocks)
-			float tRatioL = STEP_L, tRatioLW = STEP_LL;
-			float tRatioM = STEP_M, tRatioMW = STEP_L;
-			float tRatioR = STEP_R, tRatioRW = STEP_M;
-			if(tRatioL < tRatioLW) { float t = tRatioL; tRatioL = tRatioLW, tRatioLW = t; }
-			if(tRatioM < tRatioMW) { float t = tRatioM; tRatioM = tRatioMW, tRatioMW = t; }
-			if(tRatioR < tRatioRW) { float t = tRatioR; tRatioR = tRatioRW, tRatioRW = t; }
-
-			//! Emphasize transient ratios by the 'smooth-max'-to-average ratio
-			tRatioL *= STEP_L * (SubBlockSize/2), tRatioLW *= STEP_LW * STEP_LW;
-			tRatioM *= STEP_M * (SubBlockSize/2), tRatioMW *= STEP_MW * STEP_MW;
-			tRatioR *= STEP_R * (SubBlockSize/2), tRatioRW *= STEP_RW * STEP_RW;
+			//! NOTE: Decays are scaled by half the amplitude.
+			float RatioL = (2.0f*STEP_L > STEP_LL) ? (STEP_L / STEP_LL) : (STEP_LL / (2.0f*STEP_L));
+			float RatioM = (2.0f*STEP_M > STEP_L)  ? (STEP_M / STEP_L)  : (STEP_L  / (2.0f*STEP_M));
+			float RatioR = (2.0f*STEP_R > STEP_M)  ? (STEP_R / STEP_M)  : (STEP_M  / (2.0f*STEP_R));
 
 			//! Determine which segment (L/M/R) is most transient
 			//! NOTE: R corresponds to the end of the block pointed to by
 			//! `Data`, which can use overlap switching to avoid decimation.
-			int   TransientPos = POS_L;
-			float TransientV   = tRatioL;
-			float TransientW   = tRatioLW;
-			if(tRatioM*TransientW > TransientV*tRatioMW) {
-				TransientPos = POS_M;
-				TransientV   = tRatioM;
-				TransientW   = tRatioMW;
+			int   TransientPos   = POS_L;
+			float TransientRatio = RatioL;
+			if(RatioM > TransientRatio) {
+				TransientPos   = POS_M;
+				TransientRatio = RatioM;
 			}
-			if(tRatioR*TransientW > TransientV*tRatioRW) {
-				TransientPos = POS_R;
-				TransientV   = tRatioR;
-				TransientW   = tRatioRW;
+			if(RatioR > TransientRatio) {
+				TransientPos   = POS_R;
+				TransientRatio = RatioR;
 			}
 
 			//! If the transient is not on the overlap boundary and
 			//! is still significant, decimate the subblock further
-			//! NOTE: 8.0 = (2 * Sqrt[2])^2 (ie. if one transient
-			//! measure agrees, the other becomes more sensitive).
-			if(TransientPos != POS_R && TransientV > 8.0f*TransientW) {
+			if(TransientPos != POS_R && TransientRatio > 2.0f) {
 				//! Update the decimation pattern and continue
 				if(TransientPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
 				else
 					Decimation  = (Decimation<<1) | 1,
-					StepBuffer += SubBlockSize/2;
-				SubBlockSize /= 2;
+					StepBuffer += SubBlockSize_2;
+				SubBlockSize_2 /= 2;
 				continue;
 			}
 		}
@@ -347,17 +368,17 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Determine the overlap amount for the transient subblock
-	int OverlapScale; {
-		//! NOTE: M+R and LL+L each form a full block's worth of samples.
-		float Ra = STEP_M  + STEP_R;
-		float Rb = STEP_LL + STEP_L;
-		if(Ra*0x1.0p-1f >= Rb) { //! a/b==2^1 is the first ratio to result in a ratio > 0
-			//! a/b >= 2^13 gives the upper limit ratio of 7.0
-			if(Ra*0x1.0p-13f < Rb) {
+	int OverlapScale, SubBlockSize = SubBlockSize_2*2; {
+		//! R/M or M/L; when R/M isn't a transient, then odds are that M/L is
+		float Ra = STEP_R;
+		float Rb = STEP_M;
+		if(Ra < Rb) Ra = STEP_M, Rb = STEP_L;
+		if(Ra*0x1.6A09E6p-1f >= Rb) { //! a/b==2^0.5 is the first ratio to result in a ratio > 0
+			//! a/b >= 2^6.5 gives the upper limit ratio of 7.0
+			if(Ra*0x1.6A09E6p-7f < Rb) {
 				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-				//! Scale by 0.5 to account for the step energy being squared
 				float r = Ra / Rb;
-				OverlapScale = (int)(0x1.715476p-1f*logf(r) + 0.5f);
+				OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
 			} else OverlapScale = 7;
 			while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 			while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
@@ -509,7 +530,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		BlockSize,
 		State->MinOverlap,
 		State->MaxOverlap,
-		nChan
+		nChan,
+		State->RateHz
 	);
 	int NextBlockSubBlockSize = BlockSize; {
 		//! Adjust for the first [sub]block's size
