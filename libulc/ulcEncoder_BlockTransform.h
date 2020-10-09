@@ -35,11 +35,6 @@ static inline void Block_Transform_WriteSortValues(
 ) {
 	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
-#if 0 //! Log2[2*BlockSize] can be done in integer math
-	float Gamma = 0x1.715476p0f*logf(2*BlockSize); //! Log2[2*BlockSize] == Log[2*BlockSize]/Log[2]
-#else
-	float Gamma = (float)(32 - __builtin_clz(BlockSize)); //! Log2[2*x] == 1+Log2[x], Log2[x] == 31-Clz_32bit[x]
-#endif
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize, NyquistHz);
 #else
@@ -54,7 +49,7 @@ static inline void Block_Transform_WriteSortValues(
 			//! Apply psychoacoustic corrections to this band energy
 			//! NOTE: Operate in the energy (X^2) domain, as this
 			//! seems to result in slightly improved quality.
-			ValNp += ValNp + Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize, Gamma);
+			ValNp += ValNp + Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
 #else
 			//! Not so much a psychoacoustic optimization as an MDCT
 			//! energy correction factor
@@ -103,8 +98,6 @@ static inline void Block_Transform_WriteSortValues(
 //!    0001: N/1*
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
-//! NOTE: There is a lot of cross-multiplication in this function, the purpose
-//! of which is to avoid division and its associated issues (eg. divide-by-0).
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
 	const float *LastBlockData,
@@ -127,7 +120,7 @@ static inline int Block_Transform_GetWindowCtrl(
 #define STEP_RW  StepData[7]
 
 	//! Perform a highpass filter to get the step/transient energies
-	for(n=0;n<BlockSize;n++) StepBuffer[n] = 0.0f;
+	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 		const float *Src;
 		float v, d, SampleLast, *Dst = StepBuffer;
@@ -148,26 +141,29 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 	}
 
-	//! Spread the energy backwards a bit to account for pre-echo
+	//! Spread the energy backwards a bit to account for pre-echo.
+	//! The idea is to have the transient detector begin decimating
+	//! at the onset of the transient, rather than immediately when
+	//! the transient strikes, giving a less jarring transition.
 	{
-		//! Pre-echo decay curve: 24dB/ms (in X^2 domain):
+		//! Pre-echo decay curve: 12dB/ms (in X^2 domain):
 		//!  E^(-Log[10]*1000*(dBDecayPerMs/10) / RateHz)
 		float *Buf = StepBuffer + BlockSize*2;
-		float a = expf(-0x1.596344p12f / RateHz);
+		float a = expf(-0x1.596344p11f / RateHz);
 		float b = 1.0f - a;
-		float SampleLast = 0.0f;
+		float SampleLast = Buf[-1];
 		for(n=0;n<BlockSize*2;n++) {
 			float v = *--Buf;
 			*Buf = SampleLast = a*SampleLast + b*v;
 		}
 	}
 
-	//! NOTE: Offset by -BlockSize/2 relative to the data pointed to by
-	//! `StepBuffer`. This is due to MDCT overlap placing the start of
-	//! the lapping region at this point in time.
+	//! Offset by -BlockSize/2 relative to the data pointed to by
+	//! `StepBuffer`. This is due to MDCT overlap placing the start
+	//! of the lapping region at this point in time.
 	StepBuffer += /*BlockSize - */BlockSize/2; //! x - x/2 == x/2
 
-	//! Begin binary search for transient region until it centers within a subblock
+	//! Begin binary search for transient region until it centers between subblocks
 	//! NOTE: Operating with SubBlockSize/2 should result in more optimized code.
 	int Decimation = 1, SubBlockSize_2 = BlockSize / 2;
 	for(;;) {
@@ -307,31 +303,31 @@ static inline int Block_Transform_GetWindowCtrl(
 #endif
 		}
 
-		//! Normalize the step values
-		{
-			//! NOTE: Avoid division-by-zero issues by adding a tiny bias.
-			//! NOTE: Keep the bias tiny by scaling up the values prior to biasing.
-			//! The maximum value that STEP_X can take on is (2^2)^2 * (MaxBlockSize/2),
-			//! giving us a large margin to scale into.
-			const float NormScale = 0x1.0p+64f;
-			const float StepBias  = 0x1.0p-63f, StepBias2 = StepBias*StepBias;
-			STEP_LL = (NormScale*STEP_LL + StepBias2) / (NormScale*STEP_LLW + StepBias);
-			STEP_L  = (NormScale*STEP_L  + StepBias2) / (NormScale*STEP_LW  + StepBias);
-			STEP_M  = (NormScale*STEP_M  + StepBias2) / (NormScale*STEP_MW  + StepBias);
-			STEP_R  = (NormScale*STEP_R  + StepBias2) / (NormScale*STEP_RW  + StepBias);
-		}
-
 		//! Can we use window switching at all?
 		//! NOTE: Limited to a minimum subblock size of 128 samples, and
 		//! maximum decimation of 1/8 (Decimation > 8h: 1yyy = Decimation by 1/8)
 		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize_2 > 128/2 && Decimation < 0x8) {
 			enum { POS_L, POS_M, POS_R};
 
+			//! Normalize the step values
+			float StepLL, StepL, StepM, StepR; {
+				//! NOTE: Avoid division-by-zero issues by adding a tiny bias.
+				//! NOTE: Keep the bias tiny by scaling up the values prior to biasing.
+				//! The maximum value that STEP_X can take on is (2^2)^2 * (MaxBlockSize/2),
+				//! giving us a large margin to scale into.
+				const float NormScale = 0x1.0p+64f;
+				const float StepBias  = 0x1.0p-63f, StepBias2 = StepBias*StepBias;
+				StepLL = (NormScale*STEP_LL + StepBias2) / (NormScale*STEP_LLW + StepBias);
+				StepL  = (NormScale*STEP_L  + StepBias2) / (NormScale*STEP_LW  + StepBias);
+				StepM  = (NormScale*STEP_M  + StepBias2) / (NormScale*STEP_MW  + StepBias);
+				StepR  = (NormScale*STEP_R  + StepBias2) / (NormScale*STEP_RW  + StepBias);
+			}
+
 			//! Determine the transient ratios (ie. how much energy jumps between subblocks)
 			//! NOTE: Decays are scaled by half the amplitude.
-			float RatioL = (2.0f*STEP_L > STEP_LL) ? (STEP_L / STEP_LL) : (STEP_LL / (2.0f*STEP_L));
-			float RatioM = (2.0f*STEP_M > STEP_L)  ? (STEP_M / STEP_L)  : (STEP_L  / (2.0f*STEP_M));
-			float RatioR = (2.0f*STEP_R > STEP_M)  ? (STEP_R / STEP_M)  : (STEP_M  / (2.0f*STEP_R));
+			float RatioL = (StepL > StepLL) ? (StepL / StepLL) : (StepLL / (2.0f*StepL));
+			float RatioM = (StepM > StepL)  ? (StepM / StepL)  : (StepL  / (2.0f*StepM));
+			float RatioR = (StepR > StepM)  ? (StepR / StepM)  : (StepM  / (2.0f*StepR));
 
 			//! Determine which segment (L/M/R) is most transient
 			//! NOTE: R corresponds to the end of the block pointed to by
@@ -369,10 +365,9 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Determine the overlap amount for the transient subblock
 	int OverlapScale, SubBlockSize = SubBlockSize_2*2; {
-		//! R/M or M/L; when R/M isn't a transient, then odds are that M/L is
-		float Ra = STEP_R;
-		float Rb = STEP_M;
-		if(Ra < Rb) Ra = STEP_M, Rb = STEP_L;
+		float Ra = STEP_M + STEP_R;
+		float Rb = STEP_L + STEP_M;
+		if(Ra < Rb) { float t = Ra; Ra = Rb, Rb = 2.0f*t; }
 		if(Ra*0x1.6A09E6p-1f >= Rb) { //! a/b==2^0.5 is the first ratio to result in a ratio > 0
 			//! a/b >= 2^6.5 gives the upper limit ratio of 7.0
 			if(Ra*0x1.6A09E6p-7f < Rb) {
@@ -420,8 +415,13 @@ static inline void Block_Transform_ComputePowerSpectrum(float *Power, float *Pow
 		//! spectrum is only used for psychoacoustic analysis on this
 		//! buffer /only/, and so scaling really doesn't matter here
 		float v = SQR(Re[i]) + SQR(Im[i]);
-		Power  [i] = v;
-		PowerNp[i] = (ABS(v) < 0x1.0p-126f) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v)); //! Do not allow subnormals
+		if(v < 0x1.0p-126f) { //! Do not pass zeros or subnormals
+			Power  [i] = 0.0f;
+			PowerNp[i] = ULC_COEF_NEPER_OUT_OF_RANGE;
+		} else {
+			Power  [i] = v;
+			PowerNp[i] = logf(v);
+		}
 	}
 }
 static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
