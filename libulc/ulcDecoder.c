@@ -98,94 +98,113 @@ static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, int *Size)
 	return 1.0f / ((1u<<5) << qi);
 }
 static void DecodeBlock_BufferDeinterleave(float *Dst, const float *Src, int BlockSize, int Decimation) {
-	//! The interleaving patterns here were chosen to try and
-	//! optimize coefficient clustering across block sizes
 	int n;
-	int n2 = BlockSize/2;
-	int n4 = BlockSize/4;
-	int n8 = BlockSize/8;
 	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
 		//! 001x: a=N/2, b=N/2
 		case 0b001: {
-			for(n=0;n<n2;n++) {
-				Dst[  +n] = *Src++; //! a
-				Dst[n2+n] = *Src++; //! b
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/2;
+			for(n=0;n<BlockSize/2;n++) {
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
 			}
 		} break;
 
 		//! 010x: a=N/4, b=N/4, c=N/2
 		case 0b010: {
-			for(n=0;n<n4;n++) {
-				Dst[  +n*1+0] = *Src++; //! a
-				Dst[n4+n*1+0] = *Src++; //! b
-				Dst[n2+n*2+0] = *Src++; //! c0
-				Dst[n2+n*2+1] = *Src++; //! c1
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/4;
+			float *DstC = DstB + BlockSize/4;
+			for(n=0;n<BlockSize/4;n++) {
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
+				*DstC++ = *Src++;
+				*DstC++ = *Src++;
 			}
 		} break;
 
 		//! 011x: a=N/2, b=N/4, c=N/4
 		case 0b011: {
-			for(n=0;n<n4;n++) {
-				Dst[     +n*2+0] = *Src++; //! a0
-				Dst[     +n*2+1] = *Src++; //! a1
-				Dst[n2   +n*1+0] = *Src++; //! b
-				Dst[n2+n4+n*1+0] = *Src++; //! c
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/2;
+			float *DstC = DstB + BlockSize/4;
+			for(n=0;n<BlockSize/4;n++) {
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
+				*DstC++ = *Src++;
 			}
 		} break;
 
 		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
 		case 0b100: {
-			for(n=0;n<n8;n++) {
-				Dst[  +n*1+0] = *Src++; //! a
-				Dst[n8+n*1+0] = *Src++; //! b
-				Dst[n4+n*2+0] = *Src++; //! c0
-				Dst[n4+n*2+1] = *Src++; //! c1
-				Dst[n2+n*4+0] = *Src++; //! d0
-				Dst[n2+n*4+1] = *Src++; //! d1
-				Dst[n2+n*4+2] = *Src++; //! d2
-				Dst[n2+n*4+3] = *Src++; //! d3
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/8;
+			float *DstC = DstB + BlockSize/8;
+			float *DstD = DstC + BlockSize/4;
+			for(n=0;n<BlockSize/8;n++) {
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
+				*DstC++ = *Src++;
+				*DstC++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
 			}
 		} break;
 
 		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
 		case 0b101: {
-			for(n=0;n<n8;n++) {
-				Dst[     +n*2+0] = *Src++; //! a0
-				Dst[     +n*2+1] = *Src++; //! a1
-				Dst[n4   +n*1+0] = *Src++; //! b
-				Dst[n4+n8+n*1+0] = *Src++; //! c
-				Dst[n2   +n*4+0] = *Src++; //! d0
-				Dst[n2   +n*4+1] = *Src++; //! d1
-				Dst[n2   +n*4+2] = *Src++; //! d2
-				Dst[n2   +n*4+3] = *Src++; //! d3
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/4;
+			float *DstC = DstB + BlockSize/8;
+			float *DstD = DstC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
+				*DstC++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
 			}
 		} break;
 
 		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
 		case 0b110: {
-			for(n=0;n<n8;n++) {
-				Dst[     +n*4+0] = *Src++; //! a0
-				Dst[     +n*4+1] = *Src++; //! a1
-				Dst[     +n*4+2] = *Src++; //! a2
-				Dst[     +n*4+3] = *Src++; //! a3
-				Dst[n2   +n*1+0] = *Src++; //! b
-				Dst[n2+n8+n*1+0] = *Src++; //! c
-				Dst[n2+n4+n*2+0] = *Src++; //! d0
-				Dst[n2+n4+n*2+1] = *Src++; //! d1
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/2;
+			float *DstC = DstB + BlockSize/8;
+			float *DstD = DstC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
+				*DstC++ = *Src++;
+				*DstD++ = *Src++;
+				*DstD++ = *Src++;
 			}
 		} break;
 
 		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
 		case 0b111: {
-			for(n=0;n<n8;n++) {
-				Dst[        +n*4+0] = *Src++; //! a0
-				Dst[        +n*4+1] = *Src++; //! a1
-				Dst[        +n*4+2] = *Src++; //! a2
-				Dst[        +n*4+3] = *Src++; //! a3
-				Dst[n2      +n*2+0] = *Src++; //! b0
-				Dst[n2      +n*2+1] = *Src++; //! b1
-				Dst[n2+n4   +n*1+0] = *Src++; //! c
-				Dst[n2+n4+n8+n*1+0] = *Src++; //! d
+			float *DstA = Dst;
+			float *DstB = DstA + BlockSize/2;
+			float *DstC = DstB + BlockSize/4;
+			float *DstD = DstC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstA++ = *Src++;
+				*DstB++ = *Src++;
+				*DstB++ = *Src++;
+				*DstC++ = *Src++;
+				*DstD++ = *Src++;
 			}
 		} break;
 	}

@@ -91,91 +91,112 @@ static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSi
 	//! The interleaving patterns here were chosen to try and
 	//! optimize coefficient clustering across block sizes
 	int n; for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
-	int n2 = BlockSize/2;
-	int n4 = BlockSize/4;
-	int n8 = BlockSize/8;
 	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
 		//! 001x: a=N/2, b=N/2
 		case 0b001: {
-			for(n=0;n<n2;n++) {
-				*Buf++ = Tmp[  +n]; //! a
-				*Buf++ = Tmp[n2+n]; //! b
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			for(n=0;n<BlockSize/2;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
 			}
 		} break;
 
 		//! 010x: a=N/4, b=N/4, c=N/2
 		case 0b010: {
-			for(n=0;n<n4;n++) {
-				*Buf++ = Tmp[  +n*1+0]; //! a
-				*Buf++ = Tmp[n4+n*1+0]; //! b
-				*Buf++ = Tmp[n2+n*2+0]; //! c0
-				*Buf++ = Tmp[n2+n*2+1]; //! c1
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/4;
+			float *SrcC = SrcB + BlockSize/4;
+			for(n=0;n<BlockSize/4;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcC++;
 			}
 		} break;
 
 		//! 011x: a=N/2, b=N/4, c=N/4
 		case 0b011: {
-			for(n=0;n<n4;n++) {
-				*Buf++ = Tmp[     +n*2+0]; //! a0
-				*Buf++ = Tmp[     +n*2+1]; //! a1
-				*Buf++ = Tmp[n2   +n*1+0]; //! b
-				*Buf++ = Tmp[n2+n4+n*1+0]; //! c
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			float *SrcC = SrcB + BlockSize/4;
+			for(n=0;n<BlockSize/4;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
 			}
 		} break;
 
 		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
 		case 0b100: {
-			for(n=0;n<n8;n++) {
-				*Buf++ = Tmp[  +n*1+0]; //! a
-				*Buf++ = Tmp[n8+n*1+0]; //! b
-				*Buf++ = Tmp[n4+n*2+0]; //! c0
-				*Buf++ = Tmp[n4+n*2+1]; //! c1
-				*Buf++ = Tmp[n2+n*4+0]; //! d0
-				*Buf++ = Tmp[n2+n*4+1]; //! d1
-				*Buf++ = Tmp[n2+n*4+2]; //! d2
-				*Buf++ = Tmp[n2+n*4+3]; //! d3
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/8;
+			float *SrcC = SrcB + BlockSize/8;
+			float *SrcD = SrcC + BlockSize/4;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
 			}
 		} break;
 
 		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
 		case 0b101: {
-			for(n=0;n<n8;n++) {
-				*Buf++ = Tmp[     +n*2+0]; //! a0
-				*Buf++ = Tmp[     +n*2+1]; //! a1
-				*Buf++ = Tmp[n4   +n*1+0]; //! b
-				*Buf++ = Tmp[n4+n8+n*1+0]; //! c
-				*Buf++ = Tmp[n2   +n*4+0]; //! d0
-				*Buf++ = Tmp[n2   +n*4+1]; //! d1
-				*Buf++ = Tmp[n2   +n*4+2]; //! d2
-				*Buf++ = Tmp[n2   +n*4+3]; //! d3
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/4;
+			float *SrcC = SrcB + BlockSize/8;
+			float *SrcD = SrcC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
 			}
 		} break;
 
 		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
 		case 0b110: {
-			for(n=0;n<n8;n++) {
-				*Buf++ = Tmp[     +n*4+0]; //! a0
-				*Buf++ = Tmp[     +n*4+1]; //! a1
-				*Buf++ = Tmp[     +n*4+2]; //! a2
-				*Buf++ = Tmp[     +n*4+3]; //! a3
-				*Buf++ = Tmp[n2   +n*1+0]; //! b
-				*Buf++ = Tmp[n2+n8+n*1+0]; //! c
-				*Buf++ = Tmp[n2+n4+n*2+0]; //! d0
-				*Buf++ = Tmp[n2+n4+n*2+1]; //! d1
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			float *SrcC = SrcB + BlockSize/8;
+			float *SrcD = SrcC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
 			}
 		} break;
 
 		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
 		case 0b111: {
-			for(n=0;n<n8;n++) {
-				*Buf++ = Tmp[        +n*4+0]; //! a0
-				*Buf++ = Tmp[        +n*4+1]; //! a1
-				*Buf++ = Tmp[        +n*4+2]; //! a2
-				*Buf++ = Tmp[        +n*4+3]; //! a3
-				*Buf++ = Tmp[n2      +n*2+0]; //! b0
-				*Buf++ = Tmp[n2      +n*2+1]; //! b1
-				*Buf++ = Tmp[n2+n4   +n*1+0]; //! c
-				*Buf++ = Tmp[n2+n4+n8+n*1+0]; //! d
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			float *SrcC = SrcB + BlockSize/4;
+			float *SrcD = SrcC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
 			}
 		} break;
 	}
