@@ -41,12 +41,7 @@ static inline float Block_Transform_GetMaskedLevel(
 	int   Band,
 	int   BlockSize
 ) {
-	//! These settings are mostly based on trial and error
 	int BandBeg, BandEnd; {
-		//! Because lower frequencies mask higher frequencies more
-		//! than higher frequencies mask lower ones, the frequency
-		//! bands below the current band are critical for analysis
-		//! and the masking bandwidth is thus much larger there
 		float Bw = State->BwBase + 0.107939f*Band;
 		BandBeg = Band - (int)(Bw * 0.5f + 0x1.FFFFFFp-1f); //! Add 0.99999... for ceiling
 		BandEnd = Band + (int)(Bw * 0.5f + 0x1.FFFFFFp-1f);
