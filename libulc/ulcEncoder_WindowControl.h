@@ -49,7 +49,7 @@
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
 static inline float Block_Transform_GetWindowCtrl_TransientRatio(float R, float L) {
 	//! NOTE: Decays are scaled by half the amplitude.
-	if(R < 0.5f*L) { float t = 0.5f*L; L = R, R = t; }
+	if(2.0*R < L) { float t = L; L = 2.0f*R, R = t; }
 	return R / L;
 }
 static inline int Block_Transform_GetWindowCtrl(
@@ -74,41 +74,50 @@ static inline int Block_Transform_GetWindowCtrl(
 #define STEP_RW  StepData[7]
 
 	//! Perform a highpass filter to get the step/transient energies
+	//! Transfer function:
+	//!  H(z) = -0.5z^1 + 1 - 0.5z^-1
+	//! Assumes an even-symmetric structure at the boundaries
+	//! NOTE: Scaled to reduce the number of multiplications.
 	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-		const float *Src;
-		float v, d, SampleLast, *Dst = StepBuffer;
+#define HPFILT(zM1, z0, z1) (-(zM1) + 2.0f*(z0) + -(z1))
+		float *Dst = StepBuffer;
+		const float *SrcOld = LastBlockData + Chan*BlockSize;
+		const float *SrcNew = Data          + Chan*BlockSize;
 
 		//! Get step energy for last block
-		//! NOTE: The first step sample will always be zero, but this is ok
-		//! as the formulation is finding a smooth-max rather than average.
-		Src = LastBlockData + Chan*BlockSize;
-		SampleLast = Src[0];
-		for(n=0;n<BlockSize;n++) {
-			v = *Src++, d = v - SampleLast, SampleLast = v, *Dst++ += SQR(d);
+		*Dst++ += SQR(HPFILT(SrcOld[1], SrcOld[0], SrcOld[1]));
+		for(n=1;n<BlockSize-1;n++) {
+			*Dst++ += SQR(HPFILT(SrcOld[n-1], SrcOld[n], SrcOld[n+1]));
 		}
+		*Dst++ += SQR(HPFILT(SrcOld[n-1], SrcOld[n], SrcNew[0]));
 
 		//! Get step energy for this block
-		Src = Data + Chan*BlockSize;
-		for(n=0;n<BlockSize;n++) {
-			v = *Src++, d = v - SampleLast, SampleLast = v, *Dst++ += SQR(d);
+		*Dst++ += SQR(HPFILT(SrcOld[n], SrcNew[0], SrcNew[1]));
+		for(n=1;n<BlockSize-1;n++) {
+			*Dst++ += SQR(HPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n+1]));
 		}
+		*Dst++ += SQR(HPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n-1]));
+#undef HPFILT
 	}
 
-	//! Spread the energy backwards a bit to account for pre-echo.
-	//! The idea is to have the transient detector begin decimating
-	//! at the onset of the transient, rather than immediately when
-	//! the transient strikes, giving a less jarring transition.
+	//! Spread the energy forwards a bit, so that transients at the
+	//! edge of a transition zone are more likely to be detected, as
+	//! well as masking subtle jitter in the data.
+	//! Note that overdoing this (ie. setting the decay curve too
+	//! low) will miss some transients, and not doing it enough (ie.
+	//! setting it too high) will be overly sensitive.
+	//! NOTE: Leave these values unscaled (ie. do not scale by 1.0-a)
+	//! as otherwise the values can get very, very small and underflow.
 	{
-		//! Pre-echo decay curve: 6dB/ms (in X^2 domain):
+		//! Transient decay curve: 6dB/ms (in X^2 domain):
 		//!  E^(-Log[10]*1000*(dBDecayPerMs/10) / RateHz)
-		float *Buf = StepBuffer + BlockSize*2;
+		float *Buf = StepBuffer;
 		float a = expf(-0x1.596344p10f / RateHz);
-		float b = 1.0f - a;
-		float SampleLast = 0.0f;
-		for(n=0;n<BlockSize*2;n++) {
-			float v = *--Buf;
-			*Buf = SampleLast = a*SampleLast + b*v;
+		float SampleLast = *Buf++;
+		for(n=1;n<BlockSize*2;n++) {
+			float v = *Buf;
+			*Buf++ = SampleLast = a*SampleLast + v;
 		}
 	}
 
@@ -125,7 +134,9 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! (ie. compute a sparseness-compensating average energy)
 		{
 			//! NOTE: Adding a small bias avoids issues with division-by-zero
-			const float Bias = 0x1.0p-31f, Bias2 = SQR(Bias);
+			//! 2^-63 is the smallest we can go in single-precision mode, as
+			//! this squared (2^-126) is the smallest (normal) value possible.
+			const float Bias = 0x1.0p-63f, Bias2 = SQR(Bias);
 #if defined(__AVX__)
 			__m256 vStepLL = _mm256_setzero_ps(), vStepLLW = _mm256_setzero_ps();
 			__m256 vStepL  = _mm256_setzero_ps(), vStepLW  = _mm256_setzero_ps();
@@ -271,7 +282,8 @@ static inline int Block_Transform_GetWindowCtrl(
 			enum { POS_L, POS_M, POS_R};
 
 			//! Determine the transient ratios (ie. how much energy jumps between subblocks)
-			//! and then scale by the (squared) L2:L1 ratio to improve sensitivity
+			//! by dividing the smooth-max ratios, then multiplying by the smooth-max:average
+			//! ratio to improve sensitivity.
 			float MaxLL  = STEP_LL / STEP_LLW;
 			float MaxL   = STEP_L  / STEP_LW;
 			float MaxM   = STEP_M  / STEP_MW;
@@ -279,9 +291,9 @@ static inline int Block_Transform_GetWindowCtrl(
 			float RatioL = Block_Transform_GetWindowCtrl_TransientRatio(MaxL, MaxLL);
 			float RatioM = Block_Transform_GetWindowCtrl_TransientRatio(MaxM, MaxL);
 			float RatioR = Block_Transform_GetWindowCtrl_TransientRatio(MaxR, MaxM);
-			RatioL *= (STEP_L*SubBlockSize_2) / SQR(STEP_LW);
-			RatioM *= (STEP_M*SubBlockSize_2) / SQR(STEP_MW);
-			RatioR *= (STEP_R*SubBlockSize_2) / SQR(STEP_RW);
+			RatioL = RatioL * (STEP_L*SubBlockSize_2) / SQR(STEP_LW);
+			RatioM = RatioM * (STEP_M*SubBlockSize_2) / SQR(STEP_MW);
+			RatioR = RatioR * (STEP_R*SubBlockSize_2) / SQR(STEP_RW);
 
 			//! Determine which segment (L/M/R) is most transient
 			//! NOTE: R corresponds to the end of the block pointed to by
@@ -299,17 +311,15 @@ static inline int Block_Transform_GetWindowCtrl(
 
 			//! If the transient is not on the overlap boundary and
 			//! is still significant, decimate the subblock further
-			if(TransientPos != POS_R) {
-				if(TransientRatio > 2.0f) {
-					//! Update the decimation pattern and continue
-					if(TransientPos == POS_L)
-						Decimation  = (Decimation<<1) | 0;
-					else
-						Decimation  = (Decimation<<1) | 1,
-						StepBuffer += SubBlockSize_2;
-					SubBlockSize_2 /= 2;
-					continue;
-				}
+			if(TransientPos != POS_R && TransientRatio > 2.0f) {
+				//! Update the decimation pattern and continue
+				if(TransientPos == POS_L)
+					Decimation  = (Decimation<<1) | 0;
+				else
+					Decimation  = (Decimation<<1) | 1,
+					StepBuffer += SubBlockSize_2;
+				SubBlockSize_2 /= 2;
+				continue;
 			}
 		}
 
@@ -321,18 +331,15 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Determine the overlap amount for the transient subblock
 	int OverlapScale, SubBlockSize = SubBlockSize_2*2; {
-		//! Find the maximum in the M+R region (ie. the transition region)
-		//! and then divide this by the energy in the M+L region.
-		float Ra = SQR(STEP_M  + STEP_R ) * SubBlockSize;
-		float Rb = SQR(STEP_MW + STEP_RW) * (STEP_M + STEP_L);
-		if(Ra < 0.5f*Rb) { float t = 0.5f*Rb; Rb = Ra, Ra = t; }
-		if(Ra*0x1.0p-1f >= Rb) { //! a/b==2^1 is the first ratio to result in a ratio > 0
-			//! a/b >= 2^13 gives the upper limit ratio of 7.0
-			if(Ra*0x1.0p-13f < Rb) {
+		float Ra = (STEP_M  + STEP_R ) * (STEP_MW + STEP_LW);
+		float Rb = (STEP_MW + STEP_RW) * (STEP_M  + STEP_L );
+		if(2.0f*Ra < Rb) { float t = Rb; Rb = 2.0f*Ra, Ra = t; }
+		if(Ra >= Rb*0x1.6A09E6p0f) { //! a/b==2^0.5 is the first ratio to result in a ratio > 0
+			//! a/b >= 2^6.5 gives the upper limit ratio of 7.0
+			if(Ra < Rb*0x1.6A09E6p6f) {
 				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-				//! Scale by 0.5 to apply a square root to the result
 				float r = Ra / Rb;
-				OverlapScale = (int)(0x1.715476p-1f*logf(r) + 0.5f);
+				OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
 			} else OverlapScale = 7;
 			while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 			while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
