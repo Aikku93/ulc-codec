@@ -20,8 +20,8 @@
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
 static inline void Block_Transform_WriteSortValues(
 	float *CoefIdx,
-	const float *Energy,
-	const float *EnergyNp,
+	const uint32_t *Energy,
+	const uint32_t *EnergyNp,
 	const float *CoefNp,
 	int   *nNzCoef,
 	int   BlockSize,
@@ -71,20 +71,28 @@ static inline void Block_Transform_ScaleAndToNepers(float *Coef, float *CoefNp, 
 		CoefNp[n] = (ABS(v) < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
 	}
 }
-static inline void Block_Transform_ComputePowerSpectrum(float *Power, float *PowerNp, const float *Re, const float *Im, int N) {
+static inline void Block_Transform_ComputePowerSpectrum(uint32_t *Power, uint32_t *PowerNp, const float *Re, const float *Im, int N) {
 	int i;
-	for(i=0;i<N;i++) {
-		//! `v` should technically be scaled by (2/N)^2, but this power
-		//! spectrum is only used for psychoacoustic analysis on this
-		//! buffer /only/, and so scaling really doesn't matter here
-		float v = SQR(Re[i]) + SQR(Im[i]);
-		if(v < 0x1.0p-126f) { //! Do not pass zeros or subnormals
-			Power  [i] = 0.0f;
-			PowerNp[i] = ULC_COEF_NEPER_OUT_OF_RANGE;
-		} else {
-			Power  [i] = v;
-			PowerNp[i] = logf(v);
+
+	//! Find the maximum amplitude in the analysis
+	//! This is used to scale the buffer and avoid precision issues
+	double Scale = 0.0; {
+		double Max = 0.0;
+		for(i=0;i<N;i++) {
+			double v = SQR((double)Re[i]) + SQR((double)Im[i]);
+			if(v > Max) Max = v;
 		}
+		if(Max) Scale = 0x1.0p32 / Max;
+	}
+
+	//! Rescale and convert data to fixed-point
+	//! NOTE: Maximum value for PowerNp is Log[2 * 2^32] == 22.87,
+	//! allowing us to put this into 5.27fxp.
+	for(i=0;i<N;i++) {
+		double v  = SQR((double)Re[i]) + SQR((double)Im[i]);
+		       v *= Scale;
+		Power  [i] = (uint32_t)(v + 0.5);
+		PowerNp[i] = (v < 0.5) ? 0 : (uint32_t)(0x1.0p27*log(2.0*v) + 0.5); //! Scale by 2 to keep values strictly non-negative
 	}
 }
 static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
@@ -284,8 +292,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 				} else BufferSamples += SubBlockSize;
 
 				//! Perform the actual analyses
-				float *BufferEnergy   = BufferTemp;
-				float *BufferEnergyNp = BufferTemp + SubBlockSize;
+				uint32_t *BufferEnergy   = (uint32_t*)BufferTemp;
+				uint32_t *BufferEnergyNp = (uint32_t*)BufferTemp + SubBlockSize;
 				Fourier_MDCT(
 					BufferTransform,
 					SmpBuf,
