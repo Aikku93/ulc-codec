@@ -169,7 +169,7 @@ void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTm
 			}
 #endif
 		}
-		Fourier_DCT4(BufMDST, BufTmp, N);
+		Fourier_DCT4T(BufMDST, BufTmp, N);
 		{
 			float *BufLo = BufMDST;
 			float *BufHi = BufMDST + N;
@@ -208,7 +208,7 @@ void Fourier_MDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTm
 #endif
 		}
 	}
-	Fourier_DCT4(BufOut, BufTmp, N);
+	Fourier_DCT4T(BufOut, BufTmp, N);
 }
 
 /**************************************/

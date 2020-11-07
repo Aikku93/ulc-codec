@@ -19,47 +19,7 @@ static void DCT2_8(float *x) {
 	const float c1_4 = 0x1.F6297Dp-1f, s1_4 = 0x1.8F8B84p-3f;
 	const float c3_4 = 0x1.A9B663p-1f, s3_4 = 0x1.1C73B4p-1f;
 	const float c6_4 = 0x1.87DE2Ap-2f, s6_4 = 0x1.D906BDp-1f;
-#if defined(__SSE__)
-	__m128 x0, x1;
-	__m128 a0, a1;
-	x0 = _mm_load_ps (x+0);
-	x1 = _mm_loadr_ps(x+4);
-	a0 = _mm_add_ps(x0, x1);
-	a1 = _mm_sub_ps(x0, x1);
-	x0 = _mm_shuffle_ps(a0, a0, 0x1B);
-	x0 = _mm_xor_ps(x0, _mm_setr_ps(-0.0f, -0.0f, 0.0f, 0.0f));
-	x0 = _mm_add_ps(x0, a0);
-	x1 = _mm_shuffle_ps(a1, a1, 0x1B);
-	a1 = _mm_mul_ps(a1, _mm_setr_ps( c3_4,  c1_4, c1_4, c3_4));
-#if defined(__FMA__)
-	x1 = _mm_fmadd_ps(x1, _mm_setr_ps(-s3_4, -s1_4, s1_4, s3_4), a1);
-#else
-	x1 = _mm_mul_ps(x1, _mm_setr_ps(-s3_4, -s1_4, s1_4, s3_4));
-	x1 = _mm_add_ps(x1, a1);
-#endif
-	a0 = _mm_shuffle_ps(x0, x0, 0xB1);
-	x0 = _mm_mul_ps(x0, _mm_setr_ps(s6_4, -s6_4, -1.0f, 1.0f));
-#if defined(__FMA__)
-	x0 = _mm_fmadd_ps(a0, _mm_setr_ps(c6_4,  c6_4,  1.0f, 1.0f), x0);
-#else
-	a0 = _mm_mul_ps(a0, _mm_setr_ps(c6_4,  c6_4,  1.0f, 1.0f));
-	x0 = _mm_add_ps(x0, a0);
-#endif
-	a1 = _mm_shuffle_ps(x1, x1, 0x4E);
-	a1 = _mm_xor_ps(a1, _mm_setr_ps(-0.0f, -0.0f, 0.0f, 0.0f));
-	x1 = _mm_add_ps(x1, a1);
-	a1 = _mm_shuffle_ps(x1, x1, 0xB4);
-	a1 = _mm_xor_ps(a1, _mm_setr_ps(0.0f, 0.0f, -0.0f, 0.0f));
-	x1 = _mm_add_ps(x1, a1);
-	x1 = _mm_mul_ps(x1, _mm_setr_ps(0.5f, -0.5f, sqrt1_2, sqrt1_2));
-	a0 = _mm_shuffle_ps(x0, x0, 0x63);
-	a1 = _mm_shuffle_ps(x1, x1, 0x93);
-	x0 = _mm_unpacklo_ps(a0, a1);
-	x1 = _mm_unpackhi_ps(a0, a1);
-	x1 = _mm_mul_ss(x1, _mm_set1_ps(sqrt1_2));
-	_mm_store_ps(x+0, x0);
-	_mm_store_ps(x+4, x1);
-#else
+
 	//! First stage butterflies (DCT2_8)
 	float s07 = x[0]+x[7];
 	float d07 = x[0]-x[7];
@@ -99,7 +59,6 @@ static void DCT2_8(float *x) {
 	x[5] = b1;
 	x[3] = c1;
 	x[7] = (a1 - d1) * sqrt1_2;
-#endif
 }
 
 /**************************************/
@@ -121,39 +80,44 @@ void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 		      float *DstLo = Tmp;
 		      float *DstHi = Tmp + N/2;
 #if defined(__AVX__)
-		for(i=0;i<N/16;i++) {
-			SrcHi -= 8;
-			__m256 b = _mm256_load_ps(SrcHi);
-			__m256 a = _mm256_load_ps(SrcLo);
-			SrcLo += 8;
+		__m256 a, b;
+		__m256 s, d;
+		for(i=0;i<N/2;i+=8) {
+			SrcHi -= 8; b = _mm256_load_ps(SrcHi);
+			a = _mm256_load_ps(SrcLo); SrcLo += 8;
 			b = _mm256_shuffle_ps(b, b, 0x1B);
 			b = _mm256_permute2f128_ps(b, b, 0x01);
-			__m256 s = _mm256_add_ps(a, b);
-			__m256 d = _mm256_sub_ps(a, b);
+			s = _mm256_add_ps(a, b);
+			d = _mm256_sub_ps(a, b);
 			_mm256_store_ps(DstLo, s); DstLo += 8;
 			_mm256_store_ps(DstHi, d); DstHi += 8;
 		}
 #elif defined(__SSE__)
-		for(i=0;i<N/16;i++) {
+		__m128 a0, b0;
+		__m128 a1, b1;
+		__m128 s0, d0;
+		__m128 s1, d1;
+		for(i=0;i<N/2;i+=8) {
 			SrcHi -= 8;
-			__m128 b0 = _mm_loadr_ps(SrcHi + 4);
-			__m128 b1 = _mm_loadr_ps(SrcHi + 0);
-			__m128 a0 = _mm_load_ps (SrcLo + 0);
-			__m128 a1 = _mm_load_ps (SrcLo + 4);
+			b0 = _mm_loadr_ps(SrcHi + 4);
+			b1 = _mm_loadr_ps(SrcHi + 0);
+			a0 = _mm_load_ps (SrcLo + 0);
+			a1 = _mm_load_ps (SrcLo + 4);
 			SrcLo += 8;
-			__m128 s0 = _mm_add_ps(a0, b0);
-			__m128 d0 = _mm_sub_ps(a0, b0);
-			__m128 s1 = _mm_add_ps(a1, b1);
-			__m128 d1 = _mm_sub_ps(a1, b1);
+			s0 = _mm_add_ps(a0, b0);
+			d0 = _mm_sub_ps(a0, b0);
+			s1 = _mm_add_ps(a1, b1);
+			d1 = _mm_sub_ps(a1, b1);
 			_mm_store_ps(DstLo + 0, s0);
 			_mm_store_ps(DstLo + 4, s1); DstLo += 8;
 			_mm_store_ps(DstHi + 0, d0);
 			_mm_store_ps(DstHi + 4, d1); DstHi += 8;
 		}
 #else
+		float a, b;
 		for(i=0;i<N/2;i++) {
-			float a = *SrcLo++;
-			float b = *--SrcHi;
+			a = *SrcLo++;
+			b = *--SrcHi;
 			*DstLo++ = a + b;
 			*DstHi++ = a - b;
 		}
@@ -173,35 +137,42 @@ void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 		const float *SrcHi = Tmp + N/2;
 		      float *Dst   = Buf;
 #if defined(__AVX__)
-		for(i=0;i<N/16;i++) {
-			__m256 a0 = _mm256_load_ps(SrcLo); SrcLo += 8;
-			__m256 b0 = _mm256_load_ps(SrcHi); SrcHi += 8;
-			__m256 t0 = _mm256_unpacklo_ps(a0, b0);
-			__m256 t1 = _mm256_unpackhi_ps(a0, b0);
-			__m256 a  = _mm256_permute2f128_ps(t0, t1, 0x20);
-			__m256 b  = _mm256_permute2f128_ps(t0, t1, 0x31);
+		__m256 a, b;
+		__m256 a0, b0;
+		__m256 t0, t1;
+		for(i=0;i<N/2;i+=8) {
+			a0 = _mm256_load_ps(SrcLo); SrcLo += 8;
+			b0 = _mm256_load_ps(SrcHi); SrcHi += 8;
+			t0 = _mm256_unpacklo_ps(a0, b0);
+			t1 = _mm256_unpackhi_ps(a0, b0);
+			a  = _mm256_permute2f128_ps(t0, t1, 0x20);
+			b  = _mm256_permute2f128_ps(t0, t1, 0x31);
 			_mm256_store_ps(Dst + 0, a);
 			_mm256_store_ps(Dst + 8, b); Dst += 16;
 		}
 #elif defined(__SSE__)
-		for(i=0;i<N/16;i++) {
-			__m128 a0 = _mm_load_ps(SrcLo + 0);
-			__m128 b0 = _mm_load_ps(SrcHi + 0);
-			__m128 a1 = _mm_load_ps(SrcLo + 4); SrcLo += 8;
-			__m128 b1 = _mm_load_ps(SrcHi + 4); SrcHi += 8;
-			__m128 a = _mm_unpacklo_ps(a0, b0);
-			__m128 b = _mm_unpackhi_ps(a0, b0);
-			__m128 c = _mm_unpacklo_ps(a1, b1);
-			__m128 d = _mm_unpackhi_ps(a1, b1);
+		__m256 a, b, c, d;
+		__m128 a0, a1;
+		__m128 b0, b1;
+		for(i=0;i<N/2;i+=8) {
+			a0 = _mm_load_ps(SrcLo + 0);
+			b0 = _mm_load_ps(SrcHi + 0);
+			a1 = _mm_load_ps(SrcLo + 4); SrcLo += 8;
+			b1 = _mm_load_ps(SrcHi + 4); SrcHi += 8;
+			a = _mm_unpacklo_ps(a0, b0);
+			b = _mm_unpackhi_ps(a0, b0);
+			c = _mm_unpacklo_ps(a1, b1);
+			d = _mm_unpackhi_ps(a1, b1);
 			_mm_store_ps(Dst +  0, a);
 			_mm_store_ps(Dst +  4, b);
 			_mm_store_ps(Dst +  8, c);
 			_mm_store_ps(Dst + 12, d); Dst += 16;
 		}
 #else
+		float a, b;
 		for(i=0;i<N/2;i++) {
-			float a = *SrcLo++;
-			float b = *SrcHi++;
+			a = *SrcLo++;
+			b = *SrcHi++;
 			*Dst++ = a;
 			*Dst++ = b;
 		}

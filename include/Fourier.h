@@ -25,20 +25,27 @@ static inline __attribute__((always_inline)) const float *Fourier_SinTableN(int 
 
 /**************************************/
 
-//! DCT-II/DCT-IV (scaled)
+//! DCT-II/DCT-III/DCT-IV (scaled)
 //! Arguments:
 //!  Buf[N]
 //!  Tmp[N]
 //! Implemented transforms (matrix form):
-//!  mtxDCTII = Table[Cos[(n-1/2)(k-1  )Pi/N], {k,N}, {n,N}]
-//!  mtxDCTIV = Table[Cos[(n-1/2)(k-1/2)Pi/N], {k,N}, {n,N}]
+//!  mtxDCTII  = Table[Cos[(n-1/2)(k-1  )Pi/N], {k,N}, {n,N}]
+//!  mtxDCTIII = Table[Cos[(n-1  )(k-1/2)Pi/N], {k,N}, {n,N}]
+//!  mtxDCTIV  = Table[Cos[(n-1/2)(k-1/2)Pi/N], {k,N}, {n,N}]
 //! Implementations from:
 //!  "Signal Processing based on Stable radix-2 DCT I-IV Algorithms having Orthogonal Factors"
 //!  DOI: 10.13001/1081-3810.3207
 //! NOTE:
 //!  -N must be a power of two, and >= 8
-void Fourier_DCT2(float *Buf, float *Tmp, int N);
-void Fourier_DCT4(float *Buf, float *Tmp, int N);
+//!  -DCT3() is the transposed version of DCT2(); all its code
+//!   is based on direct reversal of the steps in DCT2().
+//!  -DCT4T() is the transposed version of DCT4(); all its code
+//!   is based on direct reversal of the steps in DCT4().
+void Fourier_DCT2 (float *Buf, float *Tmp, int N);
+void Fourier_DCT3 (float *Buf, float *Tmp, int N);
+void Fourier_DCT4 (float *Buf, float *Tmp, int N);
+void Fourier_DCT4T(float *Buf, float *Tmp, int N);
 
 //! MDCT/IMDCT (based on DCT-IV; scaled)
 //! Arguments:
@@ -63,6 +70,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N);
 //!   the aliased data. Pass NULL if undesired.
 //!  -BufIn can be the same as BufTmp. However, this
 //!   implies trashing of the buffer contents.
+//!  -MDCT uses DCT4T(), IMDCT uses DCT4()
 void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST);
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 
