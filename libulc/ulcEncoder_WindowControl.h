@@ -5,21 +5,15 @@
 /**************************************/
 #pragma once
 /**************************************/
-#if defined(__AVX__) || defined(__FMA__)
-# include <immintrin.h>
-#endif
-#if defined(__SSE__)
-# include <xmmintrin.h>
-#endif
-/**************************************/
 
 //! Get optimal log base-2 overlap and window scalings for transients
-//! The idea is that overlap occurs roughly at the center of a block,
-//! and if we have a transient placed right smack in the middle, we
-//! can simply reduce the overlap to control its pre-echo. This is
-//! combined with window switching so that the transient lies mostly
-//! in the center of a subblock, at which point overlap scaling does
-//! its job to reduce the pre-echo.
+//! The idea is that if a transient is relatively centered with the
+//! transition region of a subblock, then we can just set the overlap
+//! amount to account for it and avoid reducing the window size too
+//! much, preserving the quality gains of a larger transform. At the
+//! same time, we also need to /make/ the transient sit within a
+//! transition region to take advantage of this, and so we combine
+//! the overlap scaling and window-switching strategies.
 //! NOTE: StepBuffer must be 2*BlockSize in size.
 //! NOTE: Bit codes for transient region coding, and their window sizes:
 //!  First nybble:
@@ -47,9 +41,8 @@
 //!    0001: N/1*
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
-static inline float Block_Transform_GetWindowCtrl_TransientRatio(float R, float L) {
-	//! NOTE: Decays are scaled by half the amplitude.
-	if(2.0*R < L) { float t = L; L = 2.0f*R, R = t; }
+static inline float Block_Transform_GetWindowCtrl_TransientRatio(float R, float L, float DecayScale) {
+	if(DecayScale*R < L) { float t = L; L = DecayScale*R, R = t; }
 	return R / L;
 }
 static inline int Block_Transform_GetWindowCtrl(
@@ -63,24 +56,20 @@ static inline int Block_Transform_GetWindowCtrl(
 	int RateHz
 ) {
 	int n, Chan;
-	float StepData[8]; //! StepLL[W], StepL[W], StepM[W], StepR[W]. Janky setup for vectorization
-#define STEP_LL  StepData[0]
-#define STEP_LLW StepData[1]
-#define STEP_L   StepData[2]
-#define STEP_LW  StepData[3]
-#define STEP_M   StepData[4]
-#define STEP_MW  StepData[5]
-#define STEP_R   StepData[6]
-#define STEP_RW  StepData[7]
 
 	//! Perform a highpass filter to get the step/transient energies
 	//! Transfer function:
-	//!  H(z) = -0.5z^1 + 1 - 0.5z^-1
+	//!  H(z) = 1 - z^-1
 	//! Assumes an even-symmetric structure at the boundaries
-	//! NOTE: Scaled to reduce the number of multiplications.
+	//! NOTE: This filter does not have unity gain, as doing so
+	//! would add some multiplications that would reduce performance.
+	//! NOTE: The following filter was attempted:
+	//!  H(z) = -0.5z^1 + 1 - 0.5z^-1
+	//! However, this gave very, very poor results with the method
+	//! of transient detection used at present.
 	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-#define HPFILT(zM1, z0, z1) (-(zM1) + 2.0f*(z0) + -(z1))
+#define HPFILT(zM1, z0, z1) (-(zM1) + (z0))
 		float *Dst = StepBuffer;
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
@@ -107,13 +96,13 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! Note that overdoing this (ie. setting the decay curve too
 	//! low) will miss some transients, and not doing it enough (ie.
 	//! setting it too high) will be overly sensitive.
-	//! NOTE: Leave these values unscaled (ie. do not scale by 1.0-a)
-	//! as otherwise the values can get very, very small and underflow.
+	//! TL;DR: This gives transients extra oomph, smooths out
+	//! irregularities in the signal, and does post-masking.
 	{
-		//! Transient decay curve: 6dB/ms (in X^2 domain):
+		//! Transient decay curve: 3dB/ms (in X^2 domain):
 		//!  E^(-Log[10]*1000*(dBDecayPerMs/10) / RateHz)
 		float *Buf = StepBuffer;
-		float a = expf(-0x1.596344p10f / RateHz);
+		float a = expf(-0x1.596344p9f / RateHz);
 		float SampleLast = *Buf++;
 		for(n=1;n<BlockSize*2;n++) {
 			float v = *Buf;
@@ -121,241 +110,138 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 	}
 
-	//! Offset by -BlockSize/2 relative to the data pointed to by
-	//! `StepBuffer`. This is due to MDCT overlap placing the start
-	//! of the lapping region at this point in time.
-	StepBuffer += /*BlockSize - */BlockSize/2; //! x - x/2 == x/2
+	//! Window off the tail end of the sample data
+	//! This avoids doubling up on the transient by overlap
+	//! adjustment on one block, and decimation on the next.
+	{
+		const float *Sin = Fourier_SinTableN(BlockSize/4);
+		float *Buf = StepBuffer + 2*BlockSize;
+		for(n=0;n<BlockSize/4;n++) *--Buf *= Sin[n];
+	}
 
-	//! Begin binary search for transient region until it centers between subblocks
-	//! NOTE: Operating with SubBlockSize/2 should result in more optimized code.
-	int Decimation = 1, SubBlockSize_2 = BlockSize / 2;
-	for(;;) {
-		//! Calculate the smooth-max energy of the left/middle/right sections
-		//! (ie. compute a sparseness-compensating average energy)
-		{
-			//! NOTE: Adding a small bias avoids issues with division-by-zero
-			//! 2^-63 is the smallest we can go in single-precision mode, as
-			//! this squared (2^-126) is the smallest (normal) value possible.
-			const float Bias = 0x1.0p-63f, Bias2 = SQR(Bias);
-#if defined(__AVX__)
-			__m256 vStepLL = _mm256_setzero_ps(), vStepLLW = _mm256_setzero_ps();
-			__m256 vStepL  = _mm256_setzero_ps(), vStepLW  = _mm256_setzero_ps();
-			__m256 vStepM  = _mm256_setzero_ps(), vStepMW  = _mm256_setzero_ps();
-			__m256 vStepR  = _mm256_setzero_ps(), vStepRW  = _mm256_setzero_ps();
-			for(n=0;n<SubBlockSize_2;n+=8) {
-				__m256 dLL, dL, dM, dR;
+	//! Finally, convert the filtered energy into transient
+	//! ratio segments for detecting spikes within the subblocks.
+	//! From thorough experimentation, subdividing into small
+	//! segments from which we extract ratios seems to result
+	//! in the best transient detection.
+	//! NOTE: We don't necessarily use all of SegmentBuffer later
+	//! (meaning there is unnecessary calculations here), but it
+	//! appears to not be a bottleneck at present, so this has
+	//! not been optimized out.
+	int nRatioSegments;
+	float *SegmentBuffer = StepBuffer; {
+		const int RatioSegmentSamples = 64;
+		nRatioSegments = 2*BlockSize / RatioSegmentSamples;
 
-				dLL = _mm256_load_ps(StepBuffer + n - SubBlockSize_2);
-				dL  = _mm256_load_ps(StepBuffer + n);
-				dM  = _mm256_load_ps(StepBuffer + n + SubBlockSize_2);
-				dR  = _mm256_load_ps(StepBuffer + n + SubBlockSize_2*2);
-				vStepLLW = _mm256_add_ps(vStepLLW, dLL);
-				vStepLW  = _mm256_add_ps(vStepLW,  dL);
-				vStepMW  = _mm256_add_ps(vStepMW,  dM);
-				vStepRW  = _mm256_add_ps(vStepRW,  dR);
-#if defined(__FMA__)
-				vStepLL = _mm256_fmadd_ps(dLL, dLL, vStepLL);
-				vStepL  = _mm256_fmadd_ps(dL,  dL,  vStepL);
-				vStepM  = _mm256_fmadd_ps(dM,  dM,  vStepM);
-				vStepR  = _mm256_fmadd_ps(dR,  dR,  vStepR);
-#else
-				dLL = _mm256_mul_ps(dLL, dLL);
-				dL  = _mm256_mul_ps(dL,  dL);
-				dM  = _mm256_mul_ps(dM,  dM);
-				dR  = _mm256_mul_ps(dR,  dR);
-				vStepLL = _mm256_add_ps(vStepLL, dLL);
-				vStepL  = _mm256_add_ps(vStepL,  dL);
-				vStepM  = _mm256_add_ps(vStepM,  dM);
-				vStepR  = _mm256_add_ps(vStepR,  dR);
-#endif
-			}
-			{
-				__m256 a, b, c, d;
-				const __m256 vBias = _mm256_setr_ps(Bias2, Bias, Bias2, Bias, Bias2, Bias, Bias2, Bias);
-
-				//! a = L: {StepA[0+1],StepA[2+3],StepAW[0+1],StepAW[2+3]}
-				//!     H: {StepA[4+5],StepA[6+7],StepAW[4+5],StepAW[6+7]}
-				//! b = L: {StepB[0+1],StepB[2+3],StepBW[0+1],StepBW[2+3]}
-				//!     H: {StepB[4+5],StepB[6+7],StepBW[4+5],StepBW[6+7]}
-				a = _mm256_hadd_ps(vStepLL, vStepLLW);
-				b = _mm256_hadd_ps(vStepL,  vStepLW);
-				c = _mm256_hadd_ps(vStepM,  vStepMW);
-				d = _mm256_hadd_ps(vStepR,  vStepRW);
-				//! a = L: {StepA[0+1+2+3],StepAW[0+1+2+3],StepB[0+1+2+3],StepBW[0+1+2+3]}
-				//!     H: {StepA[4+5+6+7],StepAW[4+5+6+7],StepB[4+5+6+7],StepBW[4+5+6+7]}
-				a = _mm256_hadd_ps(a, b);
-				b = _mm256_hadd_ps(c, d);
-				//! c = L: {StepA[0+1+2+3],StepAW[0+1+2+3],StepB[0+1+2+3],StepBW[0+1+2+3]}
-				//!     H: {StepC[0+1+2+3],StepCW[0+1+2+3],StepD[0+1+2+3],StepDW[0+1+2+3]}
-				//! d = L: {StepA[4+5+6+7],StepAW[4+5+6+7],StepB[4+5+6+7],StepBW[4+5+6+7]}
-				//!     H: {StepC[4+5+6+7],StepCW[4+5+6+7],StepD[4+5+6+7],StepDW[4+5+6+7]}
-				c = _mm256_permute2f128_ps(a, b, 0x20);
-				d = _mm256_permute2f128_ps(a, b, 0x31);
-				c = _mm256_add_ps(c, d);
-				c = _mm256_add_ps(c, vBias);
-				_mm256_store_ps(StepData, c);
-			}
-#elif defined(__SSE__)
-			__m128 vStepLL = _mm_setzero_ps(), vStepLLW = _mm_setzero_ps();
-			__m128 vStepL  = _mm_setzero_ps(), vStepLW  = _mm_setzero_ps();
-			__m128 vStepM  = _mm_setzero_ps(), vStepMW  = _mm_setzero_ps();
-			__m128 vStepR  = _mm_setzero_ps(), vStepRW  = _mm_setzero_ps();
-			for(n=0;n<SubBlockSize_2;n+=4) {
-				__m128 dLL, dL, dM, dR;
-
-				dLL = _mm_load_ps(StepBuffer + n - SubBlockSize_2);
-				dL  = _mm_load_ps(StepBuffer + n);
-				dM  = _mm_load_ps(StepBuffer + n + SubBlockSize_2);
-				dR  = _mm_load_ps(StepBuffer + n + SubBlockSize_2*2);
-				vStepLLW = _mm_add_ps(vStepLLW, dLL);
-				vStepLW  = _mm_add_ps(vStepLW,  dL);
-				vStepMW  = _mm_add_ps(vStepMW,  dM);
-				vStepRW  = _mm_add_ps(vStepRW,  dR);
-#if defined(__FMA__)
-				vStepLL = _mm_fmadd_ps(dLL, dLL, vStepLL);
-				vStepL  = _mm_fmadd_ps(dL,  dL,  vStepL);
-				vStepM  = _mm_fmadd_ps(dM,  dM,  vStepM);
-				vStepR  = _mm_fmadd_ps(dR,  dR,  vStepR);
-#else
-				dLL = _mm_mul_ps(dLL, dLL);
-				dL  = _mm_mul_ps(dL,  dL);
-				dM  = _mm_mul_ps(dM,  dM);
-				dR  = _mm_mul_ps(dR,  dR);
-				vStepLL = _mm_add_ps(vStepLL, dLL);
-				vStepL  = _mm_add_ps(vStepL,  dL);
-				vStepM  = _mm_add_ps(vStepM,  dM);
-				vStepR  = _mm_add_ps(vStepR,  dR);
-#endif
-			}
-			{
-				__m128 a, b, c, d;
-				const __m128 vBias = _mm_setr_ps(Bias2, Bias, Bias2, Bias);
-				a = _mm_shuffle_ps(vStepLL, vStepLLW, 0x88); //! {StepX[0,2],StepXW[0,2]}
-				b = _mm_shuffle_ps(vStepLL, vStepLLW, 0xDD); //! {StepX[1,3],StepXW[1,3]}
-				c = _mm_add_ps(a, b);                        //! {StepX[0+1],StepX[2+3],StepXW[0+1],StepXW[2+3]}
-				a = _mm_shuffle_ps(vStepL, vStepLW, 0x88);
-				b = _mm_shuffle_ps(vStepL, vStepLW, 0xDD);
-				d = _mm_add_ps(a, b);
-				a = _mm_shuffle_ps(c, d, 0x88);              //! {StepX[0+1],StepXW[0+1],StepY[0+1],StepYW[0+1]}
-				b = _mm_shuffle_ps(c, d, 0xDD);              //! {StepX[2+3],StepXW[2+3],StepY[2+3],StepYW[2+3]}
-				c = _mm_add_ps(a, b);                        //! {StepX,StepXW,StepY,StepYW}
-				c = _mm_add_ps(c, vBias);
-				_mm_store_ps(StepData, c);
-				a = _mm_shuffle_ps(vStepM, vStepMW, 0x88);
-				b = _mm_shuffle_ps(vStepM, vStepMW, 0xDD);
-				c = _mm_add_ps(a, b);
-				a = _mm_shuffle_ps(vStepR, vStepRW, 0x88);
-				b = _mm_shuffle_ps(vStepR, vStepRW, 0xDD);
-				d = _mm_add_ps(a, b);
-				a = _mm_shuffle_ps(c, d, 0x88);
-				b = _mm_shuffle_ps(c, d, 0xDD);
-				c = _mm_add_ps(a, b);
-				c = _mm_add_ps(c, vBias);
-				_mm_store_ps(StepData+4, c);
-			}
-#else
-			float StepLL = 0.0f, StepLLW = 0.0f;
-			float StepL  = 0.0f, StepLW  = 0.0f;
-			float StepM  = 0.0f, StepMW  = 0.0f;
-			float StepR  = 0.0f, StepRW  = 0.0f;
-			for(n=0;n<SubBlockSize_2;n++) {
-				float dLL = StepBuffer[n-SubBlockSize_2];
-				float dL  = StepBuffer[n];
-				float dM  = StepBuffer[n+SubBlockSize_2];
-				float dR  = StepBuffer[n+SubBlockSize_2*2];
-				StepLL += SQR(dLL), StepLLW += dLL;
-				StepL  += SQR(dL),  StepLW  += dL;
-				StepM  += SQR(dM),  StepMW  += dM;
-				StepR  += SQR(dR),  StepRW  += dR;
-			}
-			STEP_LL = StepLL + Bias2, STEP_LLW = StepLLW + Bias;
-			STEP_L  = StepL  + Bias2, STEP_LW  = StepLW  + Bias;
-			STEP_M  = StepM  + Bias2, STEP_MW  = StepMW  + Bias;
-			STEP_R  = StepR  + Bias2, STEP_RW  = StepRW  + Bias;
-#endif
+		//! Get the ratios for each segment
+		//! NOTE: Adding a bias avoids issues with x/0 as well as very
+		//! abrupt jumps swamping out the detector.
+		//! NOTE: Everything here works much better with squared ratios.
+		int Segment;
+		const float Bias = 0x1.0p-15f;
+		float L, R = Bias*nRatioSegments;
+		const float *Src = StepBuffer;
+		for(Segment=0;Segment<nRatioSegments;Segment++) {
+			L = R;
+			R = Bias*nRatioSegments;
+			for(n=0;n<RatioSegmentSamples;n++) R += *Src++;
+			float Ratio = Block_Transform_GetWindowCtrl_TransientRatio(R, L, SQR(4.0f));
+			SegmentBuffer[Segment] = SQR(Ratio);
 		}
 
-		//! Can we use window switching at all?
-		//! NOTE: Limited to a minimum subblock size of 128 samples, and
-		//! maximum decimation of 1/8 (Decimation > 8h: 1yyy = Decimation by 1/8)
-		if(ULC_USE_WINDOW_SWITCHING && SubBlockSize_2 > 128/2 && Decimation < 0x8) {
-			enum { POS_L, POS_M, POS_R};
+		//! Offset by -BlockSize/2 relative to the start of
+		//! the data given for the block being analyzed. This
+		//! is because MDCT places the overlap region here:
+		//!  +nRatioSegments/2 places us on the next block
+		//!  -nRatioSegments/4 rewinds to the transition region
+		//!  Adding together gives the offset +nRatioSegments/4
+		SegmentBuffer += nRatioSegments/4;
+	}
 
-			//! Determine the transient ratios (ie. how much energy jumps between subblocks)
-			//! by dividing the smooth-max ratios, then multiplying by the smooth-max:average
-			//! ratio to improve sensitivity.
-			float MaxLL  = STEP_LL / STEP_LLW;
-			float MaxL   = STEP_L  / STEP_LW;
-			float MaxM   = STEP_M  / STEP_MW;
-			float MaxR   = STEP_R  / STEP_RW;
-			float RatioL = Block_Transform_GetWindowCtrl_TransientRatio(MaxL, MaxLL);
-			float RatioM = Block_Transform_GetWindowCtrl_TransientRatio(MaxM, MaxL);
-			float RatioR = Block_Transform_GetWindowCtrl_TransientRatio(MaxR, MaxM);
-			RatioL = RatioL * (STEP_L*SubBlockSize_2) / SQR(STEP_LW);
-			RatioM = RatioM * (STEP_M*SubBlockSize_2) / SQR(STEP_MW);
-			RatioR = RatioR * (STEP_R*SubBlockSize_2) / SQR(STEP_RW);
-
-			//! Determine which segment (L/M/R) is most transient
-			//! NOTE: R corresponds to the end of the block pointed to by
-			//! `Data`, which can use overlap switching to avoid decimation.
-			int   TransientPos   = POS_L;
-			float TransientRatio = RatioL;
-			if(RatioM > TransientRatio) {
-				TransientPos   = POS_M;
-				TransientRatio = RatioM;
+	//! Begin binary search for transient segment until it stops on the R side,
+	//! at which point the ratio for the transition region is stored
+	int Decimation = 1, SegmentSize = nRatioSegments / 4, SubBlockSize = BlockSize;
+	float Ratio;
+	for(;;) {
+		//! Find the peak ratio within each segment (L/M/R)
+		enum { POS_L, POS_M, POS_R};
+		int   RatioPos;
+		float RatioL;
+		float RatioM;
+		float RatioR; {
+			//! Find the smooth-max of each segment
+			float L = 0.0f, LW = 0.0f;
+			float M = 0.0f, MW = 0.0f;
+			float R = 0.0f, RW = 0.0f;
+			for(n=0;n<SegmentSize;n++) {
+				float l = SegmentBuffer[n];
+				float m = SegmentBuffer[n + SegmentSize];
+				float r = SegmentBuffer[n + SegmentSize*2];
+				L += SQR(l), LW += l;
+				M += SQR(m), MW += m;
+				R += SQR(r), RW += r;
 			}
-			if(RatioR > TransientRatio) {
-				TransientPos   = POS_R;
-				TransientRatio = RatioR;
-			}
 
-			//! If the transient is not on the overlap boundary and
+			//! Determine the segment's ratio by dividing
+			//! the smooth-max ratio by the average ratio,
+			//! and then select the largest of L/M/R.
+			//! dividing by the average ratio helps to
+			//! smooth out waveform irregularities (eg.
+			//! false-positives on a saw wave, etc).
+			//! NOTE: Remove the 'peak' from the average
+			//! before dividing by it. This gives us an
+			//! 'unbiased' average, by ignoring the peak.
+			//! NOTE: This formula can be simplified, but
+			//! is left as-is to avoid over/underflow.
+			RatioL = L / LW;
+			RatioM = M / MW;
+			RatioR = R / RW;
+			if(SegmentSize > 1) { //! With SegmentSize==1, this would cause division by 0
+				RatioL = RatioL*SegmentSize / (LW - RatioL);
+				RatioM = RatioM*SegmentSize / (MW - RatioM);
+				RatioR = RatioR*SegmentSize / (RW - RatioR);
+			}
+			                   RatioPos = POS_L, Ratio = RatioL;
+			if(RatioM > Ratio) RatioPos = POS_M, Ratio = RatioM;
+			if(RatioR > Ratio) RatioPos = POS_R, Ratio = RatioR;
+		}
+
+		//! Can we decimate?
+		if(ULC_USE_WINDOW_SWITCHING && SegmentSize >= 1 && Decimation < 0x8 && SubBlockSize > MinOverlap) {
+			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(TransientPos != POS_R && TransientRatio > 2.0f) {
+			if(RatioPos != POS_R && Ratio > 2.0f) {
 				//! Update the decimation pattern and continue
-				if(TransientPos == POS_L)
-					Decimation  = (Decimation<<1) | 0;
+				if(RatioPos == POS_L)
+					Decimation     = (Decimation<<1) | 0;
 				else
-					Decimation  = (Decimation<<1) | 1,
-					StepBuffer += SubBlockSize_2;
-				SubBlockSize_2 /= 2;
+					Decimation     = (Decimation<<1) | 1,
+					SegmentBuffer += SegmentSize;
+				SegmentSize  /= 2;
+				SubBlockSize /= 2;
 				continue;
 			}
 		}
 
-		//! If we reach here, then the transient either lies in between the left/right
-		//! boundaries, or exists on both sides equally. Either way, we can't improve
-		//! it any further, so we stop here and allow overlap switching to take over.
+		//! No more decimation - set the ratio to that on the R side and break out
+		Ratio = RatioR;
 		break;
 	}
 
-	//! Determine the overlap amount for the transient subblock
-	int OverlapScale, SubBlockSize = SubBlockSize_2*2; {
-		float Ra = (STEP_M  + STEP_R ) * (STEP_MW + STEP_LW);
-		float Rb = (STEP_MW + STEP_RW) * (STEP_M  + STEP_L );
-		if(2.0f*Ra < Rb) { float t = Rb; Rb = 2.0f*Ra, Ra = t; }
-		if(Ra >= Rb*0x1.6A09E6p0f) { //! a/b==2^0.5 is the first ratio to result in a ratio > 0
-			//! a/b >= 2^6.5 gives the upper limit ratio of 7.0
-			if(Ra < Rb*0x1.6A09E6p6f) {
-				//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-				float r = Ra / Rb;
-				OverlapScale = (int)(0x1.715476p0f*logf(r) + 0.5f);
-			} else OverlapScale = 7;
-			while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
-			while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
-		} else OverlapScale = 0;
-	}
+	//! Determine the overlap amount for the transition region
+	int OverlapScale;
+	if(Ratio >= 0x1.6A09E6p0f) { //! Ratio==2^0.5 is the first ratio to result in OverlapScale > 0
+		//! Ratio >= 2^6.5 gives the upper limit for OverlapScale = 7
+		if(Ratio < 0x1.6A09E6p6f) {
+			//! 0x1.715476p0 = 1/Log[2], to get the log base-2
+			OverlapScale = (int)(0x1.715476p0f*logf(Ratio) + 0.5f);
+		} else OverlapScale = 7;
+		while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
+		while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
+	} else OverlapScale = 0;
 
 	//! Return the combined overlap+window switching parameters
-	return OverlapScale + 0x8*(SubBlockSize != BlockSize) + 0x10*Decimation;
-#undef STEP_LL
-#undef STEP_LLW
-#undef STEP_L
-#undef STEP_LW
-#undef STEP_M
-#undef STEP_MW
-#undef STEP_R
-#undef STEP_RW
+	return OverlapScale + 0x8*(Decimation != 1) + 0x10*Decimation;
 }
 
 /**************************************/
