@@ -134,19 +134,20 @@ static inline int Block_Transform_GetWindowCtrl(
 		nRatioSegments = 2*BlockSize / RatioSegmentSamples;
 
 		//! Get the ratios for each segment
-		//! NOTE: Adding a bias avoids issues with x/0 as well as very
-		//! abrupt jumps swamping out the detector.
+		//! NOTE: Adding a bias avoids issues with x/0.
 		//! NOTE: Everything here works much better with squared ratios.
+		//! NOTE: Cap the ratio at sane limits.
 		int Segment;
-		const float Bias = 0x1.0p-15f;
-		float L, R = Bias*nRatioSegments;
+		const float Bias = 0x1.0p-48f;
+		float L, R = Bias;
 		const float *Src = StepBuffer;
 		for(Segment=0;Segment<nRatioSegments;Segment++) {
 			L = R;
-			R = Bias*nRatioSegments;
+			R = Bias;
 			for(n=0;n<RatioSegmentSamples;n++) R += *Src++;
 			float Ratio = Block_Transform_GetWindowCtrl_TransientRatio(R, L, SQR(4.0f));
-			SegmentBuffer[Segment] = SQR(Ratio);
+			Ratio *= Ratio;
+			SegmentBuffer[Segment] = (Ratio < 1.0f) ? 1.0f : (Ratio > 0x1.0p31f) ? 0x1.0p31f : Ratio;
 		}
 
 		//! Offset by -BlockSize/2 relative to the start of
@@ -210,7 +211,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && SegmentSize >= 1 && Decimation < 0x8 && SubBlockSize > MinOverlap) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio > 2.0f) {
+			if(RatioPos != POS_R && Ratio > 1.25f) {
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation     = (Decimation<<1) | 0;
