@@ -41,9 +41,36 @@
 //!    0001: N/1*
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
-static inline float Block_Transform_GetWindowCtrl_TransientRatio(float R, float L, float DecayScale) {
+struct Block_Transform_GetWindowCtrl_TransientRatio_t {
+	//! The weighted average is performed in the log domain for
+	//! better numerical stability, and the weights are computed
+	//! directly from the L and R values for the same reason.
+	float wLog2Ratio; //! Weight*Log2[Ratio]
+	float Weight;     //! Ratio-1.0
+};
+static inline struct Block_Transform_GetWindowCtrl_TransientRatio_t Block_Transform_GetWindowCtrl_TransientRatio(
+	float  R,
+	float  L,
+	float  DecayScale,
+	double RatioExponent
+) {
+	struct Block_Transform_GetWindowCtrl_TransientRatio_t Ret;
 	if(DecayScale*R < L) { float t = L; L = DecayScale*R, R = t; }
-	return R / L;
+	L += 0x1.0p-31f; //! NOTE: Adding a bias avoids issues with x/0
+
+	//! NOTE: Cap the ratio at sane limits.
+	if(R < L) {
+		//! Soft decay - Ignore, and use Ratio=1.0
+		Ret.wLog2Ratio = 0.0f;
+		Ret.Weight     = 0.0f;
+	} else {
+		double r = pow((double)R / L, RatioExponent);
+		if(r > 0x1.0p25) r = 0x1.0p25; //! Cap at a sane limit
+		double w = r - 1.0;
+		Ret.wLog2Ratio = (float)(w*log(r));
+		Ret.Weight     = (float)w;
+	}
+	return Ret;
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
@@ -57,37 +84,36 @@ static inline int Block_Transform_GetWindowCtrl(
 ) {
 	int n, Chan;
 
-	//! Perform a highpass filter to get the step/transient energies
+	//! Perform a bandpass filter to isolate the energy that is
+	//! important to transient detection. Generally, LF energy
+	//! and HF energy are 'unimportant', and it's the MF energy
+	//! that has most of the information we're interested in.
 	//! Transfer function:
-	//!  H(z) = 1 - z^-1
+	//!  H(z) = z^1 - z^-1
 	//! Assumes an even-symmetric structure at the boundaries
 	//! NOTE: This filter does not have unity gain, as doing so
 	//! would add some multiplications that would reduce performance.
-	//! NOTE: The following filter was attempted:
-	//!  H(z) = -0.5z^1 + 1 - 0.5z^-1
-	//! However, this gave very, very poor results with the method
-	//! of transient detection used at present.
 	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-#define HPFILT(zM1, z0, z1) (-(zM1) + (z0))
+#define BPFILT(zM1, z0, z1) ((z1) - (zM1))
 		float *Dst = StepBuffer;
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
 
 		//! Get step energy for last block
-		*Dst++ += SQR(HPFILT(SrcOld[1], SrcOld[0], SrcOld[1]));
+		*Dst++ += SQR(BPFILT(SrcOld[1], SrcOld[0], SrcOld[1]));
 		for(n=1;n<BlockSize-1;n++) {
-			*Dst++ += SQR(HPFILT(SrcOld[n-1], SrcOld[n], SrcOld[n+1]));
+			*Dst++ += SQR(BPFILT(SrcOld[n-1], SrcOld[n], SrcOld[n+1]));
 		}
-		*Dst++ += SQR(HPFILT(SrcOld[n-1], SrcOld[n], SrcNew[0]));
+		*Dst++ += SQR(BPFILT(SrcOld[n-1], SrcOld[n], SrcNew[0]));
 
 		//! Get step energy for this block
-		*Dst++ += SQR(HPFILT(SrcOld[n], SrcNew[0], SrcNew[1]));
+		*Dst++ += SQR(BPFILT(SrcOld[n], SrcNew[0], SrcNew[1]));
 		for(n=1;n<BlockSize-1;n++) {
-			*Dst++ += SQR(HPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n+1]));
+			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n+1]));
 		}
-		*Dst++ += SQR(HPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n-1]));
-#undef HPFILT
+		*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n-1]));
+#undef BPFILT
 	}
 
 	//! Spread the energy forwards a bit, so that transients at the
@@ -99,10 +125,15 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! TL;DR: This gives transients extra oomph, smooths out
 	//! irregularities in the signal, and does post-masking.
 	{
-		//! Transient decay curve: 3dB/ms (in X^2 domain):
+		//! Transient decay curve: 1.5dB/ms:
 		//!  E^(-Log[10]*1000*(dBDecayPerMs/10) / RateHz)
+		//! 1.5dB/ms is /massive/ overkill, but we really
+		//! want to isolate just the first transient. This
+		//! makes the transient threshold /very/ touchy,
+		//! however, and will be extremely close to 1.0
+		//! without exponentiating the ratios later.
 		float *Buf = StepBuffer;
-		float a = expf(-0x1.596344p9f / RateHz);
+		float a = expf(-0x1.596344p8f / RateHz);
 		float SampleLast = *Buf++;
 		for(n=1;n<BlockSize*2;n++) {
 			float v = *Buf;
@@ -110,44 +141,36 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 	}
 
-	//! Window off the tail end of the sample data
-	//! This avoids doubling up on the transient by overlap
-	//! adjustment on one block, and decimation on the next.
-	{
-		const float *Sin = Fourier_SinTableN(BlockSize/4);
-		float *Buf = StepBuffer + 2*BlockSize;
-		for(n=0;n<BlockSize/4;n++) *--Buf *= Sin[n];
-	}
-
 	//! Finally, convert the filtered energy into transient
 	//! ratio segments for detecting spikes within the subblocks.
 	//! From thorough experimentation, subdividing into small
 	//! segments from which we extract ratios seems to result
 	//! in the best transient detection.
-	//! NOTE: We don't necessarily use all of SegmentBuffer later
+	//! NOTE: We don't necessarily use all of RatioBuffer later
 	//! (meaning there is unnecessary calculations here), but it
 	//! appears to not be a bottleneck at present, so this has
 	//! not been optimized out.
+	//! TODO: Attempt using the old strategy of analyzing the
+	//! total energy in each segment (LL/L/M/R) and dividing,
+	//! but this time exponentiate the ratio using, eg.
+	//! Log[nSamplesInSegment] (or since we're using log ratios,
+	//! multiply it by Log[nSamplesInSegment]).
 	int nRatioSegments;
-	float *SegmentBuffer = StepBuffer; {
+	struct Block_Transform_GetWindowCtrl_TransientRatio_t *RatioBuffer = (struct Block_Transform_GetWindowCtrl_TransientRatio_t*)StepBuffer; {
 		const int RatioSegmentSamples = 64;
 		nRatioSegments = 2*BlockSize / RatioSegmentSamples;
 
 		//! Get the ratios for each segment
-		//! NOTE: Adding a bias avoids issues with x/0.
-		//! NOTE: Everything here works much better with squared ratios.
-		//! NOTE: Cap the ratio at sane limits.
+		//! NOTE: The exponent was determined experimentally via
+		//! testing and may not be the best choice.
 		int Segment;
-		const float Bias = 0x1.0p-48f;
-		float L, R = Bias;
+		float L, R = 0.0f;
 		const float *Src = StepBuffer;
 		for(Segment=0;Segment<nRatioSegments;Segment++) {
 			L = R;
-			R = Bias;
+			R = 0.0f;
 			for(n=0;n<RatioSegmentSamples;n++) R += *Src++;
-			float Ratio = Block_Transform_GetWindowCtrl_TransientRatio(R, L, SQR(4.0f));
-			Ratio *= Ratio;
-			SegmentBuffer[Segment] = (Ratio < 1.0f) ? 1.0f : (Ratio > 0x1.0p31f) ? 0x1.0p31f : Ratio;
+			RatioBuffer[Segment] = Block_Transform_GetWindowCtrl_TransientRatio(R, L, SQR(4.0f), 20.0/6);
 		}
 
 		//! Offset by -BlockSize/2 relative to the start of
@@ -156,13 +179,13 @@ static inline int Block_Transform_GetWindowCtrl(
 		//!  +nRatioSegments/2 places us on the next block
 		//!  -nRatioSegments/4 rewinds to the transition region
 		//!  Adding together gives the offset +nRatioSegments/4
-		SegmentBuffer += nRatioSegments/4;
+		RatioBuffer += nRatioSegments/4;
 	}
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored
 	int Decimation = 1, SegmentSize = nRatioSegments / 4, SubBlockSize = BlockSize;
-	float Ratio;
+	float LogRatio;
 	for(;;) {
 		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
@@ -170,54 +193,40 @@ static inline int Block_Transform_GetWindowCtrl(
 		float RatioL;
 		float RatioM;
 		float RatioR; {
-			//! Find the smooth-max of each segment
+			//! Find the pseudo-peak ratio of each segment
 			float L = 0.0f, LW = 0.0f;
 			float M = 0.0f, MW = 0.0f;
 			float R = 0.0f, RW = 0.0f;
 			for(n=0;n<SegmentSize;n++) {
-				float l = SegmentBuffer[n];
-				float m = SegmentBuffer[n + SegmentSize];
-				float r = SegmentBuffer[n + SegmentSize*2];
-				L += SQR(l), LW += l;
-				M += SQR(m), MW += m;
-				R += SQR(r), RW += r;
+				struct Block_Transform_GetWindowCtrl_TransientRatio_t l, m, r;
+				l = RatioBuffer[n];
+				m = RatioBuffer[n + SegmentSize];
+				r = RatioBuffer[n + SegmentSize*2];
+				L += l.wLog2Ratio, LW += l.Weight;
+				M += m.wLog2Ratio, MW += m.Weight;
+				R += r.wLog2Ratio, RW += r.Weight;
 			}
+			RatioL = (LW > 0.0f) ? (L / LW) : 1.0f;
+			RatioM = (MW > 0.0f) ? (M / MW) : 1.0f;
+			RatioR = (RW > 0.0f) ? (R / RW) : 1.0f;
 
-			//! Determine the segment's ratio by dividing
-			//! the smooth-max ratio by the average ratio,
-			//! and then select the largest of L/M/R.
-			//! dividing by the average ratio helps to
-			//! smooth out waveform irregularities (eg.
-			//! false-positives on a saw wave, etc).
-			//! NOTE: Remove the 'peak' from the average
-			//! before dividing by it. This gives us an
-			//! 'unbiased' average, by ignoring the peak.
-			//! NOTE: This formula can be simplified, but
-			//! is left as-is to avoid over/underflow.
-			RatioL = L / LW;
-			RatioM = M / MW;
-			RatioR = R / RW;
-			if(SegmentSize > 1) { //! With SegmentSize==1, this would cause division by 0
-				RatioL = RatioL*SegmentSize / (LW - RatioL);
-				RatioM = RatioM*SegmentSize / (MW - RatioM);
-				RatioR = RatioR*SegmentSize / (RW - RatioR);
-			}
-			                   RatioPos = POS_L, Ratio = RatioL;
-			if(RatioM > Ratio) RatioPos = POS_M, Ratio = RatioM;
-			if(RatioR > Ratio) RatioPos = POS_R, Ratio = RatioR;
+			//! Select the largest ratio of L/M/R
+			                      RatioPos = POS_L, LogRatio = RatioL;
+			if(RatioM > LogRatio) RatioPos = POS_M, LogRatio = RatioM;
+			if(RatioR > LogRatio) RatioPos = POS_R, LogRatio = RatioR;
 		}
 
 		//! Can we decimate?
-		if(ULC_USE_WINDOW_SWITCHING && SegmentSize >= 1 && Decimation < 0x8 && SubBlockSize > MinOverlap) {
+		if(ULC_USE_WINDOW_SWITCHING && SegmentSize > 1 && Decimation < 0x8 && SubBlockSize > MinOverlap) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio > 1.25f) {
+			if(RatioPos != POS_R && LogRatio >= 1.0f) { //! Log2[2.0] = 1.0
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
-					Decimation     = (Decimation<<1) | 0;
+					Decimation   = (Decimation<<1) | 0;
 				else
-					Decimation     = (Decimation<<1) | 1,
-					SegmentBuffer += SegmentSize;
+					Decimation   = (Decimation<<1) | 1,
+					RatioBuffer += SegmentSize;
 				SegmentSize  /= 2;
 				SubBlockSize /= 2;
 				continue;
@@ -225,21 +234,17 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! No more decimation - set the ratio to that on the R side and break out
-		Ratio = RatioR;
+		LogRatio = RatioR;
 		break;
 	}
 
-	//! Determine the overlap amount for the transition region
-	int OverlapScale;
-	if(Ratio >= 0x1.6A09E6p0f) { //! Ratio==2^0.5 is the first ratio to result in OverlapScale > 0
-		//! Ratio >= 2^6.5 gives the upper limit for OverlapScale = 7
-		if(Ratio < 0x1.6A09E6p6f) {
-			//! 0x1.715476p0 = 1/Log[2], to get the log base-2
-			OverlapScale = (int)(0x1.715476p0f*logf(Ratio) + 0.5f);
-		} else OverlapScale = 7;
+	//! Determine the overlap scaling for the transition region
+	int OverlapScale = 0;
+	if(LogRatio >= 1.0f) {
+		OverlapScale = (LogRatio < 6.5f) ? (int)(LogRatio + 0.5f) : 7;
 		while(OverlapScale > 0 && (SubBlockSize >> OverlapScale) < MinOverlap) OverlapScale--;
 		while(OverlapScale < 7 && (SubBlockSize >> OverlapScale) > MaxOverlap) OverlapScale++;
-	} else OverlapScale = 0;
+	}
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(Decimation != 1) + 0x10*Decimation;
