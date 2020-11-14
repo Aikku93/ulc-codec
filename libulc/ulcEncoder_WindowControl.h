@@ -42,34 +42,22 @@
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
 struct Block_Transform_GetWindowCtrl_TransientRatio_t {
-	//! The weighted average is performed in the log domain for
-	//! better numerical stability, and the weights are computed
-	//! directly from the L and R values for the same reason.
-	float wLog2Ratio; //! Weight*Log2[Ratio]
-	float Weight;     //! Ratio-1.0
+	float wLogRatio; //! Weight*Log[Ratio]
+	float Weight;    //! (AbsRatio-1.0)^2
+	float RawLog;    //! Log[Ratio]
 };
 static inline struct Block_Transform_GetWindowCtrl_TransientRatio_t Block_Transform_GetWindowCtrl_TransientRatio(
-	float  R,
-	float  L,
-	float  DecayScale,
-	double RatioExponent
+	float R,
+	float L
 ) {
 	struct Block_Transform_GetWindowCtrl_TransientRatio_t Ret;
-	if(DecayScale*R < L) { float t = L; L = DecayScale*R, R = t; }
-	L += 0x1.0p-31f; //! NOTE: Adding a bias avoids issues with x/0
+	const float Bias = 0x1.0p-31f; //! NOTE: Adding a bias avoids issues with Log[0]
 
-	//! NOTE: Cap the ratio at sane limits.
-	if(R < L) {
-		//! Soft decay - Ignore, and use Ratio=1.0
-		Ret.wLog2Ratio = 0.0f;
-		Ret.Weight     = 0.0f;
-	} else {
-		double r = pow((double)R / L, RatioExponent);
-		if(r > 0x1.0p25) r = 0x1.0p25; //! Cap at a sane limit
-		double w = r - 1.0;
-		Ret.wLog2Ratio = (float)(w*log(r));
-		Ret.Weight     = (float)w;
-	}
+	float r = logf(R+Bias) - logf(L+Bias);
+	float w = expf(ABS(r)) - 1.0f; w *= w;
+	Ret.wLogRatio = w * r;
+	Ret.Weight    = w;
+	Ret.RawLog    = r;
 	return Ret;
 }
 static inline int Block_Transform_GetWindowCtrl(
@@ -132,12 +120,14 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! makes the transient threshold /very/ touchy,
 		//! however, and will be extremely close to 1.0
 		//! without exponentiating the ratios later.
+		//! NOTE: Unity gain is necessary to avoid issues
+		//! with very overblown overflow in some cases.
 		float *Buf = StepBuffer;
-		float a = expf(-0x1.596344p8f / RateHz);
-		float SampleLast = *Buf++;
+		float a = expf(-0x1.596344p8f / RateHz), b = 1.0f - a;
+		float SampleLast = (*Buf++ *= b);
 		for(n=1;n<BlockSize*2;n++) {
 			float v = *Buf;
-			*Buf++ = SampleLast = a*SampleLast + v;
+			*Buf++ = SampleLast = a*SampleLast + b*v;
 		}
 	}
 
@@ -150,11 +140,6 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! (meaning there is unnecessary calculations here), but it
 	//! appears to not be a bottleneck at present, so this has
 	//! not been optimized out.
-	//! TODO: Attempt using the old strategy of analyzing the
-	//! total energy in each segment (LL/L/M/R) and dividing,
-	//! but this time exponentiate the ratio using, eg.
-	//! Log[nSamplesInSegment] (or since we're using log ratios,
-	//! multiply it by Log[nSamplesInSegment]).
 	int nRatioSegments;
 	struct Block_Transform_GetWindowCtrl_TransientRatio_t *RatioBuffer = (struct Block_Transform_GetWindowCtrl_TransientRatio_t*)StepBuffer; {
 		const int RatioSegmentSamples = 64;
@@ -169,8 +154,13 @@ static inline int Block_Transform_GetWindowCtrl(
 		for(Segment=0;Segment<nRatioSegments;Segment++) {
 			L = R;
 			R = 0.0f;
-			for(n=0;n<RatioSegmentSamples;n++) R += *Src++;
-			RatioBuffer[Segment] = Block_Transform_GetWindowCtrl_TransientRatio(R, L, SQR(4.0f), 20.0/6);
+			float w = 0.0f;
+			for(n=0;n<RatioSegmentSamples;n++) {
+				float v = *Src++;
+				R += SQR(v), w += v;
+			}
+			if(w > 0.0f) R /= w;
+			RatioBuffer[Segment] = Block_Transform_GetWindowCtrl_TransientRatio(R, L);
 		}
 
 		//! Offset by -BlockSize/2 relative to the start of
@@ -193,22 +183,42 @@ static inline int Block_Transform_GetWindowCtrl(
 		float RatioL;
 		float RatioM;
 		float RatioR; {
-			//! Find the pseudo-peak ratio of each segment
-			float L = 0.0f, LW = 0.0f;
-			float M = 0.0f, MW = 0.0f;
-			float R = 0.0f, RW = 0.0f;
+			//! Find the weighted sums and unweighted total
+			float L = 0.0f, LW = 0.0f, LMean = 0.0f;
+			float M = 0.0f, MW = 0.0f, MMean = 0.0f;
+			float R = 0.0f, RW = 0.0f, RMean = 0.0f;
 			for(n=0;n<SegmentSize;n++) {
 				struct Block_Transform_GetWindowCtrl_TransientRatio_t l, m, r;
 				l = RatioBuffer[n];
 				m = RatioBuffer[n + SegmentSize];
 				r = RatioBuffer[n + SegmentSize*2];
-				L += l.wLog2Ratio, LW += l.Weight;
-				M += m.wLog2Ratio, MW += m.Weight;
-				R += r.wLog2Ratio, RW += r.Weight;
+				L += l.wLogRatio, LW += l.Weight, LMean += l.RawLog;
+				M += m.wLogRatio, MW += m.Weight, MMean += m.RawLog;
+				R += r.wLogRatio, RW += r.Weight, RMean += r.RawLog;
 			}
-			RatioL = (LW > 0.0f) ? (L / LW) : 1.0f;
-			RatioM = (MW > 0.0f) ? (M / MW) : 1.0f;
-			RatioR = (RW > 0.0f) ? (R / RW) : 1.0f;
+
+			//! Resolve the sums into ratios
+			//! NOTE: Removing the mean helps to reduce decimation for
+			//! periodic signals (eg. saw waves) and noise.
+			//! NOTE: Exp is used for a change-of-base into Log2[Ratio]
+			//! and also accounts for summing a set of ratios.
+			//! NOTE: Technically, we should also scale Exp by 0.5 to
+			//! account for the samples (and thus, ratios) being
+			//! squared, but this seems to cancel out with the massively
+			//! overkill smoothing filter from earlier.
+			float Exp = (31 - __builtin_clz(SegmentSize)) * 0x1.715476p0f; //! Log2[SegmentSize] * 1/Log[2]
+			RatioL  = (LW > 0.0f) ? (L / LW) : 0.0f;
+			RatioM  = (MW > 0.0f) ? (M / MW) : 0.0f;
+			RatioR  = (RW > 0.0f) ? (R / RW) : 0.0f;
+			RatioL -= LMean/SegmentSize;
+			RatioM -= MMean/SegmentSize;
+			RatioR -= RMean/SegmentSize;
+			RatioL *= Exp;
+			RatioM *= Exp;
+			RatioR *= Exp;
+			if(RatioL < -0x1.0p1f) RatioL = -RatioL; //! Treat decays <25% as transients (Log2[1/4])
+			if(RatioM < -0x1.0p1f) RatioM = -RatioM;
+			if(RatioR < -0x1.0p1f) RatioR = -RatioR;
 
 			//! Select the largest ratio of L/M/R
 			                      RatioPos = POS_L, LogRatio = RatioL;
@@ -234,7 +244,10 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! No more decimation - set the ratio to that on the R side and break out
-		LogRatio = RatioR;
+		//! NOTE: Undo the Log2[SegmentSize] scaling here. Not too
+		//! sure why, but this seems to be very necessary to avoid
+		//! strange 'popping' artifacts on sharp transients.
+		LogRatio = RatioR / (31 - __builtin_clz(SegmentSize));
 		break;
 	}
 
