@@ -21,10 +21,10 @@
 /**************************************/
 
 //! Just for consistency
-#define MIN_BANDS 8
-#define MAX_BANDS 65535
-#define MIN_CHANS 1
-#define MAX_CHANS 255
+#define MIN_CHANS    1
+#define MAX_CHANS  255
+#define MIN_BANDS  128
+#define MAX_BANDS 8192
 
 /**************************************/
 

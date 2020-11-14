@@ -23,11 +23,11 @@
 #endif
 /**************************************/
 
-#define MIN_CHANS     1
-#define MIN_BANDS    64 //! Mostly depends on the SIMD routines (currently limited by Block_Transform_CopySamples())
-#define MAX_CHANS   255
-#define MAX_BANDS 65535
-#define MIN_OVERLAP  16 //! Depends on SIMD routines; setting as 16 arbitrarily
+#define MIN_CHANS    1
+#define MAX_CHANS  255
+#define MIN_BANDS  128 //! Currently depends on Block_Transform_GetWindowCtrl() (RatioSegmentSamples)
+#define MAX_BANDS 8192
+#define MIN_OVERLAP 16 //! Depends on SIMD routines; setting as 16 arbitrarily
 
 //! Initialize encoder state
 int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
