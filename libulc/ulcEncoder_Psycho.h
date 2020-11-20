@@ -53,7 +53,7 @@ static inline float Block_Transform_GetMaskedLevel(
 
 	//! Update energy for this critical band
 	//! NOTE: The maximum value for Energy*EnergyNp correspond to the values
-	//! Energy == FFFFFFFFh, EnergyNp == B6FDA8B8h. Being pessimistic, we
+	//! Energy == FFFFFFFFh, EnergyNp == FFFFFFFFh. Being pessimistic, we
 	//! can assume that the bandwidth of the sum is the maximum allowable
 	//! block size (8192), thus we must scale down the EnergyLog sum by
 	//! BlockSize, which conveniently can be performed with a LSR.
@@ -83,8 +83,9 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! instead return the correction factor.
 	//! NOTE: EnergySum must scale down, as EnergyLog cannot
 	//! scale up the necessary bits without potential overflow.
-	EnergySum >>= State->SumShift; if(!EnergySum) EnergySum = 1;
-	return logf(BandEnd-BandBeg+1)*0x1.0p-27f * (int64_t)(EnergyNp[Band] - EnergyLog/EnergySum);
+	const float InvLogScale = 0x1.6DFB51p-28f; //! Log[2 * 2^32]/(2^32 - 1). Reciprocal of LogScale in Block_Transform_ComputePowerSpectrum()
+	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0); //! Round up
+	return logf(BandEnd-BandBeg+1) * InvLogScale*(int64_t)(EnergyNp[Band] - EnergyLog/EnergySum);
 }
 
 /**************************************/
