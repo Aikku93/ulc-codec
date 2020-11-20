@@ -51,9 +51,7 @@ static inline struct Block_Transform_GetWindowCtrl_TransientRatio_t Block_Transf
 	float L
 ) {
 	struct Block_Transform_GetWindowCtrl_TransientRatio_t Ret;
-	const float Bias = 0x1.0p-31f; //! NOTE: Adding a bias avoids issues with Log[0]
-
-	float r = logf(R+Bias) - logf(L+Bias);
+	float r = R - L;
 	float w = expf(ABS(r)) - 1.0f; w *= w;
 	Ret.wLogRatio = w * r;
 	Ret.Weight    = w;
@@ -148,18 +146,20 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! Get the ratios for each segment
 		//! NOTE: The exponent was determined experimentally via
 		//! testing and may not be the best choice.
+		const float MIN_LOG = -0x1.394D72p5; //! Log[113/2]
 		int Segment;
-		float L, R = 0.0f;
+		float L, R = MIN_LOG;
 		const float *Src = StepBuffer;
 		for(Segment=0;Segment<nRatioSegments;Segment++) {
 			L = R;
-			R = 0.0f;
-			float w = 0.0f;
-			for(n=0;n<RatioSegmentSamples;n++) {
-				float v = *Src++;
-				R += SQR(v), w += v;
+			R = 0.0f; {
+				float w = 0.0f;
+				for(n=0;n<RatioSegmentSamples;n++) {
+					float v = *Src++;
+					w += v; if(v > 0.0f) R += v*logf(v);
+				}
+				R = (R != 0.0f) ? (R/w) : MIN_LOG;
 			}
-			if(w > 0.0f) R /= w;
 			RatioBuffer[Segment] = Block_Transform_GetWindowCtrl_TransientRatio(R, L);
 		}
 
