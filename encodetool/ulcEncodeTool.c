@@ -204,14 +204,6 @@ int main(int argc, const char *argv[]) {
 				BlockBuffer[Chan*BlockSize+n] = ((size_t)n < nMax) ? (BlockFetch[n*nChan+Chan] * (1.0f/32768.0f)) : 0.0f;
 			}
 
-			//! Apply M/S transform
-			if(nChan == 2) for(n=0;n<BlockSize;n++) {
-				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
-				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
-				*a = (va + vb) * 0.5f;
-				*b = (va - vb) * 0.5f;
-			}
-
 			//! Encode block
 			//! Reuse BlockBuffer[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockBuffer;

@@ -176,14 +176,6 @@ int main(int argc, const char *argv[]) {
 			int Size = ULC_DecodeBlock(&Decoder, BlockBuffer, State.CacheNext);
 			StateCacheAdvance(&State, (Size + 7) / 8u, Header.MaxBlockSize);
 
-			//! Apply M/S transform
-			if(nChan == 2) for(n=0;n<BlockSize;n++) {
-				float *a = &BlockBuffer[0*BlockSize+n], va = *a;
-				float *b = &BlockBuffer[1*BlockSize+n], vb = *b;
-				*a = va + vb;
-				*b = va - vb;
-			}
-
 			//! Interleave to output buffer
 			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
 				BlockOutput[n*nChan+Chan] = (int16_t)Clip16(lrintf(32768.0f * BlockBuffer[Chan*BlockSize+n]));

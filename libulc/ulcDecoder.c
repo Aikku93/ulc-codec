@@ -213,6 +213,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
+	int    n;
 	int    nChan            = State->nChan;
 	int    BlockSize        = State->BlockSize;
 	float *TransformBuffer  = State->TransformBuffer;
@@ -323,7 +324,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			//! Output samples from the lapping buffer, and cycle
 			//! the new samples through it for the next call
 			float *LapBuf = Lap + BlockSize/2;
-			int n, LapExtra = (BlockSize - SubBlockSize) / 2;
+			int LapExtra = (BlockSize - SubBlockSize) / 2;
 			int LapCopy = (LapExtra < SubBlockSize) ? LapExtra : SubBlockSize;
 			for(n=0;n<LapCopy;n++)   *Dst++ = LapBuf[-1-n];
 			for(;n<SubBlockSize;n++) *Dst++ = *DecBuf++;
@@ -331,6 +332,15 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			for(n=0;n<NewCopy;n++) LapBuf[-1-n] = LapBuf[-1-n-LapCopy];
 			for(;n<LapExtra;n++) LapBuf[-1-n] = *DecBuf++;
 		}
+	}
+
+	//! Undo M/S transform
+	//! NOTE: Not orthogonal; must be fully normalized on the encoder side.
+	if(nChan == 2) for(n=0;n<BlockSize;n++) {
+		float M = DstData[n];
+		float S = DstData[n + BlockSize];
+		DstData[n]             = M+S;
+		DstData[n + BlockSize] = M-S;
 	}
 
 	//! Store the last overlap size obtained, and return the number of bits read
