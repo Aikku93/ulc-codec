@@ -40,10 +40,10 @@ static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(in
 //! NOTE: The average is performed over the Neper-domain coefficients, so there is
 //!       no need to apply a further logarithm here to get the base-2 logarithm.
 static inline int Block_Encode_BuildQuantizer(float Sum, float Weight) {
-	//! NOTE: Rounding point at 0.75, so as to favour louder bands
+	//! NOTE: No rounding (ie. this truncates); this favours louder bands.
 	//! NOTE: `q` will always be greater than 5 due to the bias so
-	//! the quantizer code range is adjusted accordingly.
-	int q = (int)(5.25f - 0x1.715476p0f*Sum/Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
+	//! the quantizer code syntax is biased accordingly.
+	int q = (int)(5.0f - 0x1.715476p0f*Sum/Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
 	if(q < 5) q = 5; //! Sometimes happens because of overflow?
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -171,13 +171,13 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(Idx >= ChanLastIdx) break;
 
 			//! Level out of range in this quantizer zone?
-			const float LogMaxRange = 0x1.01E858p2f; //! Maximum Neper range before needing a split (approx. 35dB)
+			const float LogMaxRange = 0x1.0A2B24p2f; //! Log[8.0^2]; Maximum Neper range before needing a split (approx. 36.1dB)
 			float BandCoef2  = SQR(Coef  [Idx]);
 			float BandCoefNp =    (CoefNp[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
 			if(BandCoefNp < QuantMin) QuantMin = BandCoefNp;
 			if(BandCoefNp > QuantMax) QuantMax = BandCoefNp;
-			if(QuantMax-QuantMin > LogMaxRange) { //! sqrtf(QuantMax/QuantMin) > MaxRange
+			if(QuantMax-QuantMin > LogMaxRange) {
 				//! Write the quantizer zone we just searched through
 				//! and start a new one from this coefficient
 				NextCodedIdx  = WRITE_QUANT_ZONE();
