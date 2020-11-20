@@ -87,12 +87,14 @@ static inline void Block_Transform_ComputePowerSpectrum(uint32_t *Power, uint32_
 
 	//! Rescale and convert data to fixed-point
 	//! NOTE: Maximum value for PowerNp is Log[2 * 2^32] == 22.87,
-	//! allowing us to put this into 5.27fxp.
+	//! allowing us to scale this by (2^32 - 1)/Log[2 * 2^32]
+	const double LogScale = 0x1.66235B759A0B1p27; //! (2^32 - 1)/Log[2 * 2^32]
+	const double CeilBias = 0x1.FFFFFFFFFFFFFp-1; //! 0.99999... for ceiling
 	for(i=0;i<N;i++) {
 		double v  = SQR((double)Re[i]) + SQR((double)Im[i]);
 		       v *= Scale;
-		Power  [i] = (uint32_t)(v + 0.5);
-		PowerNp[i] = (v < 0.5) ? 0 : (uint32_t)(0x1.0p27*log(2.0*v) + 0.5); //! Scale by 2 to keep values strictly non-negative
+		Power  [i] = (uint32_t)(v + CeilBias);
+		PowerNp[i] = (v < 0.5) ? 0 : (uint32_t)(LogScale*log(2.0*v) + CeilBias); //! Scale by 2 to keep values strictly non-negative
 	}
 }
 static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
@@ -243,6 +245,15 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		float *BufferIndex     = (float*)State->TransformIndex;
 		float *BufferFwdLap    = State->TransformFwdLap;
 		float *BufferTemp      = State->TransformTemp;
+
+		//! Apply M/S transform to the data
+		//! NOTE: Fully normalized; not orthogonal.
+		if(nChan == 2) for(n=0;n<BlockSize;n++) {
+			float L = BufferSamples[n];
+			float R = BufferSamples[n + BlockSize];
+			BufferSamples[n]             = (L+R) * 0.5f;
+			BufferSamples[n + BlockSize] = (L-R) * 0.5f;
+		}
 
 		//! Transform the input data
 		int ThisTransientSubBlockIdx = ULC_Helper_TransientSubBlockIndex(WindowCtrl >> 4);
