@@ -171,7 +171,18 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(Idx >= ChanLastIdx) break;
 
 			//! Level out of range in this quantizer zone?
-			const float LogMaxRange = 0x1.0A2B24p2f; //! Log[8.0^2]; Maximum Neper range before needing a split (approx. 36.1dB)
+			//! NOTE: There is a certain amount of overlap
+			//! between quantizers:
+			//!  7^2 * 2^-1 == x^2 * 2^0
+			//!  x == Sqrt[7^2 * 2^-1]
+			//!    == 4.95
+			//! Meaning that a level of 7^2 in a quantizer
+			//! roughly corresponds to the level 5^2 in
+			//! the next quantizer. To account for this,
+			//! we add the difference to the threshold:
+			//!  Log[(7*2 - Sqrt[7^2 * 2^-1])^2]
+			//! This is approximately 38.3dB.
+			const float LogMaxRange = 0x1.19F51Cp2f;
 			float BandCoef2  = SQR(Coef  [Idx]);
 			float BandCoefNp =    (CoefNp[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
