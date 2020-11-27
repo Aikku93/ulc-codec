@@ -25,7 +25,6 @@ static inline void Block_Transform_WriteSortValues(
 	const float *CoefNp,
 	int   *nNzCoef,
 	int   BlockSize,
-	float AnalysisPowerNp,
 	float NyquistHz
 ) {
 	int Band;
@@ -36,7 +35,6 @@ static inline void Block_Transform_WriteSortValues(
 	(void)Energy;
 	(void)EnergyNp;
 	(void)NyquistHz;
-	AnalysisPowerNp *= 0.5f; //! Assumed to operate in the energy (X^2) domain, so account for operating in a linear domain
 #endif
 	for(Band=0;Band<BlockSize;Band++) {
 		//! Inside the codeable range?
@@ -49,7 +47,7 @@ static inline void Block_Transform_WriteSortValues(
 			ValNp += ValNp + Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
 #endif
 			//! Store the sort value for this coefficient
-			CoefIdx[Band] = ValNp + AnalysisPowerNp;
+			CoefIdx[Band] = ValNp;
 			(*nNzCoef)++;
 		} else CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
 	}
@@ -211,7 +209,7 @@ static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSi
 		} break;
 	}
 }
-static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, float PowerDecay) {
+static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 
@@ -222,10 +220,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 		State->SampleBuffer,
 		State->TransformTemp,
 		BlockSize,
-		State->MinOverlap,
-		State->MaxOverlap,
-		nChan,
-		State->RateHz
+		nChan
 	);
 	int NextBlockSubBlockSize = BlockSize; {
 		//! Adjust for the first [sub]block's size
@@ -238,7 +233,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 	//! speed things up in the rate-control step
 	int nNzCoef = 0; {
 		int n, Chan;
-		float  AnalysisPowerNp = 0.0f; PowerDecay = logf(PowerDecay);
 		float *BufferSamples   = State->SampleBuffer;
 		float *BufferTransform = State->TransformBuffer;
 		float *BufferNepers    = State->TransformNepers;
@@ -327,7 +321,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 					BufferNepers,
 					&nNzCoef,
 					SubBlockSize,
-					AnalysisPowerNp,
 					State->RateHz * 0.5f
 				);
 
@@ -341,8 +334,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data, 
 			for(n=0;n<BlockSize;n++) BufferSamples[n-BlockSize] = *Data++;
 
 			//! Move to the next channel
-			BufferFwdLap    += BlockSize/2u;
-			AnalysisPowerNp += PowerDecay;
+			BufferFwdLap += BlockSize/2u;
 		}
 
 		//! Interleave the transform data for coding

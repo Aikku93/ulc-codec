@@ -38,8 +38,6 @@ struct ULC_EncoderState_t {
 	int RateHz;     //! Playback rate (used for rate control)
 	int nChan;      //! Channels in encoding scheme
 	int BlockSize;  //! Transform block size
-	int MinOverlap; //! Block overlap (minimum)
-	int MaxOverlap; //! Block overlap (maximum)
 	int WindowCtrl; //! Window control parameter
 	int NextWindowCtrl;
 
@@ -78,8 +76,8 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //! Encode block
 //! NOTE:
 //!  -Maximum size (in bits) for each block is:
-//!    4 + nChan*(8+4 + (16+4)*(BlockSize-1))
-//!     4    = Overlap selection
+//!    8 + nChan*(8+4 + (16+4)*(BlockSize-1))
+//!     8    = Window shape[s] selection
 //!     8+4  = Initial quantizer ([8h,0h,]Eh,Xh) and first coefficient (Xh)
 //!     16+4 = Quantizer (8h,0h,Eh,Xh) + coefficient (Xh)
 //!   So output buffer size should be at least that size
@@ -89,12 +87,9 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!    0,1,2,3...BlockSize-1, //! Chan0
 //!    0,1,2,3...BlockSize-1, //! Chan1
 //!   }
-//!  -PowerDecay is meant for M/S transform and the like, where
-//!   channels are increasingly 'less important'. Pass 1.0 if
-//!   all channels are equally important.
 //! Returns the block size in bits
-int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay);
-int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality,  float PowerDecay);
+int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps);
+int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality);
 
 /**************************************/
 //! EOF
