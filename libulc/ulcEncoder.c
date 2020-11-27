@@ -14,18 +14,12 @@
 #include "ulcEncoder_BlockTransform.h"
 #include "ulcEncoder_Encode.h"
 /**************************************/
-#if defined(__AVX__)
-# define BUFFER_ALIGNMENT 32u //! __mm256
-#elif defined(__SSE__)
-# define BUFFER_ALIGNMENT 16u //! __mm128
-#else
-# define BUFFER_ALIGNMENT 4u //! float
-#endif
+#define BUFFER_ALIGNMENT 64u //! Always align memory to 64-byte boundaries (preparation for AVX-512)
 /**************************************/
 
 #define MIN_CHANS    1
 #define MAX_CHANS  255
-#define MIN_BANDS  128 //! Currently depends on Block_Transform_GetWindowCtrl() (RatioSegmentSamples)
+#define MIN_BANDS   64 //! 64-point MDCT is pretty extreme, so setting this as the limit
 #define MAX_BANDS 8192
 #define MIN_OVERLAP 16 //! Depends on SIMD routines; setting as 16 arbitrarily
 
@@ -37,17 +31,9 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Verify parameters
 	int nChan      = State->nChan;
 	int BlockSize  = State->BlockSize;
-	int MinOverlap = State->MinOverlap;
-	int MaxOverlap = State->MaxOverlap;
 	if(nChan     < MIN_CHANS || nChan     > MAX_CHANS) return -1;
 	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
 	if((BlockSize & (-BlockSize)) != BlockSize)        return -1;
-	if(MinOverlap < MIN_OVERLAP) MinOverlap = State->MinOverlap = MIN_OVERLAP;
-	if(MinOverlap > BlockSize)                         return -1;
-	if((MinOverlap & (-MinOverlap)) != MinOverlap)     return -1;
-	if(MaxOverlap < MIN_OVERLAP) MaxOverlap = State->MaxOverlap = MIN_OVERLAP;
-	if(MaxOverlap > BlockSize)                         return -1;
-	if((MaxOverlap & (-MaxOverlap)) != MaxOverlap)     return -1;
 
 	//! Get buffer offsets+sizes
 	//! PONDER: This... is probably not ideal
@@ -101,13 +87,13 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
 /**************************************/
 
 //! Encode block (CBR mode)
-int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float PowerDecay) {
+int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps) {
 	int Size;
 	int nOutCoef  = -1;
 	int BitBudget = (int)((State->BlockSize * RateKbps) * 1000.0f/State->RateHz); //! NOTE: Truncate
 
 	//! Perform a binary search for the optimal nOutCoef
-	int Lo = 0, Hi = Block_Transform(State, SrcData, PowerDecay);
+	int Lo = 0, Hi = Block_Transform(State, SrcData);
 	if(Lo < Hi) {
 		do {
 			nOutCoef = (Lo + Hi) / 2u;
@@ -131,9 +117,9 @@ int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, co
 /**************************************/
 
 //! Encode block (VBR mode)
-int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality, float PowerDecay) {
+int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality) {
 	int nOutCoef = (int)(Quality*(1.0f/100.0f) * State->nChan * State->BlockSize + 0x1.FFFFFFp-1f); //! NOTE: Ceiling
-	int MaxCoef  = Block_Transform(State, SrcData, PowerDecay);
+	int MaxCoef  = Block_Transform(State, SrcData);
 	if(nOutCoef > MaxCoef) nOutCoef = MaxCoef;
 	return Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
 }
