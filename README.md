@@ -18,9 +18,9 @@ Work is being considered for implementing reading/writing of more common formats
 Additionally, the core encoding/decoding routines can theoretically work with any data they are fed, allowing for easier integration with non-file-based blocks of audio in the future.
 
 ### Encoding
-```ulcencodetool Input.raw Output.ulc RateHz RateKbps [-nc:1] [-blocksize:2048] [-maxoverlap:2048] [-minoverlap:0] [-sidescale:1.0]```
+```ulcencodetool Input.raw Output.ulc RateHz RateKbps [-nc:1] [-blocksize:2048]```
 
-This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps```. ```-nc:X``` sets the number of channels, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block), ```-maxoverlap:X``` sets the maximum number of overlap samples (eg. for 50% overlap, this would be equal to the block size), ```-minoverlap:X``` sets the smallest amount of overlap samples (note that this may be ignored during window-switching to smaller blocks), and ```-sidescale:X.X``` controls the importance of the side channel (when using stereo audio, which is transformed into the M/S domain prior to encoding).
+This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps```. ```-nc:X``` sets the number of channels, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block).
 
 ### Decoding
 ```ulcdecodetool Input.ulc Output.raw```
@@ -38,7 +38,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * Target bitrate: 32..256kbps+ (44.1kHz, M/S stereo)
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
-    * Window switching is combined with so-caled 'overlap switching', the latter of which varies the size of the overlap segment of transient \[sub]blocks. The idea is to center the transient within a subblock, at which point overlap switching takes over to emphasize it, without having to switch to use small windows for the entire block, overall resulting in improved quality compared to the more-common '1 long block or N short blocks' strategy.
+    * Window switching is combined with so-called 'overlap switching', the latter of which varies the size of the overlap segment of transient \[sub]blocks. The idea is to center the transient within a subblock, at which point overlap switching takes over to emphasize it, without having to switch to use small windows for the entire block, overall resulting in improved quality compared to the more-common '1 long block or N short blocks' strategy.
 * Non-linear coefficient quantization for greater control over dynamic range
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 
