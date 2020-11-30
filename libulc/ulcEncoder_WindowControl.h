@@ -95,14 +95,29 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! means that the first two outputs of this delta
 	//! filter's output are "wrong" and must be set to
 	//! 0 so that they don't mess up the analysis.
+	//! NOTE: The outputs of the filtered energy are
+	//! passed through a very janky expander. Despite
+	//! how janky it looks, it actually improves coding
+	//! quality tremendously by being very sensitive to
+	//! real transients while ignoring non-transients.
+	//! The "Norm" term is just a normalization factor
+	//! to avoid having the numbers blowing up to +inf;
+	//! I'm not sure what it really should be, but the
+	//! value it's set to was derived from experimenting
+	//! and should mostly stay within [0,10]. Hopefully
+	//! this will be improved in future.
 	{
+		float Norm = SQR(SQR(0.25f / nChan));
 		float *Buf = StepBuffer;
 		float  Tap = sqrtf(Buf[1]);
 		Buf[0] = 0.0f;
 		Buf[1] = 0.0f;
+		float Gain = Norm;
 		for(n=2;n<BlockSize*2;n++) {
 			float v = sqrtf(Buf[n]);
-			Buf[n] = SQR(v - Tap), Tap = v;
+			Buf[n] = SQR(v - Tap) * Gain;
+			Tap = v;
+			Gain = 0.75f*Gain + Buf[n] + Norm;
 		}
 	}
 
@@ -118,26 +133,31 @@ static inline int Block_Transform_GetWindowCtrl(
 		enum { POS_L, POS_M, POS_R};
 		int   RatioPos;
 		float Ratio; {
-			//! Get the smooth-max of each segment (LL/L/M/R)
-			const float Bias = 0x1.0p-63f, Bias2 = SQR(Bias);
-			float LL = Bias2, LLw = Bias;
-			float L  = Bias2, Lw  = Bias;
-			float M  = Bias2, Mw  = Bias;
-			float R  = Bias2, Rw  = Bias;
+			//! Get the energy of each segment (LL/L/M/R), making
+			//! sure to window it in such a way that most the most
+			//! importance is given to values /farthest/ from the
+			//! corresponding transition region. This is because
+			//! values close to the transition region "don't matter"
+			//! as they can be handled by changing the overlap amount,
+			//! whereas the farther they are, the more pre-echo will
+			//! become audible.
+			const float *Sin = Fourier_SinTableN(SubBlockSize_2);
+			const float Bias = 0x1.0p-63f;
+			float LL = Bias;
+			float L  = Bias;
+			float M  = Bias;
+			float R  = Bias;
 			for(n=0;n<SubBlockSize_2;n++) {
+				float s  = SQR(Sin[n]);
 				float ll = StepBuffer[n - SubBlockSize_2];
 				float l  = StepBuffer[n];
 				float m  = StepBuffer[n + SubBlockSize_2];
 				float r  = StepBuffer[n + SubBlockSize_2*2];
-				LL += SQR(ll), LLw += ll;
-				L  += SQR(l),  Lw  += l;
-				M  += SQR(m),  Mw  += m;
-				R  += SQR(r),  Rw  += r;
+				LL += s*ll;
+				L  += s*l;
+				M  += s*m;
+				R  += s*r;
 			}
-			LL /= LLw;
-			L  /= Lw;
-			M  /= Mw;
-			R  /= Rw;
 
 			//! Get the ratios between segments
 			RatioL = L / LL;
@@ -155,7 +175,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 1.5f) {
+			if(RatioPos != POS_R && Ratio >= 2.0f) {
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -169,6 +189,28 @@ static inline int Block_Transform_GetWindowCtrl(
 
 		//! No more decimation - break out of the decimation loop
 		break;
+	}
+
+	//! Get the final overlapping ratio. Unlike the decimation
+	//! window from earlier, this part places importance on the
+	//! energy closest to the transition region, as anything too
+	//! far will pre-echo no matter what.
+	{
+		const float *Sin = Fourier_SinTableN(SubBlockSize_2);
+		const float *Cos = Sin + SubBlockSize_2;
+		const float Bias = 0x1.0p-63f;
+		float L = Bias;
+		float R = Bias;
+		for(n=0;n<SubBlockSize_2;n++) {
+			float s = SQR(Sin[n]);
+			float c = SQR(Cos[-1-n]);
+			float l = StepBuffer[n];
+			float m = StepBuffer[n + SubBlockSize_2];
+			float r = StepBuffer[n + SubBlockSize_2*2];
+			L += s*l + c*m;
+			R += s*m + c*r;
+		}
+		RatioR = R / L;
 	}
 
 	//! Determine the overlap scaling for the transition region
