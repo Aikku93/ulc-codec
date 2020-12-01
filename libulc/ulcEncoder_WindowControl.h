@@ -44,11 +44,15 @@
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
 	const float *LastBlockData,
+	float *LastTransientEnergy,
 	float *StepBuffer,
 	int BlockSize,
 	int nChan
 ) {
 	int n, Chan;
+
+	//! Copy the transient energy from the previous block
+	for(n=0;n<BlockSize;n++) StepBuffer[n] = LastTransientEnergy[n];
 
 	//! Perform a bandpass filter to isolate the energy that is
 	//! important to transient detection. Generally, LF energy
@@ -56,70 +60,57 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! that has most of the information we're interested in.
 	//! Transfer function:
 	//!  H(z) = z^1 - z^-1
-	//! Assumes an even-symmetric structure at the boundaries
 	//! NOTE: This filter does not have unity gain, as doing so
 	//! would add some multiplications that reduce performance.
-	for(n=0;n<2*BlockSize;n++) StepBuffer[n] = 0.0f;
+	//! NOTE: Recompute the sample at the boundary between the
+	//! previoos block and this one, as it was "wrong" last time.
+	for(n=BlockSize-1;n<BlockSize*2;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-#define BPFILT(zM1, z0, z1) ((z1) - (zM1))
-		float *Dst = StepBuffer;
+#define BPFILT(zM1, z1) ((z1) - (zM1))
+		float *Dst = StepBuffer + BlockSize;
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
-
-		//! Get step energy for last block
-		*Dst++ += SQR(BPFILT(SrcOld[1], SrcOld[0], SrcOld[1]));
+		n = BlockSize-1;
+		Dst[-1] += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
+		*Dst++  += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
 		for(n=1;n<BlockSize-1;n++) {
-			*Dst++ += SQR(BPFILT(SrcOld[n-1], SrcOld[n], SrcOld[n+1]));
+			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n+1]));
 		}
-		*Dst++ += SQR(BPFILT(SrcOld[n-1], SrcOld[n], SrcNew[0]));
-
-		//! Get step energy for this block
-		*Dst++ += SQR(BPFILT(SrcOld[n], SrcNew[0], SrcNew[1]));
-		for(n=1;n<BlockSize-1;n++) {
-			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n+1]));
-		}
-		*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n], SrcNew[n-1]));
+		//*Dst++ += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry
 #undef BPFILT
 	}
 
 	//! Filter the BP energy to isolate energy peaks.
-	//! Doing this tends to isolate energy spikes a
-	//! lot more cleanly (less glitching) and also
-	//! takes care of decay transients simultaneously,
-	//! avoiding the need for special handling later.
-	//! NOTE: The first output of the bandpass filter
-	//! is always 0 due to the even-symmetric structure
-	//! used. This is incorrect, but is convenient in
-	//! that it avoids having to store even more data
-	//! about the previous block. However, this also
-	//! means that the first two outputs of this delta
-	//! filter's output are "wrong" and must be set to
-	//! 0 so that they don't mess up the analysis.
-	//! NOTE: The outputs of the filtered energy are
-	//! passed through a very janky expander. Despite
-	//! how janky it looks, it actually improves coding
-	//! quality tremendously by being very sensitive to
-	//! real transients while ignoring non-transients.
-	//! The "Norm" term is just a normalization factor
-	//! to avoid having the numbers blowing up to +inf;
-	//! I'm not sure what it really should be, but the
-	//! value it's set to was derived from experimenting
-	//! and should mostly stay within [0,10]. Hopefully
-	//! this will be improved in future.
+	//! Doing this tends to isolate energy spikes a lot more cleanly
+	//! (less glitching from false positives) and also takes care of
+	//! decay transients simultaneously, avoiding the need for
+	//! special handling later.
+	//! NOTE: The outputs of the filtered energy are passed through
+	//! a very janky expander. Despite how janky it looks, it
+	//! actually improves coding quality tremendously by being very
+	//! sensitive to real transients, while ignoring non-transients.
+	//! The "Norm" term is just a normalization factor to avoid
+	//! having the numbers blowing up to +inf; I'm not sure what it
+	//! really should be, but the value it's set to was derived
+	//! from experimenting and should mostly stay within [0,10].
+	//! Hopefully this will be improved in future.
 	{
+		float Gain = 0.0f;
 		float Norm = SQR(SQR(0.25f / nChan));
-		float *Buf = StepBuffer;
-		float  Tap = sqrtf(Buf[1]);
-		Buf[0] = 0.0f;
-		Buf[1] = 0.0f;
-		float Gain = Norm;
-		for(n=2;n<BlockSize*2;n++) {
+		float *Buf = StepBuffer + BlockSize;
+		float  Tap = sqrtf(Buf[-1]);
+		Buf[-1] = 0.0f; //! We don't know what Gain or Buf[-2] was, so set the value to 0
+		for(n=0;n<BlockSize-1;n++) {
 			float v = sqrtf(Buf[n]);
 			Buf[n] = SQR(v - Tap) * Gain;
 			Tap = v;
 			Gain = 0.75f*Gain + Buf[n] + Norm;
 		}
+		Buf[n] = 0.0f; //! Final BP sample is always 0, so this sample is unreliable - set it to 0
 	}
+
+	//! Copy the new transient energy back to the intermediate buffer
+	for(n=0;n<BlockSize;n++) LastTransientEnergy[n] = StepBuffer[BlockSize + n];
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored

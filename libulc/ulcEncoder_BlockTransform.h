@@ -218,6 +218,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
 		Data,
 		State->SampleBuffer,
+		State->TransientEnergy,
 		State->TransformTemp,
 		BlockSize,
 		nChan

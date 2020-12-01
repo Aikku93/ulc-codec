@@ -48,6 +48,7 @@ struct ULC_EncoderState_t {
 	//!   float SampleBuffer   [nChan*BlockSize]
 	//!   float TransformBuffer[nChan*BlockSize]
 	//!   float TransformNepers[nChan*BlockSize]
+	//!   float TransientEnergy[BlockSize]
 	//!   float TransformFwdLap[nChan*BlockSize/2]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
@@ -56,6 +57,7 @@ struct ULC_EncoderState_t {
 	float *SampleBuffer;
 	float *TransformBuffer;
 	float *TransformNepers;
+	float *TransientEnergy;
 	float *TransformFwdLap;
 	float *TransformTemp;
 	int   *TransformIndex;
