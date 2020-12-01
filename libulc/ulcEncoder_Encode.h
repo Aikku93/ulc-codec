@@ -173,16 +173,15 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			//! Level out of range in this quantizer zone?
 			//! NOTE: There is a certain amount of overlap
 			//! between quantizers:
-			//!  7^2 * 2^-1 == x^2 * 2^0
-			//!  x == Sqrt[7^2 * 2^-1]
-			//!    == 4.95
-			//! Meaning that a level of 7^2 in a quantizer
-			//! roughly corresponds to the level 5^2 in
-			//! the next quantizer. To account for this,
-			//! we add the difference to the threshold:
-			//!  Log[(7*2 - Sqrt[7^2 * 2^-1])^2]
-			//! This is approximately 38.3dB.
-			const float LogMaxRange = 0x1.19F51Cp2f;
+			//!  8^2 * 2^-1 == x^2 * 2^0
+			//!  x == Sqrt[8^2 * 2^-1]
+			//!    == 5.66
+			//! Since 8.0 is the first value that goes out
+			//! of range of the quantizer, x^2 therefore
+			//! becomes the usable range, ie.:
+			//!  Range_Nepers: Log[8^2 * 2^-1]
+			//! This is approximately 30.1dB.
+			const float LogMaxRange = 0x1.996E1Fp1f;
 			float BandCoef2  = SQR(Coef  [Idx]);
 			float BandCoefNp =    (CoefNp[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
