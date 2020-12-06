@@ -83,7 +83,7 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! instead return the correction factor.
 	//! NOTE: EnergySum must scale down, as EnergyLog cannot
 	//! scale up the necessary bits without potential overflow.
-	const float InvLogScale = 0x1.0p-27f; //! Reciprocal of LogScale in Block_Transform_ComputePowerSpectrum()
+	const float InvLogScale = 0x1.6DFB51p-28f; //! Reciprocal of LogScale in Block_Transform_ComputePowerSpectrum()
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0); //! Round up
 	return logf(BandEnd-BandBeg+1) * InvLogScale*(int64_t)(EnergyNp[Band] - EnergyLog/EnergySum);
 }

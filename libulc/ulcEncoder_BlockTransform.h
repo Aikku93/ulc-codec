@@ -42,8 +42,8 @@ static inline void Block_Transform_WriteSortValues(
 		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
-			//! NOTE: Operate in the energy (X^2) domain, as this
-			//! seems to result in slightly improved quality.
+			//! NOTE: The result from Block_Transform_GetMaskedLevel() is in
+			//! power-domain, so change ValNp to it (by multiplying by 2.0).
 			ValNp += ValNp + Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
 #endif
 			//! Store the sort value for this coefficient
@@ -80,23 +80,23 @@ static inline void Block_Transform_ComputePowerSpectrum(uint32_t *Power, uint32_
 			double v = SQR((double)Re[i]) + SQR((double)Im[i]);
 			if(v > Max) Max = v;
 		}
-		if(Max) Scale = (0x1.0p32-1) / Max;
+		if(Max) Scale = 0x1.0p32 / Max;
 	}
 
 	//! Rescale and convert data to fixed-point
-	//! NOTE: Maximum value for PowerNp is Log[2 * (2^32-1)] == 22.87,
-	//! allowing us to scale this by (2^32 - 1)/Log[2 * (2^32-1)].
+	//! NOTE: Maximum value for PowerNp is Log[2 * 2^32] == 22.87,
+	//! allowing us to scale this by 2^32/Log[2 * (2^32-1)].
 	//! However, this can sometimes fail on some CPUs depending on
-	//! their rounding mode, so we use a slightly smaller value
-	//! that always translates perfectly as its single-precision
-	//! floating point reciprocal.
-	const double LogScale = 0x1.0p27; //! Generously rounded down: (2^32 - 1)/Log[2 * (2^32-1)]
+	//! their rounding mode, so we must clip before casting to int.
+	const double LogScale = 0x1.66235B77002E7p27; //! (2^32)/Log[2 * 2^32]
 	const double CeilBias = 0x1.FFFFFFFFFFFFFp-1; //! 0.99999... for ceiling
 	for(i=0;i<N;i++) {
 		double v  = SQR((double)Re[i]) + SQR((double)Im[i]);
 		       v *= Scale;
-		Power  [i] = (uint32_t)(v + CeilBias);
-		PowerNp[i] = (v < 0.5) ? 0 : (uint32_t)(LogScale*log(2.0*v) + CeilBias); //! Scale by 2 to keep values strictly non-negative
+		double fPower   = v + CeilBias;
+		double fPowerNp = (v < 0.5) ? 0.0 : (LogScale*log(2.0*v) + CeilBias); //! Scale by 2 to keep values strictly non-negative
+		Power  [i] = (fPower   >= 0x1.0p32) ? 0xFFFFFFFFu : (uint32_t)fPower;
+		PowerNp[i] = (fPowerNp >= 0x1.0p32) ? 0xFFFFFFFFu : (uint32_t)fPowerNp;
 	}
 }
 static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
