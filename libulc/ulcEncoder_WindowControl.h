@@ -80,6 +80,9 @@ static inline int Block_Transform_GetWindowCtrl(
 #undef BPFILT
 	}
 
+	//! Copy the new transient energy back to the intermediate buffer
+	for(n=0;n<BlockSize;n++) LastTransientEnergy[n] = StepBuffer[BlockSize + n];
+
 	//! Filter the BP energy to isolate energy peaks.
 	//! Doing this tends to isolate energy spikes a lot more cleanly
 	//! (less glitching from false positives) and also takes care of
@@ -95,22 +98,21 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! from experimenting and should mostly stay within [0,10].
 	//! Hopefully this will be improved in future.
 	{
+		const float Sensitivity = 64.0f;
+		const float GainNorm    = 1.0f / Sensitivity;
 		float Gain = 0.0f;
-		float Norm = SQR(SQR(0.25f / nChan));
-		float *Buf = StepBuffer + BlockSize;
-		float  Tap = sqrtf(Buf[-1]);
-		Buf[-1] = 0.0f; //! We don't know what Gain or Buf[-2] was, so set the value to 0
-		for(n=0;n<BlockSize-1;n++) {
-			float v = sqrtf(Buf[n]);
+		float Norm = SQR(0.25f / nChan);
+		float *Buf = StepBuffer;
+		float  Tap = sqrtf(Buf[0] * Norm);
+		for(n=1;n<BlockSize*2-1;n++) {
+			float v = sqrtf(Buf[n] * Norm);
 			Buf[n] = SQR(v - Tap) * Gain;
 			Tap = v;
-			Gain = 0.75f*Gain + Buf[n] + Norm;
+			Gain = 0.75f*Gain + Buf[n]*Sensitivity + GainNorm;
 		}
-		Buf[n] = 0.0f; //! Final BP sample is always 0, so this sample is unreliable - set it to 0
+		Buf[n] = Buf[n-1]; //! First and last sample are unavailable - copy them from their neighbour
+		Buf[0] = Buf[1];
 	}
-
-	//! Copy the new transient energy back to the intermediate buffer
-	for(n=0;n<BlockSize;n++) LastTransientEnergy[n] = StepBuffer[BlockSize + n];
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored
