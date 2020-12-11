@@ -41,11 +41,12 @@
 //!    0001: N/1*
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
-static inline int Block_Transform_GetWindowCtrl(
+static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	const float *Data,
 	const float *LastBlockData,
 	float *LastTransientEnergy,
 	float *StepBuffer,
+	float *CompressorGain,
 	int BlockSize,
 	int nChan
 ) {
@@ -62,17 +63,23 @@ static inline int Block_Transform_GetWindowCtrl(
 	//!  H(z) = z^1 - z^-1
 	//! NOTE: This filter does not have unity gain, as doing so
 	//! would add some multiplications that reduce performance.
+	//! This will be compensated for later.
 	//! NOTE: Recompute the sample at the boundary between the
 	//! previoos block and this one, as it was "wrong" last time.
-	for(n=BlockSize-1;n<BlockSize*2;n++) StepBuffer[n] = 0.0f;
+	//! Additionally, get the sample before that for the z^-1
+	//! tap of the differentiator in the next section.
+	float EnergyTap = 0.0f;
+	StepBuffer[BlockSize-1] = 0.0f; //! Separating this one out might give better-optimized code
+	for(n=BlockSize;n<BlockSize*2;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 #define BPFILT(zM1, z1) ((z1) - (zM1))
 		float *Dst = StepBuffer + BlockSize;
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
 		n = BlockSize-1;
-		Dst[-1] += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
-		*Dst++  += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
+		EnergyTap += SQR(BPFILT(SrcOld[n-2], SrcOld[n])); //! Get energy of sample before last for a z^-1 tap
+		Dst[-1]   += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
+		*Dst++    += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
 		for(n=1;n<BlockSize-1;n++) {
 			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n+1]));
 		}
@@ -80,39 +87,103 @@ static inline int Block_Transform_GetWindowCtrl(
 #undef BPFILT
 	}
 
-	//! Copy the new transient energy back to the intermediate buffer
-	for(n=0;n<BlockSize;n++) LastTransientEnergy[n] = StepBuffer[BlockSize + n];
-
-	//! Filter the BP energy to isolate energy peaks.
+	//! Filter the BP energy to isolate energy peaks, and then apply
+	//! a strong compressor to the signal.
 	//! Doing this tends to isolate energy spikes a lot more cleanly
 	//! (less glitching from false positives) and also takes care of
 	//! decay transients simultaneously, avoiding the need for
 	//! special handling later.
-	//! NOTE: The outputs of the filtered energy are passed through
-	//! a very janky expander. Despite how janky it looks, it
-	//! actually improves coding quality tremendously by being very
-	//! sensitive to real transients, while ignoring non-transients.
-	//! The "Norm" term is just a normalization factor to avoid
-	//! having the numbers blowing up to +inf; I'm not sure what it
-	//! really should be, but the value it's set to was derived
-	//! from experimenting and should mostly stay within [0,10].
-	//! Hopefully this will be improved in future.
+	//! NOTE: Pushing the signal through a strong compressor with no
+	//! release time and a short attack causes transients to pop out
+	//! a lot more clearly than even just differentiation of the
+	//! signal energy. However, this can also result in odd artifacts
+	//! during non-transients. I've tried to tune the terms in the
+	//! compressor to give the best tradeoff between sensitivity and
+	//! accurate (true positive) detection, but there will always be
+	//! cases where this will not work right. Further improvements
+	//! are very much welcomed.
 	{
-		const float Sensitivity = 64.0f;
-		const float GainNorm    = 1.0f / Sensitivity;
-		float Gain = 0.0f;
-		float Norm = SQR(0.25f / nChan);
+		//! Attack coefficient:
+		//!  Sensitivity^(-1/AttackSamples)
+		//! ie. This solves with the number of samples it takes
+		//! for Gain to return to unity after a transient pulse.
+		//! Default: Sensitivity = 16, AttackSamples = 64 samples.
+		//! NOTE: Sensitivity is kept non-const because it will be
+		//! modified later for a more optimized processing loop.
+		//! NOTE: Setting AttackSamples too high will cause the
+		//! output signal to explode for much longer than may be
+		//! acceptable (eg. +inf can result); it should only be set
+		//! to as high as needed to achieve good detection. This
+		//! is because multiple transient pulses in a row will
+		//! keep increasing Gain.
+		      float Sensitivity        = 16.0f;
+		const float AttackCoef         = 0x1.EA4AFAp-1f;
+		const float OneMinusAttackCoef = 0x1.5B505Dp-5f;
+
+		//! NOTE: The output of the bandpass filter has a gain of
+		//! 2^2*nChan. However, that same output is also strictly
+		//! non-negative. So when we apply a square root and then
+		//! differentiate before squaring, we are not changing the
+		//! gain term at all, as the output of the differentiator
+		//! can never be larger than its inputs. This means that
+		//! the unity gain factor is still just 1/(2^2*nChan) at
+		//! that point. However, this signal is being driven by
+		//! Gain which is itself derived from the same inputs,
+		//! and thus squares the values again, and so the final
+		//! normalization factor becomes 1/(2^2*nChan)^2.
+		//! The purpose of normalization is to avoid having the
+		//! values exploding out of numerical represensation.
+		//! NOTE: The above normalization is folded into UnityGain,
+		//! but it must also be folded into Sensitivity to account
+		//! for the signal feeding back into itself. This allows
+		//! us to remove a multiplication from the processing loop.
+		//! NOTE: The gain control expression can be expressed as:
+		//!  Gain' = Gain*AttackCoef + UnityGain*(1.0 - AttackCoef) <- Form A
+		//!        = Gain + (UnityGain - Gain)*(1.0 - AttackCoef)   <- Form B
+		//! Form B makes it clear as to what we are doing here,
+		//! but Form A is more numerically stable and efficient.
+		//! NOTE: Because Gain can easily explode to infinity
+		//! regardless of our safeguards in normalization, we must
+		//! still limit it. Even though the range should ideally
+		//! be 0.0 .. 1.0, we are enforcing a limit of 128.0, as
+		//! this should be more than enough for any case.
+		float GainNorm = SQR(0.25f) / SQR(nChan);
+		float GainLimit = GainNorm * 128.0f;
+		float UnityGain = GainNorm * OneMinusAttackCoef;
+		float Gain = *CompressorGain;
 		float *Buf = StepBuffer;
-		float  Tap = sqrtf(Buf[0] * Norm);
-		for(n=1;n<BlockSize*2-1;n++) {
-			float v = sqrtf(Buf[n] * Norm);
-			Buf[n] = SQR(v - Tap) * Gain;
-			Tap = v;
-			Gain = 0.75f*Gain + Buf[n]*Sensitivity + GainNorm;
+		float  Tap = sqrtf(EnergyTap);
+		Sensitivity *= GainNorm;
+		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
+			float v = sqrtf(Buf[n]);
+			float d = SQR(v - Tap) * Gain;
+			Buf[n] = d, Tap = v;
+			Gain  = Gain*AttackCoef + UnityGain;
+			Gain += d*Sensitivity;
+
+			//! Gain can easily explode to infinity, so limit things here
+			if(Gain > GainLimit) Gain = GainLimit;
 		}
-		Buf[n] = Buf[n-1]; //! First and last sample are unavailable - copy them from their neighbour
-		Buf[0] = Buf[1];
+		Buf[n] = ABS(2*Buf[n-1] - Buf[n-2]); //! Last sample is unavailable - linearly extrapolate from its neighbours
+		*CompressorGain = Gain;
 	}
+
+	//! Save the new transient energy back to the caching buffer
+	for(n=0;n<BlockSize;n++) LastTransientEnergy[n] = StepBuffer[BlockSize + n];
+}
+static inline int Block_Transform_GetWindowCtrl(
+	const float *Data,
+	const float *LastBlockData,
+	float *LastTransientEnergy,
+	float *StepBuffer,
+	float *CompressorGain,
+	int BlockSize,
+	int nChan
+) {
+	int n;
+
+	//! Perform filtering to enhance transient analysis
+	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, LastTransientEnergy, StepBuffer, CompressorGain, BlockSize, nChan);
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored
@@ -126,36 +197,38 @@ static inline int Block_Transform_GetWindowCtrl(
 		enum { POS_L, POS_M, POS_R};
 		int   RatioPos;
 		float Ratio; {
-			//! Get the energy of each segment (LL/L/M/R), making
-			//! sure to window it in such a way that most the most
-			//! importance is given to values /farthest/ from the
-			//! corresponding transition region. This is because
-			//! values close to the transition region "don't matter"
-			//! as they can be handled by changing the overlap amount,
-			//! whereas the farther they are, the more pre-echo will
-			//! become audible.
-			const float *Sin = Fourier_SinTableN(SubBlockSize_2);
-			const float Bias = 0x1.0p-63f;
-			float LL = Bias;
-			float L  = Bias;
-			float M  = Bias;
-			float R  = Bias;
+			//! Minimum value for Log[x]. This is used as a
+			//! placeholder for Log[0] in the analysis.
+			const float MIN_LOG = -100.0f;
+
+			//! Get the energy of each segment (LL/L/M/R)
+			//! NOTE: We are computing a log-domain smooth-max here,
+			//! which has some relation to Shannon entropy. I'm not
+			//! entirely sure what the connection is, but this seems
+			//! to give the best results even for large block sizes.
+			float LL = 0.0f, LLw = 0.0f;
+			float L  = 0.0f, Lw  = 0.0f;
+			float M  = 0.0f, Mw  = 0.0f;
+			float R  = 0.0f, Rw  = 0.0f;
 			for(n=0;n<SubBlockSize_2;n++) {
-				float s  = SQR(Sin[n]);
 				float ll = StepBuffer[n - SubBlockSize_2];
 				float l  = StepBuffer[n];
 				float m  = StepBuffer[n + SubBlockSize_2];
 				float r  = StepBuffer[n + SubBlockSize_2*2];
-				LL += s*ll;
-				L  += s*l;
-				M  += s*m;
-				R  += s*r;
+				LLw += ll; if(ll != 0.0f) LL += ll * logf(ll);
+				Lw  += l;  if(l  != 0.0f) L  += l  * logf(l);
+				Mw  += m;  if(m  != 0.0f) M  += m  * logf(m);
+				Rw  += r;  if(r  != 0.0f) R  += r  * logf(r);
 			}
+			LL = (LL != 0.0f) ? (LL / LLw) : MIN_LOG;
+			L  = (L  != 0.0f) ? (L  / Lw)  : MIN_LOG;
+			M  = (M  != 0.0f) ? (M  / Mw)  : MIN_LOG;
+			R  = (R  != 0.0f) ? (R  / Rw)  : MIN_LOG;
 
 			//! Get the ratios between segments
-			RatioL = L / LL;
-			RatioM = M / L;
-			RatioR = R / M;
+			RatioL = L - LL;
+			RatioM = M - L;
+			RatioR = R - M;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
@@ -168,7 +241,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 2.0f) {
+			if(RatioPos != POS_R && Ratio >= 0x1.62E430p-1f) { //! Log[2.0]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -184,33 +257,11 @@ static inline int Block_Transform_GetWindowCtrl(
 		break;
 	}
 
-	//! Get the final overlapping ratio. Unlike the decimation
-	//! window from earlier, this part places importance on the
-	//! energy closest to the transition region, as anything too
-	//! far will pre-echo no matter what.
-	{
-		const float *Sin = Fourier_SinTableN(SubBlockSize_2);
-		const float *Cos = Sin + SubBlockSize_2;
-		const float Bias = 0x1.0p-63f;
-		float L = Bias;
-		float R = Bias;
-		for(n=0;n<SubBlockSize_2;n++) {
-			float s = SQR(Sin[n]);
-			float c = SQR(Cos[-1-n]);
-			float l = StepBuffer[n];
-			float m = StepBuffer[n + SubBlockSize_2];
-			float r = StepBuffer[n + SubBlockSize_2*2];
-			L += s*l + c*m;
-			R += s*m + c*r;
-		}
-		RatioR = R / L;
-	}
-
 	//! Determine the overlap scaling for the transition region
 	int OverlapScale = 0;
-	if(RatioR >= 0x1.6A09E6p0f) { //! Log2[RatioR] >= 0.5
-		if(RatioR < 0x1.6A09E6p6f) //! Log2[RatioR] < 6.5
-			OverlapScale = (int)(0x1.715476p0f*logf(RatioR) + 0.5f); //! 1/Log[2] for change-of-base
+	if(RatioR >= 0x1.62E430p-2f) { //! Log[2^0.5]
+		if(RatioR < 0x1.205967p2f) //! Log[2^6.5]
+			OverlapScale = (int)(0x1.715476p0f*RatioR + 0.5f); //! 1/Log[2] for change-of-base
 		else
 			OverlapScale = 7;
 		while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
