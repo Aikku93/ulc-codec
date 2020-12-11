@@ -72,6 +72,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
+	State->TransientCompressorGain = 0.0f;
 	for(i=0;i<nChan*(BlockSize  );i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<      (BlockSize  );i++) State->TransientEnergy[i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;

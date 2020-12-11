@@ -40,6 +40,7 @@ struct ULC_EncoderState_t {
 	int BlockSize;  //! Transform block size
 	int WindowCtrl; //! Window control parameter
 	int NextWindowCtrl;
+	float TransientCompressorGain;
 
 	//! Encoding state
 	//! Buffer memory layout:

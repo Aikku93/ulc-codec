@@ -224,6 +224,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		State->SampleBuffer,
 		State->TransientEnergy,
 		State->TransformTemp,
+		&State->TransientCompressorGain,
 		BlockSize,
 		nChan
 	);
