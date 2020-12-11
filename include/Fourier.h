@@ -5,13 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#if defined(__AVX__)
-# include <immintrin.h>
-#endif
-#if defined(__SSE__)
-# include <xmmintrin.h>
-#endif
-/**************************************/
 
 //! Sine table for DCT analysis
 //! Contains Table[Sin[(n+0.5)*(Pi/2)/N], {n,0,N-1}]
