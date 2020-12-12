@@ -65,7 +65,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! would add some multiplications that reduce performance.
 	//! This will be compensated for later.
 	//! NOTE: Recompute the sample at the boundary between the
-	//! previoos block and this one, as it was "wrong" last time.
+	//! previous block and this one, as it was "wrong" last time.
 	//! Additionally, get the sample before that for the z^-1
 	//! tap of the differentiator in the next section.
 	float EnergyTap = 0.0f;
@@ -107,18 +107,19 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//!  Sensitivity^(-1/AttackSamples)
 		//! ie. This solves with the number of samples it takes
 		//! for Gain to return to unity after a transient pulse.
-		//! Default: Sensitivity = 16, AttackSamples = 64 samples.
+		//! Default: Sensitivity = 64, AttackSamples = 24 samples.
 		//! NOTE: Sensitivity is kept non-const because it will be
 		//! modified later for a more optimized processing loop.
-		//! NOTE: Setting AttackSamples too high will cause the
-		//! output signal to explode for much longer than may be
-		//! acceptable (eg. +inf can result); it should only be set
-		//! to as high as needed to achieve good detection. This
-		//! is because multiple transient pulses in a row will
-		//! keep increasing Gain.
-		      float Sensitivity        = 16.0f;
-		const float AttackCoef         = 0x1.EA4AFAp-1f;
-		const float OneMinusAttackCoef = 0x1.5B505Dp-5f;
+		//! NOTE: AttackSamples essentially controls post-masking.
+		//! However, this isn't "traditional" post-masking that
+		//! lasts a while, but rather more of a jitter-prevention.
+		//! Setting it too low will make the detector pick up too
+		//! many false-positives, and setting it too high will
+		//! make it harder to pick up transients (as well as cause
+		//! the signal gain to explode a lot easier).
+		      float Sensitivity        = 64.0f;
+		const float AttackCoef         = 0x1.AE89FAp-1f;
+		const float OneMinusAttackCoef = 0x1.45D81Ap-3f;
 
 		//! NOTE: The output of the bandpass filter has a gain of
 		//! 2^2*nChan. However, that same output is also strictly
@@ -145,10 +146,10 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! NOTE: Because Gain can easily explode to infinity
 		//! regardless of our safeguards in normalization, we must
 		//! still limit it. Even though the range should ideally
-		//! be 0.0 .. 1.0, we are enforcing a limit of 128.0, as
+		//! be 0.0 .. 1.0, we are enforcing a limit of 256.0, as
 		//! this should be more than enough for any case.
-		float GainNorm = SQR(0.25f) / SQR(nChan);
-		float GainLimit = GainNorm * 128.0f;
+		float GainNorm  = SQR(0.25f) / SQR(nChan);
+		float GainLimit = GainNorm * 256.0f;
 		float UnityGain = GainNorm * OneMinusAttackCoef;
 		float Gain = *CompressorGain;
 		float *Buf = StepBuffer;
@@ -156,8 +157,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		Sensitivity *= GainNorm;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
 			float v = sqrtf(Buf[n]);
-			float d = SQR(v - Tap) * Gain;
-			Buf[n] = d, Tap = v;
+			float d = SQR(v - Tap);
+			Buf[n] = d * Gain, Tap = v;
 			Gain  = Gain*AttackCoef + UnityGain;
 			Gain += d*Sensitivity;
 
