@@ -151,7 +151,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		float GainNorm  = SQR(0.25f) / SQR(nChan);
 		float GainLimit = GainNorm * 256.0f;
 		float UnityGain = GainNorm * OneMinusAttackCoef;
-		float Gain = *CompressorGain;
+		float Gain = *CompressorGain; if(Gain == 0.0f) Gain = UnityGain; //! Reset for initialization
 		float *Buf = StepBuffer;
 		float  Tap = sqrtf(EnergyTap);
 		Sensitivity *= GainNorm;
