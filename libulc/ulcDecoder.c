@@ -16,14 +16,14 @@
 #elif defined(__SSE__)
 # define BUFFER_ALIGNMENT 16u //! __mm128
 #else
-# define BUFFER_ALIGNMENT 4u //! float
+# define BUFFER_ALIGNMENT  4u //! float
 #endif
 /**************************************/
 
 //! Just for consistency
 #define MIN_CHANS    1
 #define MAX_CHANS  255
-#define MIN_BANDS  128
+#define MIN_BANDS   64
 #define MAX_BANDS 8192
 
 /**************************************/
