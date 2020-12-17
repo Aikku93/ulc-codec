@@ -15,7 +15,7 @@
 //! Simultaneous masking-compensated energy estimation
 //! NOTE: ERB calculations are inlined as an optimization
 struct Block_Transform_MaskingState_t {
-	float  BwBase; //! Scaled by 0.5
+	float  BwBase;
 	int    SumShift;
 	int    BandBeg;
 	int    BandEnd;
@@ -29,7 +29,7 @@ static inline void Block_Transform_MaskingState_Init(
 	int   BlockSize,
 	float NyquistHz
 ) {
-	State->BwBase   = 12.35f*BlockSize/NyquistHz + 0.02698475f; //! Offset at Band+0.5
+	State->BwBase   = 24.7f*BlockSize/NyquistHz + 0.0539695f; //! Offset at Band+0.5
 	State->SumShift = 31 - __builtin_clz(BlockSize); //! Log2[BlockSize]
 	State->BandBeg  = 0;
 	State->BandEnd  = 0;
@@ -44,7 +44,9 @@ static inline float Block_Transform_GetMaskedLevel(
 	int   BlockSize
 ) {
 	int BandBeg, BandEnd; {
-		float Bw = State->BwBase + 0.0539695f*Band;
+		//! NOTE: Bw is doubled relative to actual ERB as this
+		//! seems to give slightly improved results.
+		float Bw = State->BwBase + 0.107939f*Band;
 		BandBeg = Band - (int)(Bw + 0x1.FFFFFFp-1f); //! Add 0.99999... for ceiling
 		BandEnd = Band + (int)(Bw + 0x1.FFFFFFp-1f);
 		if(BandBeg <          0) BandBeg = 0;
@@ -74,18 +76,32 @@ static inline float Block_Transform_GetMaskedLevel(
 	State->Energy = EnergySum;
 	State->Nepers = EnergyLog;
 
-	//! De/emphasize band energy relative to the background
-	//! level. This is similar in effect to a gamma correction
-	//! filter in image processing, where we wish to use it to
-	//! extract 'important' information from a noisy background.
-	//! This gamma value was derived experimentally.
-	//! NOTE: Do not return the 'gamma-corrected' value, but
-	//! instead return the correction factor.
+	//! Return the entropy of this frequency bin's critical band,
+	//! normalized about its L1 norm.
 	//! NOTE: EnergySum must scale down, as EnergyLog cannot
 	//! scale up the necessary bits without potential overflow.
-	const float InvLogScale = 0x1.6DFB51p-28f; //! Reciprocal of LogScale in Block_Transform_ComputePowerSpectrum()
-	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0); //! Round up
-	return logf(BandEnd-BandBeg+1) * InvLogScale*(int64_t)(EnergyNp[Band] - EnergyLog/EnergySum);
+	//! NOTE: This value will be subtracted from the Neper-domain
+	//! amplitude of the MDCT coefficient. I'm not entirely
+	//! sure what the idea is, but it seems that the implicit
+	//! "exponents" (ie. scale, in the log domain) must add up
+	//! to 1.0 in the end. The values we get here have an
+	//! exponent of 2.0 (due to working with X^2 values), but
+	//! the Neper MDCT coefficients have an exponent of 1.0,
+	//! giving us the expression:
+	//!  x - 2 == 1
+	//! which obviously gives x=3. However, the actual scale
+	//! doesn't matter for our purposes, as we are only using
+	//! these values for their rank/importance, so we can
+	//! simply divide everything by 3 - giving the output here
+	//! an exponent of 1/3 - and fold this into the scaling
+	//! for getting out of fixed-point representation, which
+	//! should (hopefully) be more precise than scaling the
+	//! output /after/ casting to float.
+	//! NOTE: F3FCE0F5h == Floor[(1/LogScale)*(1/3) * 2^61 + 0.5]
+	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
+	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
+	uint64_t r = (EnergyLog/EnergySum) * 0xF3FCE0F5ull;
+	return r * 0x1.0p-61f;
 }
 
 /**************************************/

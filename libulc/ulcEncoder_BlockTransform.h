@@ -14,42 +14,46 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! Write the sort values for all coefficients in a block
-//! and return the number of codeable non-zero coefficients
+//! Store the Neper-domain coefficients and sorting (importance) indices of
+//! a block, and update the number of codeable non-zero coefficients
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-static inline void Block_Transform_WriteSortValues(
-	float *CoefIdx,
+static inline void Block_Transform_WriteNepersAndIndices(
+	      float    *CoefIdx,
+#if ULC_USE_PSYCHOACOUSTICS
 	const uint32_t *Energy,
 	const uint32_t *EnergyNp,
-	const float *CoefNp,
-	int   *nNzCoef,
-	int   BlockSize,
-	float NyquistHz
+#endif
+	const float    *Coef,
+	      float    *CoefNp,
+	      int      *nNzCoef,
+	      int       BlockSize
+#if ULC_USE_PSYCHOACOUSTICS
+	,     float     NyquistHz
+#endif
 ) {
 	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
 	struct Block_Transform_MaskingState_t MaskingState;
 	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize, NyquistHz);
-#else
-	(void)Energy;
-	(void)EnergyNp;
-	(void)NyquistHz;
 #endif
 	for(Band=0;Band<BlockSize;Band++) {
-		//! Inside the codeable range?
-		float ValNp = CoefNp[Band];
-		if(ValNp != ULC_COEF_NEPER_OUT_OF_RANGE) {
+		float Val = Coef[Band];
+
+		//! Coefficient inside codeable range?
+		if(ABS(Val) < 0.5f*ULC_COEF_EPS) {
+			CoefNp [Band] = ULC_COEF_NEPER_OUT_OF_RANGE;
+			CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
+		} else {
+			float ValNp = CoefNp[Band] = logf(ABS(Val));
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
-			//! NOTE: The result from Block_Transform_GetMaskedLevel() is in
-			//! power-domain, so change ValNp to it (by multiplying by 2.0).
-			ValNp += ValNp + Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
+			ValNp -= Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
 #endif
 			//! Store the sort value for this coefficient
 			CoefIdx[Band] = ValNp;
 			(*nNzCoef)++;
-		} else CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
+		}
 	}
 }
 
@@ -60,44 +64,6 @@ static float *Block_Transform_SortComparator_KeysArray;
 static int Block_Transform_SortComparator(const void *a, const void *b) {
 	const float *BufferIdx = Block_Transform_SortComparator_KeysArray;
 	return (BufferIdx[*(int*)a] < BufferIdx[*(int*)b]) ? (+1) : (-1);
-}
-static inline void Block_Transform_ScaleAndToNepers(float *Coef, float *CoefNp, int N) {
-	int n;
-	for(n=0;n<N;n++) {
-		float v = Coef[n] * 2.0f/N;
-		Coef  [n] = v;
-		CoefNp[n] = (ABS(v) < 0.5f*ULC_COEF_EPS) ? ULC_COEF_NEPER_OUT_OF_RANGE : logf(ABS(v));
-	}
-}
-static inline void Block_Transform_ComputePowerSpectrum(uint32_t *Power, uint32_t *PowerNp, const float *Re, const float *Im, int N) {
-	int i;
-
-	//! Find the maximum amplitude in the analysis
-	//! This is used to scale the buffer and avoid precision issues
-	double Scale = 0.0; {
-		double Max = 0.0;
-		for(i=0;i<N;i++) {
-			double v = SQR((double)Re[i]) + SQR((double)Im[i]);
-			if(v > Max) Max = v;
-		}
-		if(Max) Scale = 0x1.0p32 / Max;
-	}
-
-	//! Rescale and convert data to fixed-point
-	//! NOTE: Maximum value for PowerNp is Log[2 * 2^32] == 22.87,
-	//! allowing us to scale this by 2^32/Log[2 * (2^32-1)].
-	//! However, this can sometimes fail on some CPUs depending on
-	//! their rounding mode, so we must clip before casting to int.
-	const double LogScale = 0x1.66235B77002E7p27; //! (2^32)/Log[2 * 2^32]
-	const double CeilBias = 0x1.FFFFFFFFFFFFFp-1; //! 0.99999... for ceiling
-	for(i=0;i<N;i++) {
-		double v  = SQR((double)Re[i]) + SQR((double)Im[i]);
-		       v *= Scale;
-		double fPower   = v + CeilBias;
-		double fPowerNp = (v < 0.5) ? 0.0 : (LogScale*log(2.0*v) + CeilBias); //! Scale by 2 to keep values strictly non-negative
-		Power  [i] = (fPower   >= 0x1.0p32) ? 0xFFFFFFFFu : (uint32_t)fPower;
-		PowerNp[i] = (fPowerNp >= 0x1.0p32) ? 0xFFFFFFFFu : (uint32_t)fPowerNp;
-	}
 }
 static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
 	//! The interleaving patterns here were chosen to try and
@@ -239,13 +205,15 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	//! speed things up in the rate-control step
 	int nNzCoef = 0; {
 		int n, Chan;
-		float *BufferSamples   = State->SampleBuffer;
-		float *BufferTransform = State->TransformBuffer;
-		float *BufferNepers    = State->TransformNepers;
-		float *BufferIndex     = (float*)State->TransformIndex;
-		float *BufferFwdLap    = State->TransformFwdLap;
-		float *BufferTemp      = State->TransformTemp;
-
+		float *BufferSamples = State->SampleBuffer;
+		float *BufferMDCT    = State->TransformBuffer;
+		float *BufferNepers  = State->TransformNepers;
+		float *BufferIndex   = (float*)State->TransformIndex;
+		float *BufferFwdLap  = State->TransformFwdLap;
+		float *BufferTemp    = State->TransformTemp;
+#if ULC_USE_PSYCHOACOUSTICS
+		float *BufferMDST    = BufferNepers; //! NOTE: Aliasing
+#endif
 		//! Apply M/S transform to the data
 		//! NOTE: Fully normalized; not orthogonal.
 		if(nChan == 2) for(n=0;n<BlockSize;n++) {
@@ -260,9 +228,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		const int8_t *DecimationPattern = ULC_Helper_SubBlockDecimationPattern(WindowCtrl >> 4);
 		for(Chan=0;Chan<nChan;Chan++) {
 			//! Process each subblock sequentially
-			float *BufferTransformEnd = BufferTransform + BlockSize;
+			const float *BufferMDCTEnd = BufferMDCT + BlockSize;
 			int SubBlockIdx;
-			for(SubBlockIdx=0;(BufferTransform < BufferTransformEnd);SubBlockIdx++) {
+			for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
 				//! Get the size of this subblock and its overlap
 				int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
 				int OverlapSize = BlockSize >> DecimationPattern[SubBlockIdx];
@@ -272,7 +240,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! this one, set overlap to the smaller of the two.
 				//! NOTE: This is literally THE ONLY reason that there is a
 				//! coding delay in this codec (and most MDCT codecs).
-				if(BufferTransform+SubBlockSize < BufferTransformEnd) {
+				if(BufferMDCT+SubBlockSize < BufferMDCTEnd) {
 					int NextSubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx+1];
 					if(OverlapSize > NextSubBlockSize) OverlapSize = NextSubBlockSize;
 				} else {
@@ -302,38 +270,39 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					for(;n<LapExtra;n++) LapBuf[-1-n] = *BufferSamples++;
 				} else BufferSamples += SubBlockSize;
 
-				//! Perform the actual analyses
-				uint32_t *BufferEnergy   = (uint32_t*)BufferTemp;
-				uint32_t *BufferEnergyNp = (uint32_t*)BufferTemp + SubBlockSize;
+				//! Perform the actual MDCT
 				Fourier_MDCT(
-					BufferTransform,
+					BufferMDCT,
 					SmpBuf,
 					BufferFwdLap + (BlockSize-SubBlockSize)/2,
 					BufferTemp,
 					SubBlockSize,
 					OverlapSize,
 #if ULC_USE_PSYCHOACOUSTICS
-					BufferNepers //! MDST coefficients stored here temporarily
+					BufferMDST
 #else
 					NULL
 #endif
 				);
-				Block_Transform_ComputePowerSpectrum(BufferEnergy, BufferEnergyNp, BufferTransform, BufferNepers, SubBlockSize);
-				Block_Transform_ScaleAndToNepers(BufferTransform, BufferNepers, SubBlockSize);
-				Block_Transform_WriteSortValues(
-					BufferIndex,
-					BufferEnergy,
-					BufferEnergyNp,
-					BufferNepers,
-					&nNzCoef,
-					SubBlockSize,
-					State->RateHz * 0.5f
-				);
+
+				//! Normalize the MDCT (and MDST) coefficients
+				//! This simplifies analysis later on and is 'more correct'
+				//! in the first place, as the output of the MDCT itself
+				//! should've been normalized already.
+				//! PONDER: Modify Fourier_MDCT() to do this automatically?
+				float Norm = 2.0f / SubBlockSize;
+				for(n=0;n<SubBlockSize;n++) {
+					BufferMDCT[n] *= Norm;
+#if ULC_USE_PSYCHOACOUSTICS
+					BufferMDST[n] *= Norm;
+#endif
+				}
 
 				//! Move to the next subblock
-				BufferTransform += SubBlockSize;
-				BufferNepers    += SubBlockSize;
-				BufferIndex     += SubBlockSize;
+				BufferMDCT += SubBlockSize;
+#if ULC_USE_PSYCHOACOUSTICS
+				BufferMDST += SubBlockSize;
+#endif
 			}
 
 			//! Cache the sample data for the next block
@@ -342,20 +311,113 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			//! Move to the next channel
 			BufferFwdLap += BlockSize/2u;
 		}
+		BufferMDCT -= BlockSize*nChan; //! Rewind to start of buffer
+#if ULC_USE_PSYCHOACOUSTICS
+		BufferMDST -= BlockSize*nChan;
+#endif
+		//! Perform importance analysis
+		{
+#if ULC_USE_PSYCHOACOUSTICS
+			//! Combine the energy of all channels' MDCT+MDST coefficients
+			//! into normalized (by maximum) fixed-point integer values.
+			//! For some reason, it seems to work better to combine the
+			//! channels for analysis, rather than use each one separately.
+			uint32_t *BufferEnergy   = (uint32_t*)(BufferTemp);
+			uint32_t *BufferEnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+			{
+				float *fBufferEnergy = BufferTemp;
+				for(n=0;n<BlockSize;n++) fBufferEnergy[n] = 0.0f;
+
+				//! Sum energy and get the maximum value
+				//! NOTE: Ideally, we'd take the maximum of each subblock, but
+				//! this should work well enough for our purposes, as all
+				//! coefficients are "normalized" to begin with, and this is
+				//! just a slight nudge to improve integer precision.
+				//! NOTE: We should really be using L/R instead of M/S energy,
+				//! but for some reason this seems to make zero difference?
+				float Norm = 0.0f;
+				const float *MDCTSrc = BufferMDCT;
+				const float *MDSTSrc = BufferMDST;
+				for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
+					float Re = *MDCTSrc++;
+					float Im = *MDSTSrc++;
+					float v  = (fBufferEnergy[n] += SQR(Re) + SQR(Im));
+					if(v > Norm) Norm = v;
+				}
+
+				//! Find the integer normalization factor and convert
+				//! NOTE: Maximum value for BufferEnergyNp is Log[2 * 2^32], so rescale by
+				//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
+				const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
+				const float CeilBias = 0x1.FFFFFFp-1f; //! 0.99999... for ceiling
+				if(Norm != 0.0f) Norm = 0x1.0p32f / Norm;
+				for(n=0;n<BlockSize;n++) {
+					float p   = fBufferEnergy[n] * Norm;
+					float pNp = (p < 0.5f) ? 0.0f : (LogScale*logf(2.0f*p)); //! Scale by 2 to keep values strictly non-negative
+					p   += CeilBias;
+					pNp += CeilBias;
+					BufferEnergy  [n] = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
+					BufferEnergyNp[n] = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
+				}
+			}
+#endif
+			//! Analyze each channel
+#if ULC_USE_PSYCHOACOUSTICS
+			float NyquistHz = State->RateHz * 0.5f;
+#endif
+			for(Chan=0;Chan<nChan;Chan++) {
+				//! Analyze each subblock separately
+				const float *BufferMDCTEnd = BufferMDCT + BlockSize;
+				int SubBlockIdx;
+				for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
+					int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
+
+					//! Store the Neper-domain coefficients and sorting (importance) indices
+					Block_Transform_WriteNepersAndIndices(
+						BufferIndex,
+#if ULC_USE_PSYCHOACOUSTICS
+						BufferEnergy,
+						BufferEnergyNp,
+#endif
+						BufferMDCT,
+						BufferNepers,
+						&nNzCoef,
+						SubBlockSize
+#if ULC_USE_PSYCHOACOUSTICS
+						,NyquistHz
+#endif
+					);
+
+					//! Move to the next subblock
+					BufferMDCT     += SubBlockSize;
+					BufferNepers   += SubBlockSize;
+					BufferIndex    += SubBlockSize;
+#if ULC_USE_PSYCHOACOUSTICS
+					BufferEnergy   += SubBlockSize;
+					BufferEnergyNp += SubBlockSize;
+#endif
+				}
+#if ULC_USE_PSYCHOACOUSTICS
+				//! Psychoacoustic analysis is re-used across channels - rewind
+				BufferEnergy   -= BlockSize;
+				BufferEnergyNp -= BlockSize;
+#endif
+			}
+		}
 
 		//! Interleave the transform data for coding
 		if(WindowCtrl & 0x8) {
 			int Decimation = WindowCtrl >> 4;
-			BufferTransform = State->TransformBuffer;
-			BufferNepers    = State->TransformNepers;
-			BufferIndex     = (float*)State->TransformIndex;
+			BufferMDCT   = State->TransformBuffer;
+			BufferNepers = State->TransformNepers;
+			BufferIndex  = (float*)State->TransformIndex;
 			for(Chan=0;Chan<nChan;Chan++) {
-				Block_Transform_BufferInterleave(BufferTransform, BufferTemp, BlockSize, Decimation);
-				Block_Transform_BufferInterleave(BufferNepers,    BufferTemp, BlockSize, Decimation);
-				Block_Transform_BufferInterleave(BufferIndex,     BufferTemp, BlockSize, Decimation);
-				BufferTransform += BlockSize;
-				BufferNepers    += BlockSize;
-				BufferIndex     += BlockSize;
+				Block_Transform_BufferInterleave(BufferMDCT,   BufferTemp, BlockSize, Decimation);
+				Block_Transform_BufferInterleave(BufferNepers, BufferTemp, BlockSize, Decimation);
+				Block_Transform_BufferInterleave(BufferIndex,  BufferTemp, BlockSize, Decimation);
+				BufferMDCT   += BlockSize;
+				BufferNepers += BlockSize;
+				BufferIndex  += BlockSize;
 			}
 		}
 	}
