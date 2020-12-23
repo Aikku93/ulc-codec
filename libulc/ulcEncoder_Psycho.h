@@ -81,22 +81,25 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! NOTE: EnergySum must scale down, as EnergyLog cannot
 	//! scale up the necessary bits without potential overflow.
 	//! NOTE: This value will be subtracted from the Neper-domain
-	//! amplitude of the MDCT coefficient. I'm not entirely
-	//! sure what the idea is, but it seems that the implicit
-	//! "exponents" (ie. scale, in the log domain) must add up
-	//! to 1.0 in the end. The values we get here have an
-	//! exponent of 2.0 (due to working with X^2 values), but
-	//! the Neper MDCT coefficients have an exponent of 1.0,
-	//! giving us the expression:
-	//!  x - 2 == 1
-	//! which obviously gives x=3. However, the actual scale
-	//! doesn't matter for our purposes, as we are only using
-	//! these values for their rank/importance, so we can
-	//! simply divide everything by 3 - giving the output here
-	//! an exponent of 1/3 - and fold this into the scaling
-	//! for getting out of fixed-point representation, which
-	//! should (hopefully) be more precise than scaling the
-	//! output /after/ casting to float.
+	//! amplitude of the MDCT coefficient. The overall idea of
+	//! the implemented model is to form this equation:
+	//!  ImportanceLevel = CoefficientAmplitude * BandPower/BackgroundPower
+	//! In the log domain, this becomes:
+	//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[BandPower]-Log[BackgroundPower]
+	//! In this function, we are calculating Log[BackgroundPower],
+	//! and thus we need Log[CoefficientAmplitude] as well as
+	//! Log[BandPower]. From testing, using the MDCT+MDST
+	//! squared amplitude as BandPower results in inferior
+	//! results compared to the squared amplitude of
+	//! CoefficientAmplitude. So we can then state:
+	//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[CoefficientAmplitude^2]-Log[BackgroundPower]
+	//!                       = Log[CoefficientAmplitude] + 2*Log[CoefficientAmplitude]-Log[BackgroundPower]
+	//!                       = 3*Log[CoefficientAmplitude] - Log[BackgroundPower]
+	//! And finally, since ImportanceLevel is scale-invariant
+	//! for our purposes, we divide by 3 on both sides:
+	//!  Log[ImportanceLevel]/3 = Log[CoefficientAmplitude] - Log[BackgroundPower]/3
+	//! Which allows folding the scaling constant into the
+	//! expansion back from fixed-point integer maths.
 	//! NOTE: F3FCE0F5h == Floor[(1/LogScale)*(1/3) * 2^61 + 0.5]
 	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
