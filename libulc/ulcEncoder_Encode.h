@@ -98,15 +98,19 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				Block_Encode_WriteNybble(0x8, DstBuffer, Size);
 
 				//! Determine which run type to use and  get the number of zeros coded
+				//! NOTE: A short run takes 2 nybbles, and a long run takes 4 nybbles.
+				//! So two short runs of maximum length code up to 32 zeros with the
+				//! same efficiency as a long run, meaning that long runs start with
+				//! 33 zeros.
 				int n;
-				if(zR < 17) {
+				if(zR < 33) {
 					//! 8h,1h..Eh: 3 .. 16 zeros
-					n = zR;
+					n = zR; if(n > 16) n = 16;
 					Block_Encode_WriteNybble(n-2, DstBuffer, Size);
 				} else {
-					//! 8h,Fh,Yh,Xh: 17 .. 272 zeros
-					int v = zR-17; if(v > 0xFF) v = 0xFF;
-					n = v + 17;
+					//! 8h,Fh,Yh,Xh: 33 .. 288 zeros
+					int v = zR-33; if(v > 0xFF) v = 0xFF;
+					n = v + 33;
 					Block_Encode_WriteNybble(0xF,  DstBuffer, Size);
 					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
 					Block_Encode_WriteNybble(v,    DstBuffer, Size);

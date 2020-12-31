@@ -92,7 +92,7 @@ To unpack: ```n = [second nybble] + 2```. This allows 3..16 zeros to be coded wi
 
 Further refinement on the above. This in particular is more common at lower bitrates, where quantization becomes too aggressive and/or we must cull large swathes of frequency bands in order to meet the target bitrate.
 
-Because a short run can already code up to 16 zeros at once, a long run codes 17..272 zeros at once.
+Because a short run can already code up to 32 zeros at once in the 4 nybbles this command uses, a long run codes 33..288 zeros at once.
 
 To unpack: ```n = ([second nybble]<<4 | [third nybble]) + 17```
 
@@ -111,7 +111,7 @@ The IMDCT used in this codec follows the normal IMDCT formula found on any maths
 
     y[n] =  Sum[X[k]*Cos[(n+1/2 + N/2 + N*2)(k+1/2)*Pi/N], {k,0,N-1}]
          = -Sum[X[k]*Cos[(n+1/2 + N/2      )(k+1/2)*Pi/N], {k,0,N-1}]
-    
+
 The windowing function used is a sine window, with the overlap amount based on the block size scaled by the nybble at the start of the block (see the `Overview` section). To use a different window, the MDCT and IMDCT functions of the source code must be modified to accomodate such (this is not too difficult, and only involves loading the sine/cosine values with appropriate data). Note that using a sine window allows reuse of the DCT coefficients table, whereas a different window cannot reuse these coefficients and so needs double the storage space.
 
 When using window switching, it is important to note that a subblock's overlap may be larger than allowed by the last subblock. When this happens, the number of overlap samples must be clipped to the size of the previous, smaller subblock. This unfortunately results in an additional block delay for decoding (on top of the MDCT delay), as the encoder must have knowledge about the next \[sub]block to account for this.

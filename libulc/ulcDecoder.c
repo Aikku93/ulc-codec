@@ -261,10 +261,10 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				int nZ;
 				if(v != 0xF) nZ = v + 2; //! 8h,1h..Eh: 3 .. 16 zeros
 				else {
-					//! 8h,Fh,Yh,Xh: 17 .. 272 zeros
+					//! 8h,Fh,Yh,Xh: 33 .. 288 zeros
 					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (nZ<<4);
-					nZ += 17;
+					nZ += 33;
 				}
 
 				//! Clipping to avoid buffer overflow on corrupted blocks
@@ -275,8 +275,8 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				do *CoefDst++ = 0.0f; while(--nZ);
 				if(CoefRem == 0) break;
 			} else {
-				//! 8h,0h,0h..Eh[,Xh]: Quantizer change
-				//! 8h,0h,Fh:          Stop
+				//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
+				//! 8h,0h,Fh:              Stop
 				Quant = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
 				if(Quant == 0.0f) {
 					do *CoefDst++ = 0.0f; while(--CoefRem);
