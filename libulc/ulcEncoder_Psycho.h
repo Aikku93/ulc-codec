@@ -102,9 +102,18 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! expansion back from fixed-point integer maths.
 	//! NOTE: F3FCE0F5h == Floor[(1/LogScale)*(1/3) * 2^61 + 0.5]
 	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
+	//! NOTE: The flatness calculation looks janky, but is fully
+	//! derived from the one in ULC_Helper_SpectralFlatness().
+	int nBands = BandEnd-BandBeg+1;
+	float LogEnergySum = logf(EnergySum*2); //! *2 to account for scaling in Log[2*x]
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
-	uint64_t r = (EnergyLog/EnergySum) * 0xF3FCE0F5ull;
-	return r * 0x1.0p-61f;
+	uint64_t r = EnergyLog/EnergySum;
+	float Flatness = (nBands < 2) ? 0.0f : ((LogEnergySum - 0x1.6DFB51p-28f*r) / logf(nBands));
+#if 0
+	return (r*0xF3FCE0F5ull) * 0x1.0p-61f * (1.0f + 0.25f*Flatness); //! <- Slight noise emphasis
+#else //! Combine the scaling factor (not sure if a compiler would do this automatically)
+	return (r*0xF3FCE0F5ull) * (0x1.0p-61f + 0x1.0p-63f*Flatness);
+#endif
 }
 
 /**************************************/
