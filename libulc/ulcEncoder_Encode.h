@@ -81,11 +81,9 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	//! Write/update the quantizer
 	float q; {
 		int qi = Block_Encode_BuildQuantizer(QuantSum, QuantWeight);
-		if(qi != *PrevQuant) {
-			Block_Encode_WriteQuantizer(qi, DstBuffer, Size, *PrevQuant != -1);
-			*PrevQuant = qi;
-		}
 		q = (float)(1u << qi);
+		Block_Encode_WriteQuantizer(qi, DstBuffer, Size, *PrevQuant != -1);
+		*PrevQuant = qi;
 	}
 
 	//! Write the coefficients
@@ -168,7 +166,19 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 		float QuantSum      = 0.0f;
 		float QuantWeight   = 0.0f;
 #define WRITE_QUANT_ZONE() \
-	Block_Encode_EncodePass_WriteQuantizerZone(QuantStartIdx, Idx, QuantSum, QuantWeight, Coef, CoefIdx, NextCodedIdx, &PrevQuant, &DstBuffer, &Size, nOutCoef)
+	Block_Encode_EncodePass_WriteQuantizerZone( \
+		QuantStartIdx, \
+		Idx, \
+		QuantSum, \
+		QuantWeight, \
+		Coef, \
+		CoefIdx, \
+		NextCodedIdx, \
+		&PrevQuant, \
+		&DstBuffer, \
+		&Size, \
+		nOutCoef \
+	)
 		for(;;Idx++) {
 			//! Seek the next coefficient
 			while(Idx < ChanLastIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
@@ -191,7 +201,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
 			if(BandCoefNp < QuantMin) QuantMin = BandCoefNp;
 			if(BandCoefNp > QuantMax) QuantMax = BandCoefNp;
-			if(QuantMax-QuantMin > LogMaxRange) {
+			if(QuantMax-QuantMin > LogMaxRange && Block_Encode_BuildQuantizer(QuantSum, QuantWeight) != PrevQuant) {
 				//! Write the quantizer zone we just searched through
 				//! and start a new one from this coefficient
 				NextCodedIdx  = WRITE_QUANT_ZONE();
