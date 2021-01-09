@@ -351,14 +351,31 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
 				const float CeilBias = 0x1.FFFFFFp-1f; //! 0.99999... for ceiling
 				if(Norm != 0.0f) Norm = 0x1.0p32f / Norm;
+				float Complexity = 0.0f, ComplexityW = 0.0f;
+				int ComplexityScale = 31 - __builtin_clz(BlockSize);
 				for(n=0;n<BlockSize;n++) {
 					float p   = fBufferEnergy[n] * Norm;
-					float pNp = (p < 0.5f) ? 0.0f : (LogScale*logf(2.0f*p)); //! Scale by 2 to keep values strictly non-negative
+					float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
+					Complexity  += sqrtf(p) * pNp;
+					ComplexityW += sqrtf(p);
 					p   += CeilBias;
-					pNp += CeilBias;
-					BufferEnergy  [n] = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
-					BufferEnergyNp[n] = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
+					pNp  = pNp*LogScale + CeilBias;
+					uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
+					uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
+					BufferEnergy  [n] = ip;
+					BufferEnergyNp[n] = ipNp;
 				}
+
+				//! Use the log and linear sums to get the normalized entropy
+				//! which will be used as a measure of the block's complexity
+				if(ComplexityW) {
+					//! Entropy doesn't directly translate to quality
+					//! very well, so map it through an X^3 curve
+					float LogComplexityW = logf(ComplexityW * 0x1.6A09E6p0f); //! * Sqrt[2] to account for scaling in Log[x]
+					float LogComplexity = 0.5f*Complexity / ComplexityW;
+					Complexity = (LogComplexityW - LogComplexity) / (0x1.62E430p-1f*ComplexityScale); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
+					State->BlockComplexity = Complexity*SQR(Complexity);
+				} else State->BlockComplexity = 0.0f;
 			}
 #endif
 			//! Analyze each channel

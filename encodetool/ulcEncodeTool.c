@@ -34,20 +34,24 @@ int main(int argc, const char *argv[]) {
 	if(argc < 5) {
 		printf(
 			"ulcEncodeTool - Ultra-Low Complexity Codec Encoding Tool\n"
-			"Usage: ulcencodetool Input.sw Output.ulc RateHz RateKbps [Options]\n"
+			"Usage:\n"
+			" ulcencodetool Input Output.ulc RateHz RateKbps[,AvgComplexity]|-Quality [Opt]\n"
 			"Options:\n"
 			" -nc:1           - Set number of channels.\n"
 			" -blocksize:2048 - Set number of coefficients per block (must be a power of 2).\n"
-			"Multi-channel data must be interleaved.\n"
+			"Multi-channel data must be interleaved (packed).\n"
+			"Passing AvgComplexity uses ABR mode.\n"
+			"Passing negative RateKbps (-Quality) uses VBR mode.\n"
 		);
 		return 1;
 	}
 
 	//! Parse parameters
-	int   BlockSize  = 2048;
-	int   nChan      = 1;
-	int   RateHz     = atoi(argv[3]);
-	int   RateKbps   = atoi(argv[4]); {
+	int BlockSize = 2048;
+	int nChan     = 1;
+	int RateHz    = atoi(argv[3]);
+	float RateKbps, AvgComplexity = 0.0f; sscanf(argv[4], "%f,%f", &RateKbps, &AvgComplexity);
+	{
 		int n;
 		for(n=5;n<argc;n++) {
 			if(!memcmp(argv[n], "-nc:", 4)) {
@@ -66,12 +70,21 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
+	//! Determine encoding mode (CBR/ABR/VBR) and set appropriate block encoding routine
+	//! NOTE: This is kinda janky, but works fine. The main problem is passing AvgComplexity,
+	//! which requires casting all the function pointers to a single form.
+	typedef int (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Rate, float AvgComplexity);
+	BlockEncodeFnc_t BlockEncodeFnc;
+	                          BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_CBR;
+	if(AvgComplexity > 0.0f)  BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_ABR;
+	if(RateKbps < 0.0f)       BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_VBR, RateKbps = -RateKbps;
+
 	//! Verify parameters
 	if(RateHz < 1 || RateHz > 0x7FFFFFFF) {
 		printf("ERROR: Invalid playback rate.\n");
 		return -1;
 	}
-	if(RateKbps == 0 || RateKbps > 0xFFFF) {
+	if(RateKbps == 0.0f) {
 		printf("ERROR: Invalid coding rate.\n");
 		return -1;
 	}
@@ -131,7 +144,7 @@ int main(int argc, const char *argv[]) {
 		RateHz,
 		BlockSize,
 		nChan,
-		RateKbps,
+		(uint16_t)RateKbps,
 	};
 	size_t FileHeaderOffs = ftell(OutFile);
 	fseek(OutFile, +sizeof(FileHeader), SEEK_CUR);
@@ -148,6 +161,7 @@ int main(int argc, const char *argv[]) {
 		int CacheIdx = 0;
 		size_t Blk, nBlk = (nSamp + BlockSize-1) / BlockSize + 2; //! +1 to account for coding delay, +1 to account for MDCT delay
 		uint64_t TotalSize = 0;
+		double ActualAvgComplexity = 0.0;
 		for(Blk=0;Blk<nBlk;Blk++) {
 			//! Show progress
 			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
@@ -166,10 +180,9 @@ int main(int argc, const char *argv[]) {
 			//! Encode block
 			//! Reuse BlockBuffer[] to avoid more memory allocation
 			uint8_t *EncData = (uint8_t*)BlockBuffer;
-			int Size;
-			if(RateKbps > 0) Size = ULC_EncodeBlock_CBR(&Encoder, EncData, BlockBuffer,  RateKbps);
-			else             Size = ULC_EncodeBlock_VBR(&Encoder, EncData, BlockBuffer, -RateKbps);
+			int Size = BlockEncodeFnc(&Encoder, EncData, BlockBuffer, RateKbps, AvgComplexity);
 			TotalSize += Size;
+			ActualAvgComplexity += Encoder.BlockComplexity;
 
 			//! Copy what we can into the cache
 			Size = (Size+7) / 8u;
@@ -200,12 +213,14 @@ int main(int argc, const char *argv[]) {
 			"\e[2K\r" //! Clear line before CR
 			"Total size = %.2fKiB\n"
 			"Avg rate = %.5fkbps (%.5f bits/sample)\n"
-			"Max rate = %.5fkbps (%.5f bits/sample)\n",
+			"Max rate = %.5fkbps (%.5f bits/sample)\n"
+			"Avg complexity = %.5f\n",
 			TotalSize/8.0 / 1024,
 			TotalSize               * 1.0 * RateHz/1000.0 / nEncodedSamples,
 			TotalSize               * 1.0 / nEncodedSamples,
 			FileHeader.MaxBlockSize * 8.0 * RateHz/1000.0 / BlockSize,
-			FileHeader.MaxBlockSize * 8.0 / BlockSize
+			FileHeader.MaxBlockSize * 8.0 / BlockSize,
+			ActualAvgComplexity/nBlk
 		);
 
 		//! Destroy encoder

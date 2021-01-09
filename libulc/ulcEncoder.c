@@ -92,13 +92,13 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
 /**************************************/
 
 //! Encode block (CBR mode)
-int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps) {
+int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, float RateKbps, int MaxCoef) {
 	int Size;
 	int nOutCoef  = -1;
 	int BitBudget = (int)((State->BlockSize * RateKbps) * 1000.0f/State->RateHz); //! NOTE: Truncate
 
 	//! Perform a binary search for the optimal nOutCoef
-	int Lo = 0, Hi = Block_Transform(State, SrcData);
+	int Lo = 0, Hi = MaxCoef;
 	if(Lo < Hi) {
 		do {
 			nOutCoef = (Lo + Hi) / 2u;
@@ -118,15 +118,34 @@ int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, co
 	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
+int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps) {
+	int MaxCoef = Block_Transform(State, SrcData);
+	return ULC_EncodeBlock_CBR_Core(State, DstBuffer, RateKbps, MaxCoef);
+}
+
+/**************************************/
+
+//! Encode block (ABR mode)
+int ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float AvgComplexity) {
+	int MaxCoef = Block_Transform(State, SrcData);
+	float TargetKbps = RateKbps * State->BlockComplexity / AvgComplexity;
+	return ULC_EncodeBlock_CBR_Core(State, DstBuffer, TargetKbps, MaxCoef);
+}
 
 /**************************************/
 
 //! Encode block (VBR mode)
 int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality) {
-	int nOutCoef = (int)(Quality*(1.0f/100.0f) * State->nChan * State->BlockSize + 0x1.FFFFFFp-1f); //! NOTE: Ceiling
+	float TargetComplexity = -11.37f*logf(Quality/100.0f);
 	int MaxCoef  = Block_Transform(State, SrcData);
-	if(nOutCoef > MaxCoef) nOutCoef = MaxCoef;
-	return Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
+	int nTargetCoef = State->nChan*State->BlockSize; {
+		//! TargetComplexity == 0 which would result in a
+		//! divide-by-zero error. So instead we just leave
+		//! nTargetCoef alone at its maximum value.
+		if(TargetComplexity > 0.0f) nTargetCoef = (int)(nTargetCoef * State->BlockComplexity / TargetComplexity);
+	}
+	if(nTargetCoef > MaxCoef) nTargetCoef = MaxCoef;
+	return Block_Encode_EncodePass(State, DstBuffer, nTargetCoef);
 }
 
 /**************************************/

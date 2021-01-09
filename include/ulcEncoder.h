@@ -38,9 +38,6 @@ struct ULC_EncoderState_t {
 	int RateHz;     //! Playback rate (used for rate control)
 	int nChan;      //! Channels in encoding scheme
 	int BlockSize;  //! Transform block size
-	int WindowCtrl; //! Window control parameter
-	int NextWindowCtrl;
-	float TransientCompressorGain;
 
 	//! Encoding state
 	//! Buffer memory layout:
@@ -54,6 +51,10 @@ struct ULC_EncoderState_t {
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
 	//! BufferData contains the original pointer returned by malloc()
+	int    WindowCtrl;        //! Window control parameter (for last coded block)
+	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
+	float  TransientCompressorGain;
+	float  BlockComplexity;   //! Coefficient distribution complexity (0 = Highly tonal, 1 = Highly noisy)
 	void  *BufferData;
 	float *SampleBuffer;
 	float *TransformBuffer;
@@ -90,8 +91,42 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!    0,1,2,3...BlockSize-1, //! Chan0
 //!    0,1,2,3...BlockSize-1, //! Chan1
 //!   }
+//! Notes regarding coding modes:
+//!  -CBR will encode as many coefficients as possible for a given
+//!   RateKbps, never exceeding this value (for example, if 128.0kbps
+//!   is the target and the encoding choice is between 127.0kbps and
+//!   128.01kbps, 127.0kbps will always be chosen).
+//!   The rate is matched via binary search, and so this encoding
+//!   mode (and ABR, which uses the same mechanism) is the slowest.
+//!  -ABR mode tries to balance the number of coefficients in each
+//!   block based on their complexity. It will achieve an average
+//!   bitrate very close to the target, but may be slightly off due
+//!   to rounding errors.
+//!   To run in ABR mode, the file must first be analyzed to get the
+//!   average complexity, and then this is passed to the routine
+//!   alongside the desired RateKbps (note that AvgComplexity can be
+//!   passed arbitrarily without a pre-pass, but the target bitrate
+//!   might not be achieved).
+//!   This encoding mode is just as slow as CBR mode, as the algorithm
+//!   chooses a target bitrate for each block, which must go through
+//!   the CBR encoding routine for each block.
+//!  -VBR mode attempts to estimate the average complexity of the file
+//!   based on a Quality parameter, and then proceeds to encode the
+//!   file based on this metric alone. This mode is the fastest, but
+//!   there is no guarantee for the bitrate.
+//!   Generally, though:
+//!     0 < Quality <= 10 = Average  <30kbps
+//!    10 < Quality <= 20 = Average  <40kbps
+//!    20 < Quality <= 30 = Average  <50kbps
+//!    30 < Quality <= 40 = Average  <60kbps
+//!    40 < Quality <= 50 = Average  <75kbps
+//!    50 < Quality <= 60 = Average  <95kbps
+//!    60 < Quality <= 70 = Average <125kbps
+//!    70 < Quality <= 80 = Average <175kbps
+//!    80 < Quality <= 90 = Average <300kbps
 //! Returns the block size in bits
 int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps);
+int ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float AvgComplexity);
 int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality);
 
 /**************************************/
