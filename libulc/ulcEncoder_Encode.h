@@ -201,7 +201,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
 			if(BandCoefNp < QuantMin) QuantMin = BandCoefNp;
 			if(BandCoefNp > QuantMax) QuantMax = BandCoefNp;
-			if(QuantMax-QuantMin > LogMaxRange && Block_Encode_BuildQuantizer(QuantSum, QuantWeight) != PrevQuant) {
+			if(QuantMax-QuantMin > LogMaxRange) {
 				//! Write the quantizer zone we just searched through
 				//! and start a new one from this coefficient
 				NextCodedIdx  = WRITE_QUANT_ZONE();
