@@ -66,9 +66,6 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! This will be compensated for later.
 	//! NOTE: Recompute the sample at the boundary between the
 	//! previous block and this one, as it was "wrong" last time.
-	//! Additionally, get the sample before that for the z^-1
-	//! tap of the differentiator in the next section.
-	float EnergyTap = 0.0f;
 	StepBuffer[BlockSize-1] = 0.0f; //! Separating this one out might give better-optimized code
 	for(n=BlockSize;n<BlockSize*2;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
@@ -77,7 +74,6 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
 		n = BlockSize-1;
-		EnergyTap += SQR(BPFILT(SrcOld[n-2], SrcOld[n])); //! Get energy of sample before last for a z^-1 tap
 		Dst[-1]   += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
 		*Dst++    += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
 		for(n=1;n<BlockSize-1;n++) {
@@ -87,86 +83,31 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 #undef BPFILT
 	}
 
-	//! Filter the BP energy to isolate energy peaks, and then apply
-	//! a strong compressor to the signal.
-	//! Doing this tends to isolate energy spikes a lot more cleanly
-	//! (less glitching from false positives) and also takes care of
-	//! decay transients simultaneously, avoiding the need for
-	//! special handling later.
-	//! NOTE: Pushing the signal through a strong compressor with no
-	//! release time and a short attack causes transients to pop out
-	//! a lot more clearly than even just differentiation of the
-	//! signal energy. However, this can also result in odd artifacts
-	//! during non-transients. I've tried to tune the terms in the
-	//! compressor to give the best tradeoff between sensitivity and
-	//! accurate (true positive) detection, but there will always be
-	//! cases where this will not work right. Further improvements
-	//! are very much welcomed.
+	//! Filter the BP energy to obtain an smoothed gain
+	//! envelope, and then get the energy difference
+	//! between the immediate sample energy and that of
+	//! the smoothed signal. This allows transients to
+	//! show more clearly than non-transients.
+	//! Further scaling the difference by the smoothed
+	//! gain of /this/ sample seems to give even more
+	//! refined results.
+	//! NOTE: Gain is insane here (squaring followed by
+	//! scaling with slow rolloff), but should still be
+	//! fine even with single-precision floats. It is
+	//! technically possible to have an upper limit,
+	//! but there's no point in doing so unless needed.
 	{
-		//! Attack coefficient:
-		//!  Sensitivity^(-1/AttackSamples)
-		//! ie. This solves with the number of samples it takes
-		//! for Gain to return to unity after a transient pulse.
-		//! Default: Sensitivity = 64, AttackSamples = 24 samples.
-		//! NOTE: Sensitivity is kept non-const because it will be
-		//! modified later for a more optimized processing loop.
-		//! NOTE: AttackSamples essentially controls post-masking.
-		//! However, this isn't "traditional" post-masking that
-		//! lasts a while, but rather more of a jitter-prevention.
-		//! Setting it too low will make the detector pick up too
-		//! many false-positives, and setting it too high will
-		//! make it harder to pick up transients (as well as cause
-		//! the signal gain to explode a lot easier).
-		      float Sensitivity        = 64.0f;
-		const float AttackCoef         = 0x1.AE89FAp-1f;
-		const float OneMinusAttackCoef = 0x1.45D81Ap-3f;
-
-		//! NOTE: The output of the bandpass filter has a gain of
-		//! 2^2*nChan. However, that same output is also strictly
-		//! non-negative. So when we apply a square root and then
-		//! differentiate before squaring, we are not changing the
-		//! gain term at all, as the output of the differentiator
-		//! can never be larger than its inputs. This means that
-		//! the unity gain factor is still just 1/(2^2*nChan) at
-		//! that point. However, this signal is being driven by
-		//! Gain which is itself derived from the same inputs,
-		//! and thus squares the values again, and so the final
-		//! normalization factor becomes 1/(2^2*nChan)^2.
-		//! The purpose of normalization is to avoid having the
-		//! values exploding out of numerical represensation.
-		//! NOTE: The above normalization is folded into UnityGain,
-		//! but it must also be folded into Sensitivity to account
-		//! for the signal feeding back into itself. This allows
-		//! us to remove a multiplication from the processing loop.
-		//! NOTE: The gain control expression can be expressed as:
-		//!  Gain' = Gain*AttackCoef + UnityGain*(1.0 - AttackCoef) <- Form A
-		//!        = Gain + (UnityGain - Gain)*(1.0 - AttackCoef)   <- Form B
-		//! Form B makes it clear as to what we are doing here,
-		//! but Form A is more numerically stable and efficient.
-		//! NOTE: Because Gain can easily explode to infinity
-		//! regardless of our safeguards in normalization, we must
-		//! still limit it. Even though the range should ideally
-		//! be 0.0 .. 1.0, we are enforcing a limit of 256.0, as
-		//! this should be more than enough for any case.
-		float GainNorm  = SQR(0.25f) / SQR(nChan);
-		float GainLimit = GainNorm * 256.0f;
-		float UnityGain = GainNorm * OneMinusAttackCoef;
-		float Gain = *CompressorGain;
+		const float DecayCoef = 0x1.E35BF2p-1f; //! -0.5dB/sample (10^(-0.5/20))
 		float *Buf = StepBuffer;
-		float  Tap = sqrtf(EnergyTap);
-		Sensitivity *= GainNorm;
+		float SmoothGain = *CompressorGain;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
-			float v = sqrtf(Buf[n]);
-			float d = SQR(v - Tap);
-			Gain  = Gain*AttackCoef + UnityGain;
-			Gain += d*Sensitivity;
-			Buf[n] = d * Gain, Tap = v;
-
-			//! Gain can easily explode to infinity, so limit things here
-			if(Gain > GainLimit) Gain = GainLimit;
+			float v = Buf[n];
+			float d = SQR(v - SmoothGain); //! <- Squaring here cleans transients further
+			SmoothGain = SmoothGain*DecayCoef + v;
+			Buf[n] = d*SmoothGain;
 		}
 		Buf[n] = ABS(2*Buf[n-1] - Buf[n-2]); //! Last sample is unavailable - linearly extrapolate from its neighbours
-		*CompressorGain = Gain;
+		*CompressorGain = SmoothGain;
 	}
 
 	//! Save the new transient energy back to the caching buffer
@@ -242,7 +183,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 0x1.62E430p-1f) { //! Log[2.0]
+			if(RatioPos != POS_R && Ratio >= 0x1.62E430p0f) { //! Log[2.0^2]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -260,8 +201,8 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Determine the overlap scaling for the transition region
 	int OverlapScale = 0;
-	if(RatioR >= 0x1.62E430p-2f) { //! Log[2^0.5]
-		if(RatioR < 0x1.205967p2f) //! Log[2^6.5]
+	if(RatioR >= 0x1.62E430p-2f) { //! 0.5*Log[2]
+		if(RatioR < 0x1.205967p2f) //! 6.5*Log[2]
 			OverlapScale = (int)(0x1.715476p0f*RatioR + 0.5f); //! 1/Log[2] for change-of-base
 		else
 			OverlapScale = 7;
