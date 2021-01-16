@@ -74,8 +74,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
 		n = BlockSize-1;
-		Dst[-1]   += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
-		*Dst++    += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
+		Dst[-1] += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
+		*Dst++  += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
 		for(n=1;n<BlockSize-1;n++) {
 			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n+1]));
 		}
@@ -83,31 +83,42 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 #undef BPFILT
 	}
 
-	//! Filter the BP energy to obtain an smoothed gain
-	//! envelope, and then get the energy difference
-	//! between the immediate sample energy and that of
-	//! the smoothed signal. This allows transients to
-	//! show more clearly than non-transients.
-	//! Further scaling the difference by the smoothed
-	//! gain of /this/ sample seems to give even more
-	//! refined results.
-	//! NOTE: Gain is insane here (squaring followed by
-	//! scaling with slow rolloff), but should still be
-	//! fine even with single-precision floats. It is
-	//! technically possible to have an upper limit,
-	//! but there's no point in doing so unless needed.
+	//! Filter the BP energy to extract transient spikes.
+	//! The idea is to build a smoothed representation of
+	//! the signal, and then take the difference between
+	//! the instantaneous energy of the signal and the
+	//! (scaled) smoothed energy. Scaling the smoothed
+	//! signal (or scaling the instantaneous signal by
+	//! the inverse) gives a ratio of how much we want
+	//! to rely on either signal for transient detection
+	//! so that we are not overly sensitive to 'noise',
+	//! but are still sensitive enough to pick up subtle
+	//! transients that should be acted on. Finally, we
+	//! scale the difference signal by updated smoothed
+	//! signal, as this allows the built-up energy to be
+	//! 'dumped' into transients when they appear.
+	//! NOTE: The gain of the output signal is fairly
+	//! large owing to all the scaling that is going on.
+	//! Just for the sake of safety, the numbers are
+	//! slightly normalized by accounting for the gain
+	//! of the bandpass filter and the squaring of the
+	//! signal. This will likely still result in values
+	//! larger than 1.0, but should be sane enough that
+	//! overflows don't happen during further analyses.
 	{
-		const float DecayCoef = 0x1.E35BF2p-1f; //! -0.5dB/sample (10^(-0.5/20))
+		      float Norm       = SQR(0.25f) / SQR(nChan);
+		const float GainRatio  = 1.0f / 4.0f;    //! Ratio of InstantaneousEnergy to SmoothedEnergy
+		const float Smoothness = 0x1.FA23A2p-1f; //! Smoothness of SmoothedEnergy; -0.1dB/sample (10^(-0.1/20))
 		float *Buf = StepBuffer;
 		float SmoothGain = *CompressorGain;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
-			float v = Buf[n];
-			float d = SQR(v - SmoothGain); //! <- Squaring here cleans transients further
-			SmoothGain = SmoothGain*DecayCoef + v;
+			float v = Buf[n] * Norm;
+			float d = SQR(v*GainRatio - SmoothGain);
+			SmoothGain = SmoothGain*Smoothness + v;
 			Buf[n] = d*SmoothGain;
 		}
-		Buf[n] = ABS(2*Buf[n-1] - Buf[n-2]); //! Last sample is unavailable - linearly extrapolate from its neighbours
 		*CompressorGain = SmoothGain;
+		Buf[n] = 0.0f; //! Last sample is unavailable - Exclude from analysis
 	}
 
 	//! Save the new transient energy back to the caching buffer
@@ -129,18 +140,14 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored
-	float RatioL;
-	float RatioM;
-	float RatioR;
-	int   Decimation     = 0b0001;
-	int   SubBlockSize_2 = BlockSize/2;
+	int Decimation     = 0b0001;
+	int SubBlockSize_2 = BlockSize/2;
 	for(StepBuffer += SubBlockSize_2;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block
 		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
 		int   RatioPos;
 		float Ratio; {
-			//! Minimum value for Log[x]. This is used as a
-			//! placeholder for Log[0] in the analysis.
+			//! This is used as a placeholder for Log[0]
 			const float MIN_LOG = -100.0f;
 
 			//! Get the energy of each segment (LL/L/M/R)
@@ -168,9 +175,9 @@ static inline int Block_Transform_GetWindowCtrl(
 			R  = (R  != 0.0f) ? (R  / Rw)  : MIN_LOG;
 
 			//! Get the ratios between segments
-			RatioL = L - LL;
-			RatioM = M - L;
-			RatioR = R - M;
+			float RatioL = L - LL;
+			float RatioM = M - L;
+			float RatioR = R - M;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
@@ -183,7 +190,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 0x1.62E430p0f) { //! Log[2.0^2]
+			if(RatioPos != POS_R && Ratio >= 0x1.62E430p0f) { //! Log[4.0]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -200,13 +207,40 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Determine the overlap scaling for the transition region
-	int OverlapScale = 0;
-	if(RatioR >= 0x1.62E430p-2f) { //! 0.5*Log[2]
-		if(RatioR < 0x1.205967p2f) //! 6.5*Log[2]
-			OverlapScale = (int)(0x1.715476p0f*RatioR + 0.5f); //! 1/Log[2] for change-of-base
-		else
-			OverlapScale = 7;
-		while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
+	int OverlapScale = 0; {
+		//! Perform a final pass over the transition region,
+		//! this time with the aim of finding how concentrated
+		//! the transient energy is about the transition region.
+		//! NOTE: We really do care more about what's in the
+		//! transition region itself, so we use these curves:
+		//!  In  = {1-Cos,Cos}
+		//!  Out = {Cos,1-Cos}
+		//! This sometimes results in popping, in which case
+		//! the following curves may be used:
+		//!  In  = {Sin^2,Cos}
+		//!  Out = {Cos,Sin^2}
+		//! However, this variation results in less sharpness.
+		float In  = 0.0f;
+		float Out = 0.0f;
+		const float *Sin = Fourier_SinTableN(SubBlockSize_2);
+		const float *Cos = Sin + SubBlockSize_2;
+		for(n=0;n<SubBlockSize_2;n++) { //! Left side (sin; fade-in)
+			float c = *--Cos;
+			float s = 1.0f - c;
+			float l = StepBuffer[n + SubBlockSize_2];
+			float r = StepBuffer[n + SubBlockSize_2*2];
+			In  += s*l + c*r;
+			Out += c*l + s*r;
+		}
+
+		//! Finally determine the scaling from the ratio of In:Out
+		if(In*0x1.6A09E6p-1f >= Out) {      //! In/Out >= 2^0.5
+			if(In*0x1.6A09E6p-7f < Out) //! In/Out <  2^6.5
+				OverlapScale = (int)(0x1.715476p0f*logf(In/Out) + 0.5f); //! 1/Log[2] for change-of-base
+			else
+				OverlapScale = 7;
+			while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
+		}
 	}
 
 	//! Return the combined overlap+window switching parameters
