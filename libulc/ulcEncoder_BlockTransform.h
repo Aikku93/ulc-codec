@@ -211,9 +211,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		float *BufferIndex   = (float*)State->TransformIndex;
 		float *BufferFwdLap  = State->TransformFwdLap;
 		float *BufferTemp    = State->TransformTemp;
-#if ULC_USE_PSYCHOACOUSTICS
-		float *BufferMDST    = BufferNepers; //! NOTE: Aliasing
-#endif
+		float *BufferMDST    = BufferNepers; //! NOTE: Aliasing of BufferNepers
+
 		//! Apply M/S transform to the data
 		//! NOTE: Fully normalized; not orthogonal.
 		if(nChan == 2) for(n=0;n<BlockSize;n++) {
@@ -278,11 +277,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					BufferTemp,
 					SubBlockSize,
 					OverlapSize,
-#if ULC_USE_PSYCHOACOUSTICS
 					BufferMDST
-#else
-					NULL
-#endif
 				);
 
 				//! Normalize the MDCT (and MDST) coefficients
@@ -293,16 +288,12 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				float Norm = 2.0f / SubBlockSize;
 				for(n=0;n<SubBlockSize;n++) {
 					BufferMDCT[n] *= Norm;
-#if ULC_USE_PSYCHOACOUSTICS
 					BufferMDST[n] *= Norm;
-#endif
 				}
 
 				//! Move to the next subblock
 				BufferMDCT += SubBlockSize;
-#if ULC_USE_PSYCHOACOUSTICS
 				BufferMDST += SubBlockSize;
-#endif
 			}
 
 			//! Cache the sample data for the next block
@@ -312,18 +303,20 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			BufferFwdLap += BlockSize/2u;
 		}
 		BufferMDCT -= BlockSize*nChan; //! Rewind to start of buffer
-#if ULC_USE_PSYCHOACOUSTICS
 		BufferMDST -= BlockSize*nChan;
-#endif
+
 		//! Perform importance analysis
+		//! NOTE: Without psychoacoustics, we still perform some
+		//! analysis for ABR coding modes (complexity analysis).
 		{
-#if ULC_USE_PSYCHOACOUSTICS
 			//! Combine the energy of all channels' MDCT+MDST coefficients
 			//! into normalized (by maximum) fixed-point integer values.
 			//! For some reason, it seems to work better to combine the
 			//! channels for analysis, rather than use each one separately.
+#if ULC_USE_PSYCHOACOUSTICS
 			uint32_t *BufferEnergy   = (uint32_t*)(BufferTemp);
 			uint32_t *BufferEnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+#endif
 			{
 				float *fBufferEnergy = BufferTemp;
 				for(n=0;n<BlockSize;n++) fBufferEnergy[n] = 0.0f;
@@ -341,29 +334,33 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
 					float Re = *MDCTSrc++;
 					float Im = *MDSTSrc++;
-					float v  = (fBufferEnergy[n] += SQR(Re) + SQR(Im));
+					float v = (fBufferEnergy[n] += SQR(Re) + SQR(Im));
 					if(v > Norm) Norm = v;
 				}
 
 				//! Find the integer normalization factor and convert
 				//! NOTE: Maximum value for BufferEnergyNp is Log[2 * 2^32], so rescale by
 				//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
+#if ULC_USE_PSYCHOACOUSTICS
 				const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
 				const float CeilBias = 0x1.FFFFFFp-1f; //! 0.99999... for ceiling
+#endif
 				if(Norm != 0.0f) Norm = 0x1.0p32f / Norm;
 				float Complexity = 0.0f, ComplexityW = 0.0f;
 				int ComplexityScale = 31 - __builtin_clz(BlockSize);
 				for(n=0;n<BlockSize;n++) {
 					float p   = fBufferEnergy[n] * Norm;
 					float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
-					Complexity  += sqrtf(p) * pNp;
+					Complexity  += sqrtf(p) * pNp; //! Using a square root here works better for ABR
 					ComplexityW += sqrtf(p);
+#if ULC_USE_PSYCHOACOUSTICS
 					p   += CeilBias;
 					pNp  = pNp*LogScale + CeilBias;
 					uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
 					uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
 					BufferEnergy  [n] = ip;
 					BufferEnergyNp[n] = ipNp;
+#endif
 				}
 
 				//! Use the log and linear sums to get the normalized entropy
@@ -377,7 +374,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					State->BlockComplexity = Complexity*SQR(Complexity);
 				} else State->BlockComplexity = 0.0f;
 			}
-#endif
 			//! Analyze each channel
 #if ULC_USE_PSYCHOACOUSTICS
 			float NyquistHz = State->RateHz * 0.5f;
