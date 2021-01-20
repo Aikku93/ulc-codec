@@ -65,8 +65,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! would add some multiplications that reduce performance.
 	//! This will be compensated for later.
 	//! NOTE: Recompute the sample at the boundary between the
-	//! previous block and this one, as it was "wrong" last time.
-	StepBuffer[BlockSize-1] = 0.0f; //! Separating this one out might give better-optimized code
+	//! previous block and this one, as it wasn't available in
+	//! the previous block (and was set to 0).
 	for(n=BlockSize;n<BlockSize*2;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 #define BPFILT(zM1, z1) ((z1) - (zM1))
@@ -84,38 +84,36 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	}
 
 	//! Filter the BP energy to extract transient spikes.
-	//! The idea is to build a smoothed representation of
-	//! the signal, and then take the difference between
-	//! the instantaneous energy of the signal and the
-	//! (scaled) smoothed energy. Scaling the smoothed
-	//! signal (or scaling the instantaneous signal by
-	//! the inverse) gives a ratio of how much we want
-	//! to rely on either signal for transient detection
-	//! so that we are not overly sensitive to 'noise',
-	//! but are still sensitive enough to pick up subtle
-	//! transients that should be acted on. Finally, we
-	//! scale the difference signal by updated smoothed
-	//! signal, as this allows the built-up energy to be
-	//! 'dumped' into transients when they appear.
-	//! NOTE: The gain of the output signal is fairly
-	//! large owing to all the scaling that is going on.
-	//! Just for the sake of safety, the numbers are
-	//! slightly normalized by accounting for the gain
-	//! of the bandpass filter and the squaring of the
-	//! signal. This will likely still result in values
-	//! larger than 1.0, but should be sane enough that
-	//! overflows don't happen during further analyses.
+	//! The idea is to take the difference between the
+	//! instantaneous energy, and the integrated energy
+	//! (using a leaky integrator). The main point of
+	//! interest here is the final step:
+	//!  Buf[n] = d^8
+	//! This exponentiation corresponds to a dynamic-range
+	//! expander (1:8 ratio), and what it achieves is
+	//! to lower the noise floor (corresponding to minor
+	//! variations in energy and 'soft' transients) so that
+	//! non-transient events are less likely to trigger at
+	//! a given threshold, while improving the resolution
+	//! of 'real' transients by separating them cleanly
+	//! from the noise floor, allowing us to use a much
+	//! larger threshold than expected. This large threshold
+	//! is key to avoiding triggering during non-transient
+	//! events, which maintains high-quality output.
+	//! NOTE: I'm really not sure what to set the gain to.
+	//! Technically, there's no need for any renormalization,
+	//! but this filter can generate huge values that could
+	//! overflow during subsequent calculations.
 	{
-		      float Norm       = SQR(0.25f) / SQR(nChan);
-		const float GainRatio  = 1.0f / 4.0f;    //! Ratio of InstantaneousEnergy to SmoothedEnergy
-		const float Smoothness = 0x1.FA23A2p-1f; //! Smoothness of SmoothedEnergy; -0.1dB/sample (10^(-0.1/20))
+		const float Decay = 0x1.C8520Bp-1f;                 //! Smoothness of SmoothedEnergy; -1.0dB/sample (10^(-1.0/20))
+		      float Norm  = 0x1.8386AFp-7f * 0.25f / nChan; //! (1-Decay)^2 * BandpassEnergyGain^-1. Squaring cancels after the square root
 		float *Buf = StepBuffer;
 		float SmoothGain = *CompressorGain;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
-			float v = Buf[n] * Norm;
-			float d = SQR(v*GainRatio - SmoothGain);
-			SmoothGain = SmoothGain*Smoothness + v;
-			Buf[n] = d*SmoothGain;
+			float v = sqrtf(Buf[n] * Norm);
+			float d = v - SmoothGain;
+			SmoothGain = SmoothGain*Decay + v;
+			Buf[n] = SQR(SQR(SQR(d)));
 		}
 		*CompressorGain = SmoothGain;
 		Buf[n] = 0.0f; //! Last sample is unavailable - Exclude from analysis
@@ -164,10 +162,10 @@ static inline int Block_Transform_GetWindowCtrl(
 				float l  = StepBuffer[n];
 				float m  = StepBuffer[n + SubBlockSize_2];
 				float r  = StepBuffer[n + SubBlockSize_2*2];
-				LLw += ll; if(ll != 0.0f) LL += ll * logf(ll);
-				Lw  += l;  if(l  != 0.0f) L  += l  * logf(l);
-				Mw  += m;  if(m  != 0.0f) M  += m  * logf(m);
-				Rw  += r;  if(r  != 0.0f) R  += r  * logf(r);
+				if(ll != 0.0f) LLw += ll, LL += ll * logf(ll);
+				if(l  != 0.0f) Lw  += l,  L  += l  * logf(l);
+				if(m  != 0.0f) Mw  += m,  M  += m  * logf(m);
+				if(r  != 0.0f) Rw  += r,  R  += r  * logf(r);
 			}
 			LL = (LL != 0.0f) ? (LL / LLw) : MIN_LOG;
 			L  = (L  != 0.0f) ? (L  / Lw)  : MIN_LOG;
@@ -190,7 +188,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 0x1.62E430p0f) { //! Log[4.0]
+			if(RatioPos != POS_R && Ratio >= 0x1.62E430p1f) { //! Log[16.0]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -224,7 +222,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		float Out = 0.0f;
 		const float *Sin = Fourier_SinTableN(SubBlockSize_2);
 		const float *Cos = Sin + SubBlockSize_2;
-		for(n=0;n<SubBlockSize_2;n++) { //! Left side (sin; fade-in)
+		for(n=0;n<SubBlockSize_2;n++) {
 			float c = *--Cos;
 			float s = 1.0f - c;
 			float l = StepBuffer[n + SubBlockSize_2];
