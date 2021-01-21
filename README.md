@@ -18,9 +18,11 @@ Work is being considered for implementing reading/writing of more common formats
 Additionally, the core encoding/decoding routines can theoretically work with any data they are fed, allowing for easier integration with non-file-based blocks of audio in the future.
 
 ### Encoding
-```ulcencodetool Input.raw Output.ulc RateHz RateKbps [-nc:1] [-blocksize:2048]```
+```ulcencodetool Input.raw Output.ulc RateHz RateKbps[,AvgComplexity]|-Quality [-nc:1] [-blocksize:2048]```
 
-This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps```. ```-nc:X``` sets the number of channels, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block).
+This will take ```Input.raw``` (with a playback rate of ```RateHz```) and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps``` (with ```AvgComplexity``` being passed, this uses ABR mode); alternatively, passing a negative value between -1 and -100 will encode in VBR mode (```-1``` corresponds to Quality=1, ```-100``` corresponds to Quality=100). ```-nc:X``` sets the number of channels, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block).
+
+Encoding in any mode will display the actual average bitrate, maximum bitrate, and an 'average complexity' parameter. The latter doesn't have much real meaning (perhaps 'how difficult the file is to encode', or 'Quality parameter needed to achieve full transparency'), but can be passed to the encoder in ABR mode to achieve a desired average bitrate.
 
 ### Decoding
 ```ulcdecodetool Input.ulc Output.raw```
@@ -36,9 +38,10 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 
 ## Technical details
 * Target bitrate: 32..256kbps+ (44.1kHz, M/S stereo)
+    * CBR, ABR, and VBR (Quality = 1..100) modes available
     * No hard limits on playback rate or coding bitrate
 * MDCT-based encoding (using sine window)
-    * Window switching is combined with so-called 'overlap switching', the latter of which varies the size of the overlap segment of transient \[sub]blocks. The idea is to center the transient within a subblock, at which point overlap switching takes over to emphasize it, without having to switch to use small windows for the entire block, overall resulting in improved quality compared to the more-common '1 long block or N short blocks' strategy.
+    * Window switching is combined with so-called 'overlap switching', the latter of which varies the size of the overlap segment of transient \[sub]blocks. The idea is to center the transient within a window transition region, at which point overlap switching takes over to clamp down on its leakage without having to switch to use small windows for the entire block, overall resulting in improved quality compared to the more-common '1 long block or N short blocks' strategy.
 * Non-linear coefficient quantization for greater control over dynamic range
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 
