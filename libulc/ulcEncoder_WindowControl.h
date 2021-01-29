@@ -138,13 +138,15 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored
+	float Ratio;
 	int Decimation     = 0b0001;
 	int SubBlockSize_2 = BlockSize/2;
 	for(StepBuffer += SubBlockSize_2;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block
-		//! Find the peak ratio within each segment (L/M/R)
+		//! Find the peak ratio within each segment (L/M/R),
+		//! making sure to store the transition region ratio
 		enum { POS_L, POS_M, POS_R};
 		int   RatioPos;
-		float Ratio; {
+		float RatioR; {
 			//! This is used as a placeholder for Log[0]
 			const float MIN_LOG = -100.0f;
 
@@ -175,7 +177,7 @@ static inline int Block_Transform_GetWindowCtrl(
 			//! Get the ratios between segments
 			float RatioL = L - LL;
 			float RatioM = M - L;
-			float RatioR = R - M;
+			      RatioR = R - M;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
@@ -188,7 +190,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 0x1.62E430p1f) { //! Log[16.0]
+			if(RatioPos != POS_R && Ratio >= 0x1.62E430p1f) { //! Log[Sqrt[2]^8]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation  = (Decimation<<1) | 0;
@@ -201,44 +203,22 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! No more decimation - break out of the decimation loop
+		Ratio = RatioR;
 		break;
 	}
 
 	//! Determine the overlap scaling for the transition region
-	int OverlapScale = 0; {
-		//! Perform a final pass over the transition region,
-		//! this time with the aim of finding how concentrated
-		//! the transient energy is about the transition region.
-		//! NOTE: We really do care more about what's in the
-		//! transition region itself, so we use these curves:
-		//!  In  = {1-Cos,Cos}
-		//!  Out = {Cos,1-Cos}
-		//! This sometimes results in popping, in which case
-		//! the following curves may be used:
-		//!  In  = {Sin^2,Cos}
-		//!  Out = {Cos,Sin^2}
-		//! However, this variation results in less sharpness.
-		float In  = 0.0f;
-		float Out = 0.0f;
-		const float *Sin = Fourier_SinTableN(SubBlockSize_2);
-		const float *Cos = Sin + SubBlockSize_2;
-		for(n=0;n<SubBlockSize_2;n++) {
-			float c = *--Cos;
-			float s = 1.0f - c;
-			float l = StepBuffer[n + SubBlockSize_2];
-			float r = StepBuffer[n + SubBlockSize_2*2];
-			In  += s*l + c*r;
-			Out += c*l + s*r;
-		}
-
-		//! Finally determine the scaling from the ratio of In:Out
-		if(In*0x1.6A09E6p-1f >= Out) {      //! In/Out >= 2^0.5
-			if(In*0x1.6A09E6p-7f < Out) //! In/Out <  2^6.5
-				OverlapScale = (int)(0x1.715476p0f*logf(In/Out) + 0.5f); //! 1/Log[2] for change-of-base
-			else
-				OverlapScale = 7;
-			while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
-		}
+	//! NOTE: The ratio was computed in an expanded domain, so
+	//! we compensate by compressing it again (1/8). On top of
+	//! that, we expand to the X^2 domain, as this appears to
+	//! give better results.
+	int OverlapScale = 0;
+	if(Ratio >= 0x1.62E430p0f) {      //! Log[Ratio] >= Log[2^(0.5 * 8/2)]
+		if(Ratio < 0x1.205967p4f) //! Log[Ratio] <  Log[2^(6.5 * 8/2)]
+			OverlapScale = (int)(0x1.715476p-2f*Ratio + 0.5f); //! (1/Log[2])*(2/8)
+		else
+			OverlapScale = 7;
+		while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
 	}
 
 	//! Return the combined overlap+window switching parameters
