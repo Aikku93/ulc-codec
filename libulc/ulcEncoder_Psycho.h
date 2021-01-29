@@ -13,9 +13,7 @@
 /**************************************/
 
 //! Simultaneous masking-compensated energy estimation
-//! NOTE: ERB calculations are inlined as an optimization
 struct Block_Transform_MaskingState_t {
-	float  BwBase;
 	int    SumShift;
 	int    BandBeg;
 	int    BandEnd;
@@ -26,15 +24,13 @@ static inline void Block_Transform_MaskingState_Init(
 	struct Block_Transform_MaskingState_t *State,
 	const uint32_t *Energy,
 	const uint32_t *EnergyNp,
-	int   BlockSize,
-	float NyquistHz
+	int   BlockSize
 ) {
-	State->BwBase   = 24.7f*BlockSize/NyquistHz + 0.0539695f; //! Offset at Band+0.5
-	State->SumShift = 31 - __builtin_clz(BlockSize); //! Log2[BlockSize]
-	State->BandBeg  = 0;
-	State->BandEnd  = 0;
-	State->Energy   = Energy[0];
-	State->Nepers   = Energy[0] * (uint64_t)EnergyNp[0] >> State->SumShift;
+	State->SumShift  = 31 - __builtin_clz(BlockSize); //! Log2[BlockSize]
+	State->BandBeg   = 0;
+	State->BandEnd   = 0;
+	State->Energy    = Energy[0];
+	State->Nepers    = Energy[0] * (uint64_t)EnergyNp[0] >> State->SumShift;
 }
 static inline float Block_Transform_GetMaskedLevel(
 	struct Block_Transform_MaskingState_t *State,
@@ -44,12 +40,10 @@ static inline float Block_Transform_GetMaskedLevel(
 	int   BlockSize
 ) {
 	int BandBeg, BandEnd; {
-		//! NOTE: Bw is doubled relative to actual ERB as this
-		//! seems to give slightly improved results.
-		float Bw = State->BwBase + 0.107939f*Band;
-		BandBeg = Band - (int)(Bw + 0x1.FFFFFFp-1f); //! Add 0.99999... for ceiling
-		BandEnd = Band + (int)(Bw + 0x1.FFFFFFp-1f);
-		if(BandBeg <          0) BandBeg = 0;
+		//! These curves are similar to the Bark-scale bandwidths,
+		//! with the assumption that the Bark bands are not discrete
+		BandBeg = (int)(0.9f*Band);
+		BandEnd = (int)(1.1f*Band);
 		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 	}
 
@@ -102,17 +96,19 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! expansion back from fixed-point integer maths.
 	//! NOTE: F3FCE0F5h == Floor[(1/LogScale)*(1/3) * 2^61 + 0.5]
 	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
+	//! NOTE: 0x1.6DFB51p-28 == 1/LogScale
 	//! NOTE: The flatness calculation looks janky, but is fully
 	//! derived from the one in ULC_Helper_SpectralFlatness().
 	int nBands = BandEnd-BandBeg+1;
 	float LogEnergySum = logf(EnergySum*2); //! *2 to account for scaling in Log[2*x]
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
 	uint64_t r = EnergyLog/EnergySum;
-	float Flatness = (nBands < 2) ? 0.0f : ((LogEnergySum - 0x1.6DFB51p-28f*r) / logf(nBands));
+	float Flatness = (nBands < 2) ? 1.0f : ((LogEnergySum - 0x1.6DFB51p-28f*r) / logf(nBands));
+	float MaskedLevel = r*0xF3FCE0F5ull;
 #if 0
-	return (r*0xF3FCE0F5ull) * 0x1.0p-61f * (1.0f + 0.25f*Flatness); //! <- Slight noise emphasis
+	return MaskedLevel * 0x1.0p-61f * (1.0f + 0.25f*Flatness); //! <- Slight noise emphasis
 #else //! Combine the scaling factor (not sure if a compiler would do this automatically)
-	return (r*0xF3FCE0F5ull) * (0x1.0p-61f + 0x1.0p-63f*Flatness);
+	return MaskedLevel * (0x1.0p-61f + 0x1.0p-63f*Flatness);
 #endif
 }
 

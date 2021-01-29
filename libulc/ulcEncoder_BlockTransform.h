@@ -28,14 +28,11 @@ static inline void Block_Transform_WriteNepersAndIndices(
 	      float    *CoefNp,
 	      int      *nNzCoef,
 	      int       BlockSize
-#if ULC_USE_PSYCHOACOUSTICS
-	,     float     NyquistHz
-#endif
 ) {
 	int Band;
 #if ULC_USE_PSYCHOACOUSTICS
 	struct Block_Transform_MaskingState_t MaskingState;
-	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize, NyquistHz);
+	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize);
 #endif
 	for(Band=0;Band<BlockSize;Band++) {
 		float Val = Coef[Band];
@@ -375,9 +372,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				} else State->BlockComplexity = 0.0f;
 			}
 			//! Analyze each channel
-#if ULC_USE_PSYCHOACOUSTICS
-			float NyquistHz = State->RateHz * 0.5f;
-#endif
 			for(Chan=0;Chan<nChan;Chan++) {
 				//! Analyze each subblock separately
 				const float *BufferMDCTEnd = BufferMDCT + BlockSize;
@@ -396,9 +390,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 						BufferNepers,
 						&nNzCoef,
 						SubBlockSize
-#if ULC_USE_PSYCHOACOUSTICS
-						,NyquistHz
-#endif
 					);
 
 					//! Move to the next subblock
