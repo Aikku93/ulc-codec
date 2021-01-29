@@ -82,8 +82,10 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	float q; {
 		int qi = Block_Encode_BuildQuantizer(QuantSum, QuantWeight);
 		q = (float)(1u << qi);
-		Block_Encode_WriteQuantizer(qi, DstBuffer, Size, *PrevQuant != -1);
-		*PrevQuant = qi;
+		if(qi != *PrevQuant) {
+			Block_Encode_WriteQuantizer(qi, DstBuffer, Size, *PrevQuant != -1);
+			*PrevQuant = qi;
+		}
 	}
 
 	//! Write the coefficients
