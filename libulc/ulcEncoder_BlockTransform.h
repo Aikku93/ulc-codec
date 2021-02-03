@@ -323,8 +323,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! this should work well enough for our purposes, as all
 				//! coefficients are "normalized" to begin with, and this is
 				//! just a slight nudge to improve integer precision.
-				//! NOTE: We should really be using L/R instead of M/S energy,
-				//! but for some reason this seems to make zero difference?
+				//! NOTE: Using M/S makes no difference to using L/R; the
+				//! equations cancel out the inner terms, leaving 2L^2+2R^2.
 				float Norm = 0.0f;
 				const float *MDCTSrc = BufferMDCT;
 				const float *MDSTSrc = BufferMDST;
