@@ -26,7 +26,11 @@ static inline void Block_Transform_MaskingState_Init(
 	const uint32_t *EnergyNp,
 	int   BlockSize
 ) {
-	State->SumShift  = 31 - __builtin_clz(BlockSize); //! Log2[BlockSize]
+	//! The maximum bandwidth of a masking band is 0.2*BlockSize,
+	//! meaning that we can include an extra 2 bits of precision.
+	//! 0.2*BlockSize is never achieved in practice because the
+	//! block is only so big, but this gives us an upper limit.
+	State->SumShift  = 31-2 - __builtin_clz(BlockSize); //! Log2[BlockSize] - UnusedBits
 	State->BandBeg   = 0;
 	State->BandEnd   = 0;
 	State->Energy    = Energy[0];
@@ -99,6 +103,9 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! NOTE: 0x1.6DFB51p-28 == 1/LogScale
 	//! NOTE: The flatness calculation looks janky, but is fully
 	//! derived from the one in ULC_Helper_SpectralFlatness().
+	//! Since we are boosting noise bands, we use Flatness=1.0 for
+	//! the case when we have a single band in the analysis in order
+	//! to boost its power as well (this avoids some bass dropouts).
 	int nBands = BandEnd-BandBeg+1;
 	float LogEnergySum = logf(EnergySum*2); //! *2 to account for scaling in Log[2*x]
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
