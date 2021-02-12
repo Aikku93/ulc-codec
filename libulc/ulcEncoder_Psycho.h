@@ -26,15 +26,15 @@ static inline void Block_Transform_MaskingState_Init(
 	const uint32_t *EnergyNp,
 	int   BlockSize
 ) {
-	//! The maximum bandwidth of a masking band is 0.2*BlockSize,
+	//! The maximum bandwidth of a masking band is 0.25*BlockSize,
 	//! meaning that we can include an extra 2 bits of precision.
-	//! 0.2*BlockSize is never achieved in practice because the
+	//! 0.25*BlockSize is never achieved in practice because the
 	//! block is only so big, but this gives us an upper limit.
-	State->SumShift  = 31-2 - __builtin_clz(BlockSize); //! Log2[BlockSize] - UnusedBits
-	State->BandBeg   = 0;
-	State->BandEnd   = 0;
-	State->Energy    = Energy[0];
-	State->Nepers    = Energy[0] * (uint64_t)EnergyNp[0] >> State->SumShift;
+	State->SumShift = 31-2 - __builtin_clz(BlockSize); //! Log2[BlockSize] - UnusedBits
+	State->BandBeg  = 0;
+	State->BandEnd  = 0;
+	State->Energy   = Energy[0];
+	State->Nepers   = Energy[0] * (uint64_t)EnergyNp[0] >> State->SumShift;
 }
 static inline float Block_Transform_GetMaskedLevel(
 	struct Block_Transform_MaskingState_t *State,
@@ -46,8 +46,11 @@ static inline float Block_Transform_GetMaskedLevel(
 	int BandBeg, BandEnd; {
 		//! These curves are similar to the Bark-scale bandwidths,
 		//! with the assumption that the Bark bands are not discrete
-		BandBeg = (int)(0.9f*Band);
-		BandEnd = (int)(1.1f*Band);
+		//! NOTE: Offset at Band+0.5.
+		//! NOTE: Round up the end band so that we always have at
+		//! least two bands to analyze for spectral flatness.
+		BandBeg = (int)(0.90f*Band + 0.45f);
+		BandEnd = (int)(1.15f*Band + 0x1.933333p0f); //! 0.575 + 0x1.FFFFFFp-1
 		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 	}
 
@@ -103,14 +106,10 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! NOTE: 0x1.6DFB51p-28 == 1/LogScale
 	//! NOTE: The flatness calculation looks janky, but is fully
 	//! derived from the one in ULC_Helper_SpectralFlatness().
-	//! Since we are boosting noise bands, we use Flatness=1.0 for
-	//! the case when we have a single band in the analysis in order
-	//! to boost its power as well (this avoids some bass dropouts).
-	int nBands = BandEnd-BandBeg+1;
 	float LogEnergySum = logf(EnergySum*2); //! *2 to account for scaling in Log[2*x]
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
 	uint64_t r = EnergyLog/EnergySum;
-	float Flatness = (nBands < 2) ? 1.0f : ((LogEnergySum - 0x1.6DFB51p-28f*r) / logf(nBands));
+	float Flatness = (LogEnergySum - 0x1.6DFB51p-28f*r) / logf(BandEnd-BandBeg+1);
 	float MaskedLevel = r*0xF3FCE0F5ull;
 #if 0
 	return MaskedLevel * 0x1.0p-61f * (1.0f + 0.25f*Flatness); //! <- Slight noise emphasis
