@@ -340,7 +340,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
 #if ULC_USE_PSYCHOACOUSTICS
 				const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
-				const float CeilBias = 0x1.FFFFFFp-1f; //! 0.99999... for ceiling
 #endif
 				if(Norm != 0.0f) Norm = 0x1.0p32f / Norm;
 				float Complexity = 0.0f, ComplexityW = 0.0f;
@@ -351,8 +350,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					Complexity  += sqrtf(p) * pNp; //! Using a square root here works better for ABR
 					ComplexityW += sqrtf(p);
 #if ULC_USE_PSYCHOACOUSTICS
-					p   += CeilBias;
-					pNp  = pNp*LogScale + CeilBias;
+					p   = ceilf(p);
+					pNp = ceilf(pNp*LogScale);
 					uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
 					uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
 					BufferEnergy  [n] = ip;
@@ -371,6 +370,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					State->BlockComplexity = Complexity*SQR(Complexity);
 				} else State->BlockComplexity = 0.0f;
 			}
+
 			//! Analyze each channel
 			for(Chan=0;Chan<nChan;Chan++) {
 				//! Analyze each subblock separately
