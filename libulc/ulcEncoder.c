@@ -127,8 +127,10 @@ int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, co
 
 //! Encode block (ABR mode)
 int ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float AvgComplexity) {
+	//! NOTE: As below in VBR mode, I have no idea what the curve should
+	//! be; this was derived experimentally to closely match VBR output.
 	int MaxCoef = Block_Transform(State, SrcData);
-	float TargetKbps = RateKbps * State->BlockComplexity / AvgComplexity;
+	float TargetKbps = RateKbps * powf(State->BlockComplexity / AvgComplexity, 1.31f);
 	return ULC_EncodeBlock_CBR_Core(State, DstBuffer, TargetKbps, MaxCoef);
 }
 
@@ -136,7 +138,9 @@ int ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, co
 
 //! Encode block (VBR mode)
 int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality) {
-	float TargetComplexity = -11.37f*logf(Quality/100.0f);
+	//! NOTE: The constant in front of the logarithm was experimentally
+	//! dervied; I have no idea what relation it bears to actual encoding.
+	float TargetComplexity = 12.06f*logf(100.0f / Quality); //! Or: -12.06*Log[Quality/100], but using Log[x] with x>=1.0 should be more accurate
 	int MaxCoef  = Block_Transform(State, SrcData);
 	int nTargetCoef = State->nChan*State->BlockSize; {
 		//! TargetComplexity == 0 which would result in a

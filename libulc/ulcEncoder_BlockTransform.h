@@ -347,8 +347,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				for(n=0;n<BlockSize;n++) {
 					float p   = fBufferEnergy[n] * Norm;
 					float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
-					Complexity  += sqrtf(p) * pNp; //! Using a square root here works better for ABR
-					ComplexityW += sqrtf(p);
+					Complexity  += p * pNp;
+					ComplexityW += p;
 #if ULC_USE_PSYCHOACOUSTICS
 					p   = ceilf(p);
 					pNp = ceilf(pNp*LogScale);
@@ -363,11 +363,11 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! which will be used as a measure of the block's complexity
 				if(ComplexityW) {
 					//! Entropy doesn't directly translate to quality
-					//! very well, so map it through an X^3 curve
+					//! very well, so map it through a square-root curve
 					float LogComplexityW = logf(ComplexityW * 0x1.6A09E6p0f); //! * Sqrt[2] to account for scaling in Log[x]
-					float LogComplexity = 0.5f*Complexity / ComplexityW;
+					float LogComplexity = Complexity / ComplexityW;
 					Complexity = (LogComplexityW - LogComplexity) / (0x1.62E430p-1f*ComplexityScale); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
-					State->BlockComplexity = Complexity*SQR(Complexity);
+					State->BlockComplexity = sqrtf(Complexity);
 				} else State->BlockComplexity = 0.0f;
 			}
 
