@@ -37,13 +37,11 @@ static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(in
 /**************************************/
 
 //! Build quantizer from weighted average
-//! NOTE: The average is performed over the Neper-domain coefficients, so there is
-//!       no need to apply a further logarithm here to get the base-2 logarithm.
 static inline int Block_Encode_BuildQuantizer(float Sum, float Weight) {
 	//! NOTE: No rounding (ie. this truncates); this favours louder bands.
 	//! NOTE: `q` will always be greater than 5 due to the bias so
 	//! the quantizer code syntax is biased accordingly.
-	int q = (int)(5.0f - 0x1.715476p0f*Sum/Weight); //! 0x1.715476p0 == 1/Ln[2], as input is in natural log
+	int q = (int)(5.0f - 0x1.715476p0f*logf(Sum/Weight)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5; //! Sometimes happens because of overflow?
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -150,7 +148,6 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 	int BlockSize   = State->BlockSize;
 	int Chan, nChan = State->nChan;
 	const float *Coef    = State->TransformBuffer;
-	const float *CoefNp  = State->TransformNepers;
 	const int   *CoefIdx = State->TransformIndex;
 
 	//! Begin coding
@@ -189,33 +186,32 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			//! Level out of range in this quantizer zone?
 			//! NOTE: There is a certain amount of overlap
 			//! between quantizers:
-			//!  8^2 * 2^-1 == x^2 * 2^0
-			//!  x == Sqrt[8^2 * 2^-1]
-			//!    == 5.66
-			//! Since 8.0 is the first value that goes out
-			//! of range of the quantizer, x^2 therefore
-			//! becomes the usable range, ie.:
-			//!  Range_Nepers: Log[8^2 * 2^-1]
-			//! This is approximately 30.1dB.
-			const float LogMaxRange = 0x1.996E1Fp1f;
-			float BandCoef2  = SQR(Coef  [Idx]);
-			float BandCoefNp =    (CoefNp[Idx]);
+			//!  7^2 * 2^-1 == x^2 * 2^0
+			//!  x == Sqrt[7^2 * 2^-1]
+			//! Since 7.0 is the maximum value that goes into a
+			//! quantizer, x^2 therefore becomes the usable range, ie.:
+			//!  Range: 7^2 * 2^-1
+			//! This is approximately 27.8dB.
+			//! NOTE: Using 8^2*2^-1 (30.1dB) was tested and proved inferior.
+			const float MaxRange = 24.5f;
+			float BandCoef   = ABS(Coef[Idx]);
+			float BandCoef2  = SQR(Coef[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
-			if(BandCoefNp < QuantMin) QuantMin = BandCoefNp;
-			if(BandCoefNp > QuantMax) QuantMax = BandCoefNp;
-			if(QuantMax-QuantMin > LogMaxRange) {
+			if(BandCoef < QuantMin) QuantMin = BandCoef;
+			if(BandCoef > QuantMax) QuantMax = BandCoef;
+			if(QuantMax > MaxRange*QuantMin) {
 				//! Write the quantizer zone we just searched through
 				//! and start a new one from this coefficient
 				NextCodedIdx  = WRITE_QUANT_ZONE();
 				QuantStartIdx = Idx;
-				QuantMin    = BandCoefNp;
-				QuantMax    = BandCoefNp;
-				QuantSum    = BandCoef2 * BandCoefNp;
-				QuantWeight = BandCoef2;
+				QuantMin    = BandCoef;
+				QuantMax    = BandCoef;
+				QuantSum    = BandCoef2;
+				QuantWeight = BandCoef;
 			} else {
 				//! Accumulate to the current quantizer zone
-				QuantSum    += BandCoef2 * BandCoefNp;
-				QuantWeight += BandCoef2;
+				QuantSum    += BandCoef2;
+				QuantWeight += BandCoef;
 			}
 		}
 
