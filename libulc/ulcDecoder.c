@@ -85,6 +85,13 @@ void ULC_DecoderState_Destroy(struct ULC_DecoderState_t *State) {
 /**************************************/
 
 //! Decode block
+static inline float Block_Decode_RandomCoef(void) {
+	static uint32_t Seed = 1234567;
+	Seed ^= Seed << 13; //! Xorshift
+	Seed ^= Seed >> 17;
+	Seed ^= Seed <<  5;
+	return (int32_t)Seed * 0x1.0p-31f;
+}
 static inline uint8_t Block_Decode_ReadNybble(const uint8_t **Src, int *Size) {
 	//! Fetch and shift nybble
 	uint8_t x = *(*Src);
@@ -259,29 +266,52 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			if(v != 0x0) {
 				//! Short run?
 				int nZ;
-				if(v != 0xF) nZ = v + 2; //! 8h,1h..Eh: 3 .. 16 zeros
+				if(v < 0xE) nZ = v + 2; //! 8h,1h..Eh: 3 .. 15 zeros
 				else {
-					//! 8h,Fh,Yh,Xh: 33 .. 288 zeros
+					//! 8h,Eh,Zh,Yh,Xh: 31 .. 286 noise samples
+					//! 8h,Fh,Yh,Xh:    31 .. 286 zeros
 					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (nZ<<4);
-					nZ += 33;
+					nZ += 31;
 				}
 
 				//! Clipping to avoid buffer overflow on corrupted blocks
 				if(nZ > CoefRem) nZ = CoefRem;
 
-				//! Insert zeros
+				//! Insert zeros (or do noise-fill)
 				CoefRem -= nZ;
-				do *CoefDst++ = 0.0f; while(--nZ);
+				if(v != 0xE) do *CoefDst++ = 0.0f; while(--nZ);
+				else {
+					//! Noise-fill mode
+					//! NOTE: The scale is quantized in higher precision. See
+					//! ulcEncoder_Encode.h for details.
+					v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
+					float p = (v*v) * Quant * (1 / 8.0f);
+					do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--nZ);
+				}
 				if(CoefRem == 0) break;
 			} else {
 				//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
-				//! 8h,0h,Fh:              Stop
-				Quant = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
-				if(Quant == 0.0f) {
+				//! 8h,0h,Fh,0h:           Stop
+				//! 8h,0h,Fh,1h..Fh,Xh:    Noise-fill
+				float q = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
+				if(q != 0.0f) { Quant = q; continue; }
+
+				//! 8h,0h,Fh,0h:        Stop
+				//! 8h,0h,Fh,1h..Fh,Xh: Noise-fill
+				v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
+				if(!v) {
 					do *CoefDst++ = 0.0f; while(--CoefRem);
-					break;
+				} else {
+					float p = (v*v) * Quant * (1 / 8.0f);
+					v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
+					float Decay = 1.0f - (v*v)*0x1.C5894Dp-9f; //! (1/17)^2
+					do {
+						*CoefDst++ = p * Block_Decode_RandomCoef();
+						p *= Decay;
+					} while(--CoefRem);
 				}
+				break;
 			}
 		}
 

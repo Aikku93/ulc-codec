@@ -12,6 +12,10 @@
 //! 1 == Use psychoacoustic model
 #define ULC_USE_PSYCHOACOUSTICS 1
 
+//! 0 == No noise-fill coding
+//! 1 == Use noise-fill where useful
+#define ULC_USE_NOISE_CODING 1
+
 //! 0 == No window switching
 //! 1 == Use window switching
 #define ULC_USE_WINDOW_SWITCHING 1
