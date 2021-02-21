@@ -34,6 +34,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * No block synchronization (if an encoded file is damaged, there is no way to detect where the next block lies)
     * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
 * The psychoacoustic model used is somewhat bare-bones, so as to avoid extra complexity and memory usage. As an example, blocks are processed with no memory of prior blocks, which could cause some inefficiency in coding (such as not taking advantage of temporal masking effects). However, it does appear to work very well for what it *does* do.
+* Noise-fill works on entire blocks (including all sub-blocks), which can cause leakage, especially with sharp, impulsive noise.
 * Encode/decode tools compile with SSE+SSE2/AVX+AVX2/FMA enabled by default. If the encoder crashes/doesn't work, change these flags in the ```Makefile```.
 
 ## Technical details
@@ -43,6 +44,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
 * MDCT-based encoding (using sine window)
     * Window switching is combined with so-called 'overlap switching', the latter of which varies the size of the overlap segment of transient \[sub]blocks. The idea is to center the transient within a window transition region, at which point overlap switching takes over to clamp down on its leakage without having to switch to use small windows for the entire block, overall resulting in improved quality compared to the more-common '1 long block or N short blocks' strategy.
 * Non-linear coefficient quantization for greater control over dynamic range
+* Noise-fill mode for coefficients that aren't directly coded (similar to PNS)
 * Extremely simple nybble-based syntax (no entropy-code lookups needed)
 
 ## Authors
