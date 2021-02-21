@@ -106,15 +106,22 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! NOTE: 0x1.6DFB51p-28 == 1/LogScale
 	//! NOTE: The flatness calculation looks janky, but is fully
 	//! derived from the one in ULC_Helper_SpectralFlatness().
+	//! NOTE: The brightness hack is only really useful without
+	//! noise-fill. Even then, it can cause some odd artifacts
+	//! in tonal sections.
+#if !ULC_USE_NOISE_CODING
 	float LogEnergySum = logf(EnergySum*2); //! *2 to account for scaling in Log[2*x]
+#endif
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
 	uint64_t r = EnergyLog/EnergySum;
+#if !ULC_USE_NOISE_CODING
 	float Flatness = (LogEnergySum - 0x1.6DFB51p-28f*r) / logf(BandEnd-BandBeg+1);
-	float MaskedLevel = r*0xF3FCE0F5ull;
-#if 0
-	return MaskedLevel * 0x1.0p-61f * (1.0f + 0.25f*Flatness); //! <- Slight noise emphasis
-#else //! Combine the scaling factor (not sure if a compiler would do this automatically)
-	return MaskedLevel * (0x1.0p-61f + 0x1.0p-63f*Flatness);
+#endif
+	float MaskedLevel = (float)(r*0xF3FCE0F5ull);
+#if !ULC_USE_NOISE_CODING
+	return MaskedLevel * (0x1.0p-61f + 0x1.0p-63f*Flatness); //! <- Slight noise emphasis (MaskedLevel * 2^-61 * (1 + 0.25*Flatness))
+#else
+	return MaskedLevel * 0x1.0p-61f;
 #endif
 }
 
