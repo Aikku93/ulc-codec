@@ -99,19 +99,17 @@ int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, uint8_t *DstBuffe
 
 	//! Perform a binary search for the optimal nOutCoef
 	int Lo = 0, Hi = MaxCoef;
-	if(Lo < Hi) {
-		do {
-			nOutCoef = (Lo + Hi) / 2u;
-			Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
-			     if(Size < BitBudget) Lo = nOutCoef;
-			else if(Size > BitBudget) Hi = nOutCoef-1;
-			else {
-				//! Should very, VERY rarely happen, but just in case
-				Lo = nOutCoef;
-				break;
-			}
-		} while(Lo < Hi-1);
-	}
+	if(Lo < Hi) do {
+		nOutCoef = (Lo + Hi) / 2u;
+		Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
+		     if(Size < BitBudget) Lo = nOutCoef;
+		else if(Size > BitBudget) Hi = nOutCoef-1;
+		else {
+			//! Should very, VERY rarely happen, but just in case
+			Lo = nOutCoef;
+			break;
+		}
+	} while(Lo < Hi-1);
 
 	//! Avoid going over budget
 	int nOutCoefFinal = Lo;
