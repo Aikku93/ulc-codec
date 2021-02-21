@@ -17,7 +17,7 @@
 #endif
 /**************************************/
 
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | 'j'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '1'<<24)
 
 /**************************************/
 
@@ -33,12 +33,13 @@ static inline float Clip16(float x) {
 //! File header
 struct FileHeader_t {
 	uint32_t Magic;        //! [00h] Magic value/signature
-	uint32_t MaxBlockSize; //! [04h] Largest block size (in bytes; 0 = Unknown)
-	uint32_t nSamp;        //! [08h] Number of samples
+	uint16_t BlockSize;    //! [04h] Transform block size
+	uint16_t MaxBlockSize; //! [06h] Largest block size (in bytes; 0 = Unknown)
+	uint32_t nBlocks;      //! [08h] Number of blocks
 	uint32_t RateHz;       //! [0Ch] Playback rate
-	uint32_t BlockSize;    //! [10h] Transform block size
-	uint16_t nChan;        //! [14h] Channels in stream
-	uint16_t RateKbps;     //! [16h] Nominal coding rate
+	uint16_t nChan;        //! [10h] Channels in stream
+	uint16_t RateKbps;     //! [12h] Nominal coding rate
+	uint32_t StreamOffs;   //! [14h] Offset of data stream
 };
 
 //! Decoding state
@@ -88,7 +89,8 @@ static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *He
 	State->CacheBuffer = (uint8_t *)(Buf + CacheBuffer_Offs);
 	State->CacheNext   = State->CacheBuffer;
 
-	//! Fill cache
+	//! Seek to start of stream and fill cache
+	fseek(State->FileIn, Header->StreamOffs, SEEK_SET);
 	fread(State->CacheNext, sizeof(uint8_t), CacheSize, State->FileIn);
 }
 
@@ -163,7 +165,7 @@ int main(int argc, const char *argv[]) {
 		int      BlockSize   = Header.BlockSize;
 		float   *BlockBuffer = State.BlockBuffer;
 		int16_t *BlockOutput = State.BlockOutput;
-		size_t   Blk, nBlk = (Header.nSamp + BlockSize-1) / BlockSize + 2; //! +1 to account for coding delay, +1 to account for MDCT delay
+		uint32_t Blk, nBlk = Header.nBlocks;
 		for(Blk=0;Blk<nBlk;Blk++) {
 			//! Show progress
 			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
