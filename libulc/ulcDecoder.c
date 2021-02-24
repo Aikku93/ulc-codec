@@ -305,7 +305,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				} else {
 					float p = (v*v) * Quant * (1 / 8.0f);
 					v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
-					float Decay = 1.0f - (v*v)*0x1.C5894Dp-9f; //! (1/17)^2
+					float Decay = 1.0f - (v*v)*0x1.0p-10f; //! (1/32)^2
 					do {
 						*CoefDst++ = p * Block_Decode_RandomCoef();
 						p *= Decay;

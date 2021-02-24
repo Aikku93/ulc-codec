@@ -90,7 +90,7 @@ A channel's block may begin with ```[8h,0h,]Fh[,0h]```; this means that the chan
 
 The first nybble of the command signals the noise amplitude, which is unpacked as ```Amplitude = [first nybble]^2 * Quantizer / 8```. Note that the amplitude is scaled by 1/8; this is due to the greater dynamic range relative to normal coefficients.
 
-The second nybble specifies the decay rate. This is unpacked as ```Decay = 1 - (([second nybble]+1) / 17)^2```, giving an effective range of (-0.03 .. -18.8)dB/coefficient with more accuracy for gradual roll-offs.
+The second nybble specifies the decay rate. This is unpacked as ```Decay = 1 - (([second nybble]+1) / 32)^2```, giving an effective range of (-0.008 .. -2.5)dB/coefficient with more accuracy for gradual roll-offs.
 
 For each of the remaining coefficients in the block, noise is used in place of encoded coefficients as follows:
 
