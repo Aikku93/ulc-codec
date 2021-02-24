@@ -318,17 +318,23 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 					//!  However, the sum cancels out completely in the middle
 					//!  sections, leading to:
 					//!    (Log[c[N]] - Log[c[1]]) / N
+					//!  And finally, exponentiating:
+					//!   (c[N] / c[1]) ^ (1/N)
+					//! NOTE: This is summed as squares, so the exponent is
+					//! scaled by 1/2 to apply a square root.
+					//! NOTE: 0x1.6A09E6p1 = 2*Sqrt[2]. I have no idea why this
+					//! works or why it cancels the 1/2 term for the square root.
 					float Beg = 0.0f, End = 0.0f;
 					for(Band=NextCodedIdx;Band<ChanLastIdx;Band++) {
 						float c2 = SQR(Coef[Band]);
 						Beg += c2 * (ChanLastIdx - Band);
 						End += c2 * (Band - NextCodedIdx + 1);
 					}
-					float Decay = powf(End / Beg, 1.0f / (n*2)); //! *2 for square root in the RMS sum
+					float Decay = powf(End / Beg, 0x1.6A09E6p1f / n);
 
 					//! Decay is mapped through an inverted Sqrt curve for higher accuracy
 					Decay = (Decay > 1.0f) ? 0.0f : sqrtf(1.0f - Decay);
-					NoiseDecay = (int)(Decay*17 - 1 + 0.5f);
+					NoiseDecay = (int)(Decay*32 - 1 + 0.5f);
 					if(NoiseDecay < 0x0) NoiseDecay = 0x0;
 					if(NoiseDecay > 0xF) NoiseDecay = 0xF;
 				}
