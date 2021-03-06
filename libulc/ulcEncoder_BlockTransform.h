@@ -19,21 +19,16 @@
 //! NOTE:
 //!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
 static inline void Block_Transform_WriteNepersAndIndices(
-	      float    *CoefIdx,
+	      float *CoefIdx,
 #if ULC_USE_PSYCHOACOUSTICS
-	const uint32_t *Energy,
-	const uint32_t *EnergyNp,
+	const float *MaskingNp,
 #endif
-	const float    *Coef,
-	      float    *CoefNp,
-	      int      *nNzCoef,
-	      int       BlockSize
+	const float *Coef,
+	      float *CoefNp,
+	      int   *nNzCoef,
+	      int    BlockSize
 ) {
 	int Band;
-#if ULC_USE_PSYCHOACOUSTICS
-	struct Block_Transform_MaskingState_t MaskingState;
-	Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, BlockSize);
-#endif
 	for(Band=0;Band<BlockSize;Band++) {
 		float Val = Coef[Band];
 
@@ -42,13 +37,15 @@ static inline void Block_Transform_WriteNepersAndIndices(
 			CoefNp [Band] = ULC_COEF_NEPER_OUT_OF_RANGE;
 			CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
 		} else {
-			float ValNp = CoefNp[Band] = logf(ABS(Val));
+			float ValNp = logf(ABS(Val));
+			float MaskedValNp = ValNp;
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
-			ValNp -= Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, BlockSize);
+			MaskedValNp = MaskedValNp*3 - MaskingNp[Band];
 #endif
 			//! Store the sort value for this coefficient
-			CoefIdx[Band] = ValNp;
+			CoefNp [Band] = ValNp;
+			CoefIdx[Band] = MaskedValNp;
 			(*nNzCoef)++;
 		}
 	}
@@ -208,8 +205,10 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		float *BufferIndex   = (float*)State->TransformIndex;
 		float *BufferFwdLap  = State->TransformFwdLap;
 		float *BufferTemp    = State->TransformTemp;
-		float *BufferMDST    = BufferNepers; //! NOTE: Aliasing of BufferNepers
-
+		float *BufferMDST    = BufferNepers;                       //! NOTE: Aliasing of BufferNepers
+#if ULC_USE_PSYCHOACOUSTICS
+		float *MaskingNp     = BufferNepers + (nChan-1)*BlockSize; //! NOTE: Aliasing of BufferNepers in last channel
+#endif
 		//! Apply M/S transform to the data
 		//! NOTE: Fully normalized; not orthogonal.
 		if(nChan == 2) for(n=0;n<BlockSize;n++) {
@@ -369,6 +368,12 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					Complexity = (LogComplexityW - LogComplexity) / (0x1.62E430p-1f*ComplexityScale); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
 					State->BlockComplexity = sqrtf(Complexity);
 				} else State->BlockComplexity = 0.0f;
+#if ULC_USE_PSYCHOACOUSTICS
+				//! Buffer the psychoacoustics analysis into the last channel's buffer
+				//! so that we can save a bit of memory to store these values into and
+				//! avoid re-calculating for each channel, as the analysis isn't cheap
+				Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferEnergy, BufferEnergyNp, BlockSize, DecimationPattern);
+#endif
 			}
 
 			//! Analyze each channel
@@ -383,8 +388,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					Block_Transform_WriteNepersAndIndices(
 						BufferIndex,
 #if ULC_USE_PSYCHOACOUSTICS
-						BufferEnergy,
-						BufferEnergyNp,
+						MaskingNp,
 #endif
 						BufferMDCT,
 						BufferNepers,
@@ -393,18 +397,16 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					);
 
 					//! Move to the next subblock
-					BufferMDCT     += SubBlockSize;
-					BufferNepers   += SubBlockSize;
-					BufferIndex    += SubBlockSize;
+					BufferMDCT   += SubBlockSize;
+					BufferNepers += SubBlockSize;
+					BufferIndex  += SubBlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
-					BufferEnergy   += SubBlockSize;
-					BufferEnergyNp += SubBlockSize;
+					MaskingNp    += SubBlockSize;
 #endif
 				}
 #if ULC_USE_PSYCHOACOUSTICS
 				//! Psychoacoustic analysis is re-used across channels - rewind
-				BufferEnergy   -= BlockSize;
-				BufferEnergyNp -= BlockSize;
+				MaskingNp -= BlockSize;
 #endif
 			}
 		}

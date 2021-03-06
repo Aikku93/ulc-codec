@@ -81,48 +81,66 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! normalized about its L1 norm.
 	//! NOTE: EnergySum must scale down, as EnergyLog cannot
 	//! scale up the necessary bits without potential overflow.
-	//! NOTE: This value will be subtracted from the Neper-domain
-	//! amplitude of the MDCT coefficient. The overall idea of
-	//! the implemented model is to form this equation:
-	//!  ImportanceLevel = CoefficientAmplitude * BandPower/BackgroundPower
-	//! In the log domain, this becomes:
-	//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[BandPower]-Log[BackgroundPower]
-	//! In this function, we are calculating Log[BackgroundPower],
-	//! and thus we need Log[CoefficientAmplitude] as well as
-	//! Log[BandPower]. From testing, using the MDCT+MDST
-	//! squared amplitude as BandPower results in inferior
-	//! results compared to the squared amplitude of
-	//! CoefficientAmplitude. So we can then state:
-	//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[CoefficientAmplitude^2]-Log[BackgroundPower]
-	//!                       = Log[CoefficientAmplitude] + 2*Log[CoefficientAmplitude]-Log[BackgroundPower]
-	//!                       = 3*Log[CoefficientAmplitude] - Log[BackgroundPower]
-	//! And finally, since ImportanceLevel is scale-invariant
-	//! for our purposes, we divide by 3 on both sides:
-	//!  Log[ImportanceLevel]/3 = Log[CoefficientAmplitude] - Log[BackgroundPower]/3
-	//! Which allows folding the scaling constant into the
-	//! expansion back from fixed-point integer maths.
-	//! NOTE: F3FCE0F5h == Floor[(1/LogScale)*(1/3) * 2^61 + 0.5]
+	//! NOTE: 0x1.6DFB51p-28 == (1/LogScale)
 	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
-	//! NOTE: 0x1.6DFB51p-28 == 1/LogScale
-	//! NOTE: The flatness calculation looks janky, but is fully
-	//! derived from the one in ULC_Helper_SpectralFlatness().
-	//! NOTE: The brightness hack is only really useful without
-	//! noise-fill. Even then, it can cause some odd artifacts
-	//! in tonal sections.
-#if !ULC_USE_NOISE_CODING
-	float LogEnergySum = logf(EnergySum*2); //! *2 to account for scaling in Log[2*x]
-#endif
-	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
-	uint64_t r = EnergyLog/EnergySum;
-#if !ULC_USE_NOISE_CODING
-	float Flatness = (LogEnergySum - 0x1.6DFB51p-28f*r) / logf(BandEnd-BandBeg+1);
-#endif
-	float MaskedLevel = (float)(r*0xF3FCE0F5ull);
-#if !ULC_USE_NOISE_CODING
-	return MaskedLevel * (0x1.0p-61f + 0x1.0p-63f*Flatness); //! <- Slight noise emphasis (MaskedLevel * 2^-61 * (1 + 0.25*Flatness))
-#else
-	return MaskedLevel * 0x1.0p-61f;
-#endif
+	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0); if(EnergySum == 0) return -0x1.62E430p4f;
+	return (float)(EnergyLog/EnergySum) * 0x1.6DFB51p-28f;
+}
+
+/**************************************/
+
+static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, const uint32_t *Energy, const uint32_t *EnergyNp, int BlockSize, const int8_t *DecimationPattern) {
+	struct Block_Transform_MaskingState_t MaskingState;
+
+	//! Masking is performed for each sub-block, independent of each other
+	const float *MaskingNpEnd = MaskingNp + BlockSize;
+	int SubBlockIdx;
+	for(SubBlockIdx=0;(MaskingNp < MaskingNpEnd);SubBlockIdx++) {
+		int Band;
+		int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
+		Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, SubBlockSize);
+
+		//! Perform simultaneous masking and forwards spreading
+		//! NOTE: Backwards spreading is not used here for simplicity
+		//! and because its masking effects are extremely weak.
+		//! NOTE: This value will be subtracted from the Neper-domain
+		//! amplitude of the MDCT coefficient. The overall idea of
+		//! the implemented model is to form this equation:
+		//!  ImportanceLevel = CoefficientAmplitude * BandPower/BackgroundPower
+		//! In the log domain, this becomes:
+		//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[BandPower]-Log[BackgroundPower]
+		//! In this function, we are calculating Log[BackgroundPower],
+		//! and thus we need Log[CoefficientAmplitude] as well as
+		//! Log[BandPower]. From testing, using the MDCT+MDST
+		//! squared amplitude as BandPower results in inferior
+		//! results compared to the squared amplitude of
+		//! CoefficientAmplitude. So we can then state:
+		//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[CoefficientAmplitude^2]-Log[BackgroundPower]
+		//!                       = Log[CoefficientAmplitude] + 2*Log[CoefficientAmplitude]-Log[BackgroundPower]
+		//!                       = 3*Log[CoefficientAmplitude] - Log[BackgroundPower]
+		//! And finally, since ImportanceLevel is scale-invariant
+		//! for our purposes, we divide by 3 on both sides:
+		//!  Log[ImportanceLevel]/3 = Log[CoefficientAmplitude] - Log[BackgroundPower]/3
+#define GET_MASKED_LEVEL(Band) Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, SubBlockSize)
+		float Tap; {
+			float vNp = GET_MASKED_LEVEL(0);
+			Tap = expf(vNp);
+			MaskingNp[0] = vNp;
+		}
+		for(Band=1;Band<SubBlockSize;Band++) {
+			float vNp  = GET_MASKED_LEVEL(Band);
+			float vLin = expf(vNp);
+			float Decay = 1.0f / (1.0f + SQR(Band)/(float)SubBlockSize);
+			Tap *= Decay;
+			if(vLin > Tap) Tap += vLin * (1.0f-Decay);
+			MaskingNp[Band] = logf(Tap);
+		}
+#undef GET_MASKED_LEVEL
+		//! Advance buffers
+		MaskingNp += SubBlockSize;
+		Energy    += SubBlockSize;
+		EnergyNp  += SubBlockSize;
+	}
 }
 
 /**************************************/
