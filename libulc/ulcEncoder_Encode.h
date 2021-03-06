@@ -91,11 +91,12 @@ static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int N) 
 	}
 
 	//! Quantize mean amplitude into final code
+	//! NOTE: Average of noise is 0.5, so compensate by scaling by 2.0.
 	//! NOTE: This is encoded at higher precision, because it spans
 	//! the full 4bit range, meaning we have an extra Log2[16^2 / 7^2]
 	//! bits to play with (2.385 bits, so use 3.0 for simplicity,
 	//! especially since noise should be lower than the maximum value).
-	int NoiseQ = (int)sqrtf(Mean * 8.0f*q); //! <- Round down
+	int NoiseQ = (int)sqrtf(Mean*2.0f * 8.0f*q); //! <- Round down
 	if(NoiseQ > 0xF+1) NoiseQ = 0xF+1;
 	return NoiseQ;
 }
