@@ -207,15 +207,17 @@ static inline int Block_Transform_GetWindowCtrl(
 		break;
 	}
 
+	//! Re-map the ratio to better fit the overlap scaling,
+	//! and compress back from the expanded (X^8) domain.
+	//! NOTE: I'm not entirely sure why this works, but it
+	//! appears to resemble a 1/Tanh[E^(Ratio/8)] curve.
+	if(Ratio > 0.0f) Ratio = 1.0f + SQR(Ratio * (1.0f/8));
+
 	//! Determine the overlap scaling for the transition region
-	//! NOTE: The ratio was computed in an expanded domain, so
-	//! we compensate by compressing it again (1/8). On top of
-	//! that, we expand to the X^2 domain, as this appears to
-	//! give better results.
 	int OverlapScale = 0;
-	if(Ratio >= 0x1.62E430p0f) {      //! Log[Ratio] >= Log[2^(0.5 * 8/2)]
-		if(Ratio < 0x1.205967p4f) //! Log[Ratio] <  Log[2^(6.5 * 8/2)]
-			OverlapScale = (int)(0x1.715476p-2f*Ratio + 0.5f); //! (1/Log[2])*(2/8)
+	if(Ratio >= 0x1.6A09E6p0f) {      //! Ratio >= 2^0.5
+		if(Ratio < 0x1.6A09E6p6f) //! Ratio <  2^6.5
+			OverlapScale = (int)(0x1.715476p0f*logf(Ratio) + 0.5f); //! 1/Log[2]
 		else
 			OverlapScale = 7;
 		while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
