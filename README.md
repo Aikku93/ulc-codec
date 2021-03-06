@@ -35,6 +35,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
     * It should be possible to prepend each block with the two-byte nybble sequence ```0h,0h,0h,0h```. Such a sequence could only happen at the start of a block (set quantizer to 2<sup>0</sup>, followed by three zero coefficients) and never in any other place (as four zero coefficients would be coded as ```8h,1h```), avoiding false-positives.
 * The psychoacoustic model used is somewhat bare-bones, so as to avoid extra complexity and memory usage. As an example, blocks are processed with no memory of prior blocks, which could cause some inefficiency in coding (such as not taking advantage of temporal masking effects). However, it does appear to work very well for what it *does* do.
 * Noise-fill works on entire blocks (including all sub-blocks), which can cause leakage, especially with sharp, impulsive noise.
+    * Because noise-fill is not coupled to the L/R signal (as this is a patented technique), noise will leak to both channels when used.
 * Encode/decode tools compile with SSE+SSE2/AVX+AVX2/FMA enabled by default. If the encoder crashes/doesn't work, change these flags in the ```Makefile```.
 
 ## Technical details
