@@ -41,7 +41,7 @@ static inline void Block_Transform_WriteNepersAndIndices(
 			float MaskedValNp = ValNp;
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
-			MaskedValNp = MaskedValNp*3 - MaskingNp[Band];
+			MaskedValNp -= MaskingNp[Band];
 #endif
 			//! Store the sort value for this coefficient
 			CoefNp [Band] = ValNp;
