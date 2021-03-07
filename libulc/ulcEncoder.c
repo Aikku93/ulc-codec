@@ -42,16 +42,16 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	int SampleBuffer_Size    = sizeof(float) * (nChan* BlockSize   );
 	int TransformBuffer_Size = sizeof(float) * (nChan* BlockSize   );
 	int TransformNepers_Size = sizeof(float) * (nChan* BlockSize   );
-	int TransientEnergy_Size = sizeof(float) * (       BlockSize   );
 	int TransformFwdLap_Size = sizeof(float) * (nChan*(BlockSize/2));
+	int TransientEnergy_Size = sizeof(float) * (       BlockSize   );
 	int TransformTemp_Size   = sizeof(float) * ((nChan + (nChan < 2)) * BlockSize);
 	int TransformIndex_Size  = sizeof(int)   * (nChan* BlockSize   );
 	int SampleBuffer_Offs    = 0;
 	int TransformBuffer_Offs = SampleBuffer_Offs    + SampleBuffer_Size;
 	int TransformNepers_Offs = TransformBuffer_Offs + TransformBuffer_Size;
-	int TransientEnergy_Offs = TransformNepers_Offs + TransformNepers_Size;
-	int TransformFwdLap_Offs = TransientEnergy_Offs + TransientEnergy_Size;
-	int TransformTemp_Offs   = TransformFwdLap_Offs + TransformFwdLap_Size;
+	int TransformFwdLap_Offs = TransformNepers_Offs + TransformNepers_Size;
+	int TransientEnergy_Offs = TransformFwdLap_Offs + TransformFwdLap_Size;
+	int TransformTemp_Offs   = TransientEnergy_Offs + TransientEnergy_Size;
 	int TransformIndex_Offs  = TransformTemp_Offs   + TransformTemp_Size;
 	int AllocSize            = TransformIndex_Offs  + TransformIndex_Size;
 
@@ -64,8 +64,8 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->SampleBuffer    = (float*)(Buf + SampleBuffer_Offs);
 	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
 	State->TransformNepers = (float*)(Buf + TransformNepers_Offs);
-	State->TransientEnergy = (float*)(Buf + TransientEnergy_Offs);
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
+	State->TransientEnergy = (float*)(Buf + TransientEnergy_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
 
@@ -74,8 +74,8 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
 	State->TransientCompressorGain = 0.0f;
 	for(i=0;i<nChan*(BlockSize  );i++) State->SampleBuffer   [i] = 0.0f;
-	for(i=0;i<      (BlockSize  );i++) State->TransientEnergy[i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
+	for(i=0;i<      (BlockSize  );i++) State->TransientEnergy[i] = 0.0f;
 
 	//! Success
 	return 1;
