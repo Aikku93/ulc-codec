@@ -54,11 +54,6 @@ static inline void Block_Transform_WriteNepersAndIndices(
 /**************************************/
 
 //! Transform a block and prepare its coefficients
-static float *Block_Transform_SortComparator_KeysArray;
-static int Block_Transform_SortComparator(const void *a, const void *b) {
-	const float *BufferIdx = Block_Transform_SortComparator_KeysArray;
-	return (BufferIdx[*(int*)a] < BufferIdx[*(int*)b]) ? (+1) : (-1);
-}
 static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
 	//! The interleaving patterns here were chosen to try and
 	//! optimize coefficient clustering across block sizes
@@ -172,6 +167,59 @@ static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSi
 			}
 		} break;
 	}
+}
+static inline void Block_Transform_SortIndices_SiftDown(const float *SortValues, int *Order, int Root, int N) {
+	for(;;) {
+		//! For as long as this root has at least one child...
+		int Child = 2*Root+1;
+		if(Child < N) {
+			//! Get the values of the root and child
+			//! NOTE: If a sibling exists, check it also.
+			float RootVal  = SortValues[Order[Root]];
+			float ChildVal = SortValues[Order[Child]], v;
+			if(Child+1 < N && (v = SortValues[Order[Child+1]]) < ChildVal)
+				Child++, ChildVal = v;
+
+			//! Out of order? Swap and continue. Otherwise done
+			if(ChildVal < RootVal) {
+				int t        = Order[Root];
+				Order[Root]  = Order[Child];
+				Order[Child] = t;
+				Root = Child;
+				continue;
+			}
+		}
+		break;
+	}
+}
+static inline void Block_Transform_SortIndices(int *SortedIndices, const float *SortValues, int *Temp, int N) {
+	int n;
+
+	//! Start with mapping the indices directly
+	int *Order = Temp;
+	for(n=0;n<N;n++) Order[n] = n;
+
+	//! Begin sorting
+	//! NOTE: This was heavily borrowed from Rosetta Code (Heapsort).
+	//! qsort() has some edge cases that degrade performance enough
+	//! to roll our own variant here.
+	{
+		//! Heapify the array
+		n = N/2u - 1;
+		do Block_Transform_SortIndices_SiftDown(SortValues, Order, n, N); while(--n >= 0);
+
+		//! Pop all elements off the heap one at a time
+		n = N-1;
+		do {
+			int t = Order[n];
+			Order[n] = Order[0];
+			Order[0] = t;
+			Block_Transform_SortIndices_SiftDown(SortValues, Order, 0, n);
+		} while(--n);
+	}
+
+	//! Remap indices based on their sort order
+	for(n=0;n<N;n++) SortedIndices[Order[n]] = n;
 }
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) {
 	int nChan     = State->nChan;
@@ -429,17 +477,10 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	}
 
 	//! Create the coefficient sorting indices
-	//! TODO: Be more efficient; this is suboptimal, but
-	//! fixing would require implementing a customized
-	//! sorting routine
 	{
-		int Idx, nIdx = nChan * BlockSize;
 		int *BufferTmp = (int*)State->TransformTemp;
 		int *BufferIdx = State->TransformIndex;
-		for(Idx=0;Idx<nIdx;Idx++) BufferTmp[Idx] = Idx;
-		Block_Transform_SortComparator_KeysArray = (float*)State->TransformIndex;
-		qsort(BufferTmp, nIdx, sizeof(int), Block_Transform_SortComparator);
-		for(Idx=0;Idx<nIdx;Idx++) BufferIdx[BufferTmp[Idx]] = Idx;
+		Block_Transform_SortIndices(BufferIdx, (float*)BufferIdx, BufferTmp, nChan * BlockSize);
 	}
 	return nNzCoef;
 }
