@@ -99,11 +99,11 @@ static inline float Block_Transform_GetMaskedLevel(
 	//!  Log[ImportanceLevel]/3 = Log[CoefficientAmplitude] - Log[BackgroundPower]/3
 	//! NOTE: EnergySum must scale down, as EnergyLog cannot
 	//! scale up the necessary bits without potential overflow.
-	//! NOTE: 0x1.E7F9C2p-30 == (1/LogScale) / 3
+	//! NOTE: F3FCE0F5h == Floor[0.5 + 2^61*(1/LogScale)/3]
 	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
 	if(EnergySum == 0) return 0.0f; //! <- Doesn't matter; no coefficient will use this
-	return (float)(EnergyLog/EnergySum) * 0x1.E7F9C2p-30f;
+	return (float)(EnergyLog/EnergySum * 0xF3FCE0F5ull) * 0x1.0p-61f;
 }
 
 /**************************************/
