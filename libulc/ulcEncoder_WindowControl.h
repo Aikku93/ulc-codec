@@ -210,7 +210,8 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! Re-map the ratio to better fit the overlap scaling,
 	//! and compress back from the expanded (X^8) domain.
 	//! NOTE: I'm not entirely sure why this works, but it
-	//! appears to resemble a 1/Tanh[E^(Ratio/8)] curve.
+	//! appears to resemble a 1/Tanh[E^(-Ratio/8)] curve
+	//! for Ratio <= 10.
 	if(Ratio > 0.0f) Ratio = 1.0f + SQR(Ratio * (1.0f/8));
 
 	//! Determine the overlap scaling for the transition region
