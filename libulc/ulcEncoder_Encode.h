@@ -9,6 +9,10 @@
 #include "Fourier.h"
 #include "ulcEncoder.h"
 /**************************************/
+#if ULC_USE_NOISE_CODING
+# include "ulcEncoder_NoiseFill.h"
+#endif
+/**************************************/
 
 static inline __attribute__((always_inline)) void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
 	//! Push nybble
@@ -63,94 +67,6 @@ static inline int Block_Encode_Quantize(float v, float q) {
 /**************************************/
 
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
-#if ULC_USE_NOISE_CODING
-static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int N) {
-	int Band;
-
-	//! Perform first-pass average
-	float Mean = 0.0f;
-	for(Band=0;Band<N;Band++) Mean += ABS(Coef[Band]);
-	Mean /= N;
-
-	//! Re-weight the coefficients according to their distance
-	//! from the mean. The first pass will have a bias towards
-	//! the center of mass, so that if the average is quiet,
-	//! this will pull the new average down further (with the
-	//! idea being to avoid noise-fill in tones).
-	{
-		float Sum = 0.0f, SumW = 0.0f;
-		for(Band=0;Band<N;Band++) {
-			//! NOTE: (c-Mean)^2 should never be larger than 1.0,
-			//! but we add 0.5 to account for any rounding error.
-			float c = ABS(Coef[Band]);
-			float w = 1.5f - SQR(c - Mean);
-			Sum  += w*c;
-			SumW += w;
-		}
-		Mean = Sum / SumW;
-	}
-
-	//! Quantize mean amplitude into final code
-	//! NOTE: Average of noise is 0.5, so compensate by scaling by 2.0.
-	//! NOTE: This is encoded at higher precision, because it spans
-	//! the full 4bit range, meaning we have an extra Log2[16^2 / 7^2]
-	//! bits to play with (2.385 bits, so use 3.0 for simplicity,
-	//! especially since noise should be lower than the maximum value).
-	int NoiseQ = (int)sqrtf(Mean*2.0f * 8.0f*q); //! <- Round down
-	if(NoiseQ > 0xF+1) NoiseQ = 0xF+1;
-	return NoiseQ;
-}
-static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, const float *CoefNp, float q, int N, int *_NoiseQ, int *_NoiseDecay) {
-	int Band;
-
-	//! Estimate the amplitude and decay parameters
-	float Amplitude = 0.0f;
-	float Decay     = 0.0f; {
-		//! NOTE: Calling this function means that we always have at least
-		//! one coefficient prior to what was passed in Coef/CoefNp, so
-		//! reading into cNpTap is safe.
-		const float MinLog = -0x1.62E430p4f; //! Log[2^-32]
-		float AmpSum  = 0.0f, AmpSumW  = 0.0f;
-		float StepSum = 0.0f, StepSumW = 0.0f;
-		float cNpTap = CoefNp[-1]; if(cNpTap == ULC_COEF_NEPER_OUT_OF_RANGE) cNpTap = MinLog;
-		for(Band=0;Band<N;Band++) {
-			float c   = Coef[Band];
-			float cNp = CoefNp[Band]; if(cNp == ULC_COEF_NEPER_OUT_OF_RANGE) cNp = MinLog;
-
-			//! Accumulate the amplitude as a smooth-max. The step is
-			//! heavily weighted against large coefficients so that
-			//! tonal sections (which will have small coefficients)
-			//! have a very fast decay. Setting the constant in the
-			//! StepW calculation to be smaller enhances this effect
-			//! and setting it too large (eg. 1.0) will have very
-			//! little effect and will sound bad.
-			float Step  = cNp - cNpTap;
-			float StepW = 0.001f / (0.001f + SQR(c));
-			StepSum  += StepW * Step;
-			StepSumW += StepW;
-			AmpSum   += SQR(c);
-			AmpSumW  += ABS(c);
-			cNpTap    = cNp;
-		}
-		if(AmpSum) {
-			Amplitude =     (AmpSum  / AmpSumW );
-			Decay     = expf(StepSum / StepSumW);
-		}
-	}
-
-	//! Quantize amplitude and decay
-	     if(Decay < SQR(1/32.0f)*0.5f) Amplitude = 0.0f; //! Disable fill with too fast decay
-	else if(Decay > 1.0f) Decay = 0.0f;
-	else                  Decay = sqrtf(1.0f - Decay);   //! <- Re-map
-	int NoiseQ     = (int)sqrtf(Amplitude * q);          //! <- Round down
-	int NoiseDecay = (int)(Decay*32 - 1 + 0.5f);
-	if(NoiseQ     > 0xF) NoiseQ     = 0xF;
-	if(NoiseDecay < 0x0) NoiseDecay = 0x0;
-	if(NoiseDecay > 0xF) NoiseDecay = 0xF;
-	*_NoiseQ     = NoiseQ;
-	*_NoiseDecay = NoiseDecay;
-}
-#endif
 static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQuantizerZone(
 	int       CurIdx,
 	int       EndIdx,
@@ -163,9 +79,9 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	uint8_t **DstBuffer,
 	int      *Size,
 	int       nOutCoef,
-	int       AllowNoiseFill
+	int       WindowCtrl
 ) {
-	(void)AllowNoiseFill; //! For ULC_USE_NOISE_CODING == 0
+	(void)WindowCtrl; //! WindowCtrl is only used with ULC_USE_NOISE_CODING
 
 	//! Write/update the quantizer
 	float q; {
@@ -207,10 +123,10 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				//! However, with small BlockSize (or SubBlockSize when
 				//! decimating), smaller runs are useful.
 				int NoiseQ = 0;
-				if(AllowNoiseFill && zR >= 31) {
+				if(zR >= 31) {
 					v = zR - 31; if(v > 0xFF) v = 0xFF;
 					n = v + 31;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, Coef+NextCodedIdx, n);
+					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, Coef, NextCodedIdx, n, WindowCtrl);
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0xE,      DstBuffer, Size);
@@ -273,29 +189,14 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 	int BlockSize   = State->BlockSize;
 	int Chan, nChan = State->nChan;
 	const float *Coef    = State->TransformBuffer;
-#if ULC_USE_NOISE_CODING
-	const float *CoefNp  = State->TransformNepers;
-#endif
 	const int   *CoefIdx = State->TransformIndex;
 
 	//! Begin coding
-	//! TODO: Only disable noise fill when the overall energy changes
-	//! too much /within/ the block; shouldn't matter whether or not
-	//! it is decimating, only that single-subblock changes are not
-	//! too extreme. For now, we disable noise-fill on "strong"
-	//! decimation on the off chance that the signal prior to the
-	//! transient is quiet (as noise-filling would smear the noise
-	//! backwards in time and destroy our efforts to avoid pre-echo).
-	//! TODO: Disable noise-fill on a per-band basis?
 	int Idx  = 0;
 	int Size = 0; //! Block size (in bits)
-	Block_Encode_WriteNybble(State->WindowCtrl, &DstBuffer, &Size);
-	if(State->WindowCtrl & 0x8) Block_Encode_WriteNybble(State->WindowCtrl >> 4, &DstBuffer, &Size);
-#if ULC_USE_NOISE_CODING
-	int AllowNoiseFill = (State->WindowCtrl & 0xF0) < 0x40; //! N/4 or further decimation = No noise fill
-#else
-	int AllowNoiseFill = 0;
-#endif
+	int WindowCtrl = State->WindowCtrl;
+	Block_Encode_WriteNybble(WindowCtrl, &DstBuffer, &Size);
+	if(WindowCtrl & 0x8) Block_Encode_WriteNybble(WindowCtrl >> 4, &DstBuffer, &Size);
 	for(Chan=0;Chan<nChan;Chan++) {
 		int   NextCodedIdx  = Idx;
 		int   PrevQuant     = -1;
@@ -318,7 +219,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 		&DstBuffer, \
 		&Size, \
 		nOutCoef, \
-		AllowNoiseFill \
+		WindowCtrl \
 	)
 		for(;;Idx++) {
 			//! Seek the next coefficient
@@ -376,8 +277,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(PrevQuant != -1) {
 				int NoiseQ = 0, NoiseDecay = 0;
 #if ULC_USE_NOISE_CODING
-				if(AllowNoiseFill)
-					Block_Encode_EncodePass_GetHFExtParams(Coef+NextCodedIdx, CoefNp+NextCodedIdx, (float)(8u << PrevQuant), n, &NoiseQ, &NoiseDecay);
+				Block_Encode_EncodePass_GetHFExtParams(Coef, (float)(8u << PrevQuant), NextCodedIdx, ChanLastIdx-BlockSize, n, WindowCtrl, &NoiseQ, &NoiseDecay);
 #endif
 				Block_Encode_WriteNybble(NoiseQ, &DstBuffer, &Size);
 				if(NoiseQ) Block_Encode_WriteNybble(NoiseDecay, &DstBuffer, &Size);
