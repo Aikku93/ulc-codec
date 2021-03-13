@@ -106,7 +106,11 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! overflow during subsequent calculations.
 	{
 		const float Decay = 0x1.C8520Bp-1f;                 //! Smoothness of SmoothedEnergy; -1.0dB/sample (10^(-1.0/20))
+#if 0 //! Too many subnormals at low amplitudes
 		      float Norm  = 0x1.8386AFp-7f * 0.25f / nChan; //! (1-Decay)^2 * BandpassEnergyGain^-1. Squaring cancels after the square root
+#else
+		      float Norm  = 0.25f / nChan;
+#endif
 		float *Buf = StepBuffer;
 		float SmoothGain = *CompressorGain;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
