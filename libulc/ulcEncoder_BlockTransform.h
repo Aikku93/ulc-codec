@@ -387,53 +387,55 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! and so when the final masked levels are computed, the
 				//! Re^2+Im^2 cancels out to 1.0), but this probably bears more
 				//! investigation before this comment can be removed/corrected.
+				//! NOTE: We simultaneously compute the complexity here, using
+				//! a simplified approach to spectral flatness to avoid using
+				//! logarithms in this loop.
+				//! NOTE: Using the raw [absolute] value appears to improve
+				//! noise-masks-tone analysis, increasing perceived brightness.
 				float Norm = 0.0f;
+				float Complexity = 0.0f, ComplexityW = 0.0f;
+				const float *MDCTSrc = BufferMDCT;
 				const float *MDSTSrc = BufferMDST;
 				for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-					float Im = *MDSTSrc++;
-					float v = (fBufferEnergy[n] += SQR(Im));
+					float Re = *MDCTSrc++, Re2 = SQR(Re);
+					float Im = *MDSTSrc++, Im2 = SQR(Im);
+					float v = (fBufferEnergy[n] += ABS(Im));
 					if(v > Norm) Norm = v;
+					float Abs2 = Re2 + Im2;
+					Complexity += Abs2, ComplexityW += sqrtf(Abs2);
 				}
-
+				if(Complexity) {
+					//! Entropy doesn't directly translate to quality
+					//! very well, so map it through a square-root curve
+					float ComplexityScale = 0x1.62E430p-1f*(31 - __builtin_clz(BlockSize)); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
+					Complexity = logf(SQR(ComplexityW) / Complexity) / ComplexityScale;
+					if(Complexity < 0.0f) Complexity = 0.0f; //! In case of round-off error
+					if(Complexity > 1.0f) Complexity = 1.0f;
+					State->BlockComplexity = Complexity;
+				} else State->BlockComplexity = 0.0f;
+#if ULC_USE_PSYCHOACOUSTICS
 				//! Find the integer normalization factor and convert
 				//! NOTE: Maximum value for BufferEnergyNp is Log[2 * 2^32], so rescale by
 				//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
-#if ULC_USE_PSYCHOACOUSTICS
-				const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
-#endif
-				if(Norm != 0.0f) Norm = 0x1.0p32f / Norm;
-				float Complexity = 0.0f, ComplexityW = 0.0f;
-				int ComplexityScale = 31 - __builtin_clz(BlockSize);
-				for(n=0;n<BlockSize;n++) {
-					float p   = fBufferEnergy[n] * Norm;
-					float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
-					Complexity  += p * pNp;
-					ComplexityW += p;
-#if ULC_USE_PSYCHOACOUSTICS
-					p   = ceilf(p);
-					pNp = ceilf(pNp*LogScale);
-					uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
-					uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
-					BufferEnergy  [n] = ip;
-					BufferEnergyNp[n] = ipNp;
-#endif
-				}
+				if(Norm != 0.0f) {
+					const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
+					Norm = 0x1.0p32f / Norm;
+					for(n=0;n<BlockSize;n++) {
+						float p   = fBufferEnergy[n] * Norm;
+						float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
+						p   = ceilf(p);
+						pNp = ceilf(pNp*LogScale);
+						uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
+						uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
+						BufferEnergy  [n] = ip;
+						BufferEnergyNp[n] = ipNp;
+					}
 
-				//! Use the log and linear sums to get the normalized entropy
-				//! which will be used as a measure of the block's complexity
-				if(ComplexityW) {
-					//! Entropy doesn't directly translate to quality
-					//! very well, so map it through a square-root curve
-					float LogComplexityW = logf(ComplexityW * 0x1.6A09E6p0f); //! * Sqrt[2] to account for scaling in Log[x]
-					float LogComplexity = Complexity / ComplexityW;
-					Complexity = (LogComplexityW - LogComplexity) / (0x1.62E430p-1f*ComplexityScale); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
-					State->BlockComplexity = sqrtf(Complexity);
-				} else State->BlockComplexity = 0.0f;
-#if ULC_USE_PSYCHOACOUSTICS
-				//! Buffer the psychoacoustics analysis into the last channel's buffer
-				//! so that we can save a bit of memory to store these values into and
-				//! avoid re-calculating for each channel, as the analysis isn't cheap
-				Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferEnergy, BufferEnergyNp, BlockSize, DecimationPattern);
+					//! Buffer the psychoacoustics analysis into the last channel's buffer
+					//! so that we can save a bit of memory to store these values into and
+					//! avoid re-calculating for each channel, as the analysis isn't cheap
+					Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferEnergy, BufferEnergyNp, BlockSize, DecimationPattern);
+				}
 #endif
 			}
 

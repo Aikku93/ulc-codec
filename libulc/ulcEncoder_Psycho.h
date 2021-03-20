@@ -49,8 +49,8 @@ static inline float Block_Transform_GetMaskedLevel(
 		//! NOTE: Offset at Band+0.5.
 		//! NOTE: Round up the end band so that we always have at
 		//! least two bands to analyze for spectral flatness.
-		BandBeg = (int)(0.90f*Band + 0.45f);
-		BandEnd = (int)(1.15f*Band + 0x1.933333p0f); //! 0.575 + 0x1.FFFFFFp-1
+		BandBeg = (int)(0.90f*Band);
+		BandEnd = (int)(1.15f*Band);
 		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 	}
 
@@ -101,9 +101,12 @@ static inline float Block_Transform_GetMaskedLevel(
 	//! scale up the necessary bits without potential overflow.
 	//! NOTE: F3FCE0F5h == Floor[0.5 + 2^61*(1/LogScale)/3]
 	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
+	//! NOTE: Energy[] was calculated without raising to any power,
+	//! whereas these calculations depend on it being raised to the
+	//! 2nd power, so we compensate by scaling by 2.0 here.
 	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
 	if(EnergySum == 0) return 0.0f; //! <- Doesn't matter; no coefficient will use this
-	return (float)(EnergyLog/EnergySum * 0xF3FCE0F5ull) * 0x1.0p-61f;
+	return (float)(EnergyLog/EnergySum * 0xF3FCE0F5ull) * (0x1.0p-61f * 2.0f);
 }
 
 /**************************************/
