@@ -79,7 +79,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		for(n=1;n<BlockSize-1;n++) {
 			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n+1]));
 		}
-		//*Dst++ += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry
+		//*Dst++ += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry about N-1/2, and a HP filter with symmetry about N-1
 #undef BPFILT
 	}
 
@@ -100,23 +100,16 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! larger threshold than expected. This large threshold
 	//! is key to avoiding triggering during non-transient
 	//! events, which maintains high-quality output.
-	//! NOTE: I'm really not sure what to set the gain to.
-	//! Technically, there's no need for any renormalization,
-	//! but this filter can generate huge values that could
-	//! overflow during subsequent calculations.
 	{
-		const float Decay = 0x1.C8520Bp-1f;                 //! Smoothness of SmoothedEnergy; -1.0dB/sample (10^(-1.0/20))
-#if 0 //! Too many subnormals at low amplitudes
-		      float Norm  = 0x1.8386AFp-7f * 0.25f / nChan; //! (1-Decay)^2 * BandpassEnergyGain^-1. Squaring cancels after the square root
-#else
-		      float Norm  = 0.25f / nChan;
-#endif
 		float *Buf = StepBuffer;
-		float SmoothGain = *CompressorGain;
+		float SmoothGain = *CompressorGain, Norm = 0.25f / nChan;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
+			//! This basically corresponds to a compressor.
+			//!  Attack rate:  -1.0dB/sample (10^( -1.0/20) = 0x1.C8520Bp-1)
+			//!  Release rate: 12.0dB/sample (10^(-12.0/20) = 0x1.013798p-2)
 			float v = sqrtf(Buf[n] * Norm);
 			float d = v - SmoothGain;
-			SmoothGain = SmoothGain*Decay + v;
+			SmoothGain = 0x1.C8520Bp-1f*SmoothGain + 0x1.013798p-2f*v;
 			Buf[n] = SQR(SQR(SQR(d)));
 		}
 		*CompressorGain = SmoothGain;
