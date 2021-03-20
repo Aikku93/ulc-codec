@@ -277,7 +277,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(PrevQuant != -1) {
 				int NoiseQ = 0, NoiseDecay = 0;
 #if ULC_USE_NOISE_CODING
-				Block_Encode_EncodePass_GetHFExtParams(Coef, (float)(8u << PrevQuant), NextCodedIdx, ChanLastIdx-BlockSize, n, WindowCtrl, &NoiseQ, &NoiseDecay);
+				Block_Encode_EncodePass_GetHFExtParams(Coef, (float)(8u << PrevQuant), NextCodedIdx, n, ChanLastIdx-BlockSize, WindowCtrl, &NoiseQ, &NoiseDecay);
 #endif
 				Block_Encode_WriteNybble(NoiseQ, &DstBuffer, &Size);
 				if(NoiseQ) Block_Encode_WriteNybble(NoiseDecay, &DstBuffer, &Size);

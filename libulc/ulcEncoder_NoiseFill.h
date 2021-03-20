@@ -31,159 +31,53 @@ static int Block_Encode_EncodePass_FitExpCurve(const float *X, const float *Y, i
 
 //! Get the amplitude of noise in a segment (via mean and noise-to-signal ratio)
 static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Band, int N, int WindowCtrl) {
-#define MAX_BINS 8
+#define MAX_BINS 4
+	static const int8_t BinMapping[8][8] = {
+		{0,0,0,0,0,0,0,0}, //! 000x: N/1
+		{0,1,0,1,0,1,0,1}, //! 001x: N/2,N/2
+		{0,1,2,2,0,1,2,2}, //! 010x: N/4,N/4,N/2
+		{0,0,1,2,0,0,1,2}, //! 011x: N/2,N/4,N/4
+		{0,1,2,2,3,3,3,3}, //! 100x: N/8,N/8,N/4,N/2
+		{0,0,1,2,3,3,3,3}, //! 101x: N/4,N/8,N/8,N/2
+		{0,0,0,0,1,2,3,3}, //! 110x: N/2,N/8,N/8,N/4
+		{0,0,0,0,1,1,2,3}, //! 111x: N/2,N/4,N/8,N/8
+	};
+
 	//! Analyze the values at all subblocks
+	//! NOTE: We really want to emphasize tone-masks-noise
+	//! here (ie. in the presence of tones, we want noise to
+	//! be extremely quiet), so we analyze in an expanded domain.
 	//! NOTE: The purpose of putting the values into bins is
 	//! to avoid noise-fill pre-echo by getting the noise
 	//! amplitudes at all subblock positions and then using
 	//! an average that favours low amplitudes (geometric,
 	//! harmonic, etc). Comparing against the previous block
 	//! might also be helpful here.
-	//! Notes:
-	//!  The expression:
-	//!    Sqrt[2] * (Total[v]^2 / (N*Total[v^2]))
-	//!  approximates the noise-to-signal ratio. Therefore,
-	//!  multiplying this by the mean (Total[v]/N) gives the
-	//!  average level of the noise. Multiplying by 2.0 then
-	//!  gives the noise amplitude, resulting in:
-	//!    2*Sqrt[2] * Total[v]^3 / (N^2*Total[v^2])
 	int n;
-	int BinN[MAX_BINS] = {0};
-	float Sum[MAX_BINS] = {0.0f}, Sum2[MAX_BINS] = {0.0f};
+	int   SumN[MAX_BINS] = {0};
+	float Sum1[MAX_BINS] = {0.0f};
+	float Sum2[MAX_BINS] = {0.0f};
+	const int8_t *Mapping = BinMapping[WindowCtrl >> (4+1)]; //! Low bit of high nybble only selects L/R overlap scaling
 	for(n=0;n<N;n++) {
-		int Bin = (Band+n) % (unsigned int)MAX_BINS;
+		int Bin = Mapping[(Band+n) % 8u];
 		float c = ABS(Coef[Band+n]);
-		Sum[Bin] += c, Sum2[Bin] += SQR(c), BinN[Bin]++;
-	}
-
-	//! Combine the bins into subblocks
-	int nBins = 0; //! <- Shuts gcc up
-	switch(WindowCtrl >> (4+1)) { //! Low bit of high nybble only selects L/R overlap scaling
-		//! N/1
-		case 0b000: {
-#define COMBINE_A(x) x[0] = x[0] + x[1] + x[2] + x[3] + x[4] + x[5] + x[6] + x[7]
-			nBins = 1;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-#undef COMBINE_A
-		} break;
-
-		//! N/2,N/2
-		case 0b001: {
-#define COMBINE_A(x) x[0] = x[0] + x[2] + x[4] + x[6]
-#define COMBINE_B(x) x[1] = x[1] + x[3] + x[5] + x[7]
-			nBins = 2;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
-
-		//! N/4,N/4,N/2
-		case 0b010: {
-#define COMBINE_A(x) x[0] = x[0] + x[4]
-#define COMBINE_B(x) x[1] = x[1] + x[5]
-#define COMBINE_C(x) x[2] = x[2] + x[3] + x[6] + x[7]
-			nBins = 3;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-			COMBINE_C(Sum), COMBINE_C(Sum2), COMBINE_C(BinN);
-#undef COMBINE_C
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
-
-		//! N/2,N/4,N/4
-		case 0b011: {
-#define COMBINE_A(x) x[0] = x[0] + x[1] + x[4] + x[5]
-#define COMBINE_B(x) x[1] = x[2] + x[6]
-#define COMBINE_C(x) x[2] = x[3] + x[7]
-			nBins = 3;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-			COMBINE_C(Sum), COMBINE_C(Sum2), COMBINE_C(BinN);
-#undef COMBINE_C
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
-
-		//! N/8,N/8,N/4,N/2
-		case 0b100: {
-#define COMBINE_A(x) x[0] = x[0]
-#define COMBINE_B(x) x[1] = x[1]
-#define COMBINE_C(x) x[2] = x[2] + x[3]
-#define COMBINE_D(x) x[3] = x[4] + x[5] + x[6] + x[7]
-			nBins = 4;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-			COMBINE_C(Sum), COMBINE_C(Sum2), COMBINE_C(BinN);
-			COMBINE_D(Sum), COMBINE_D(Sum2), COMBINE_D(BinN);
-#undef COMBINE_D
-#undef COMBINE_C
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
-
-		//! N/4,N/8,N/8,N/2
-		case 0b101: {
-#define COMBINE_A(x) x[0] = x[0] + x[1]
-#define COMBINE_B(x) x[1] = x[2]
-#define COMBINE_C(x) x[2] = x[3]
-#define COMBINE_D(x) x[3] = x[4] + x[5] + x[6] + x[7]
-			nBins = 4;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-			COMBINE_C(Sum), COMBINE_C(Sum2), COMBINE_C(BinN);
-			COMBINE_D(Sum), COMBINE_D(Sum2), COMBINE_D(BinN);
-#undef COMBINE_D
-#undef COMBINE_C
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
-
-		//! N/2,N/8,N/8,N/4
-		case 0b110: {
-#define COMBINE_A(x) x[0] = x[0] + x[1] + x[2] + x[3]
-#define COMBINE_B(x) x[1] = x[4]
-#define COMBINE_C(x) x[2] = x[5]
-#define COMBINE_D(x) x[3] = x[6] + x[7]
-			nBins = 4;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-			COMBINE_C(Sum), COMBINE_C(Sum2), COMBINE_C(BinN);
-			COMBINE_D(Sum), COMBINE_D(Sum2), COMBINE_D(BinN);
-#undef COMBINE_D
-#undef COMBINE_C
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
-
-		//! N/2,N/4,N/8,N/8
-		case 0b111: {
-#define COMBINE_A(x) x[0] = x[0] + x[1] + x[2] + x[3]
-#define COMBINE_B(x) x[1] = x[4] + x[5]
-#define COMBINE_C(x) x[2] = x[6]
-#define COMBINE_D(x) x[3] = x[7]
-			nBins = 4;
-			COMBINE_A(Sum), COMBINE_A(Sum2), COMBINE_A(BinN);
-			COMBINE_B(Sum), COMBINE_B(Sum2), COMBINE_B(BinN);
-			COMBINE_C(Sum), COMBINE_C(Sum2), COMBINE_C(BinN);
-			COMBINE_D(Sum), COMBINE_D(Sum2), COMBINE_D(BinN);
-#undef COMBINE_D
-#undef COMBINE_C
-#undef COMBINE_B
-#undef COMBINE_A
-		} break;
+		Sum1[Bin] += sqrtf(c);
+		Sum2[Bin] += c;
+		SumN[Bin]++;
 	}
 
 	//! Finally take the harmonic mean of the noise amplitudes
 	//! of all subblocks and combine it into the final fill level
-	float Total = 0.0f;
-	for(n=0;n<nBins;n++) {
-		float s = Sum[n], s2 = Sum2[n];
-		if(s2 == 0.0f) return 0.0f;
-		Total += (SQR(BinN[n]) * s2) / (s*SQR(s));
+	float Total  = 0.0f;
+	int   TotalW = 0;
+	for(n=0;n<MAX_BINS;n++) {
+		int   sN = SumN[n]; if(!sN) continue;
+		float s1 = Sum1[n]; if(s1 == 0.0f) return 0.0f;
+		float s2 = Sum2[n];
+		Total += sqrtf(s2 * sN*SQR((float)sN)) / SQR(s1); //! 1/((s1/sN)^2 / Sqrt[s2/sN])
+		TotalW++;
 	}
-	return 0x1.6A09E6p1f * (nBins / Total); //! 0x1.6A09E6p1 = 2*Sqrt[2]
+	return TotalW ? 2.0f*SQR(TotalW / Total) : 0.0f; //! 0x1.6A09E6p1 = 2*Sqrt[2]
 #undef MAX_BINS
 }
 
@@ -203,33 +97,31 @@ static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Ban
 }
 
 //! Compute quantized HF extension parameters for encoding
-static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, int Band, int FirstBand, int N, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
+static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, int Band, int N, int FirstBand, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
 	//! Estimate the amplitude and decay parameters
 	float Amplitude = 0.0f;
 	float Decay     = 0.0f; {
-		//! Find the noise amplitude by using a 4-point estimate
-		//! across the entire segment to be analyzed, together
-		//! with a constraint at X=0 to regularize the estimate.
-		//! TODO: Improve this. There has to be a better solution
-		//! than to simply do a point-wise approximation.
-		int InitBand = Band - N/8u, EndBand = Band + N/8u;
-		if(InitBand < FirstBand) InitBand = FirstBand;
+		int x0End = 0;
+		int x1End = N*1/4u;
+		int x2End = N*2/4u;
+		int x3End = N*3/4u;
+		int x4End = N*4/4u;
+		int x0Beg = -(N*4/4u); if(Band+x0Beg < FirstBand) x0Beg = FirstBand - Band;
+		int x1Beg = -(N*3/4u); if(Band+x1Beg < FirstBand) x1Beg = FirstBand - Band;
+		int x2Beg = -(N*2/4u); if(Band+x2Beg < FirstBand) x2Beg = FirstBand - Band;
+		int x3Beg = -(N*1/4u); if(Band+x3Beg < FirstBand) x3Beg = FirstBand - Band;
+		int x4Beg = -(N*0/4u); if(Band+x4Beg < FirstBand) x4Beg = FirstBand - Band;
 		float x[5], y[5];
-		int N0 = EndBand-InitBand;
-		int N1 = N/8u;
-		int N2 = N/4u - N/8u;
-		int N3 = N/2u - N/4u;
-		int N4 = N - N/2u;
-		x[0] = 0.0f;
-		x[1] = N1*0.5f;
-		x[2] = N2*0.5f + N1;
-		x[3] = N3*0.5f + N2 + N1;
-		x[4] = N4*0.5f + N3 + N2 + N1;
-		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, InitBand,      N0, WindowCtrl);
-		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band,          N1, WindowCtrl);
-		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+N1,       N2, WindowCtrl);
-		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+N1+N2,    N3, WindowCtrl);
-		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+N1+N2+N3, N4, WindowCtrl);
+		x[0] = (x0Beg + x0End) * 0.5f;
+		x[1] = (x1Beg + x1End) * 0.5f;
+		x[2] = (x2Beg + x2End) * 0.5f;
+		x[3] = (x3Beg + x3End) * 0.5f;
+		x[4] = (x4Beg + x4End) * 0.5f;
+		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x0Beg, x0End-x0Beg, WindowCtrl) + 0x1.0p-32f;
+		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x1Beg, x1End-x1Beg, WindowCtrl) + 0x1.0p-32f;
+		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x2Beg, x2End-x2Beg, WindowCtrl) + 0x1.0p-32f;
+		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x3Beg, x3End-x3Beg, WindowCtrl) + 0x1.0p-32f;
+		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x4Beg, x4End-x4Beg, WindowCtrl) + 0x1.0p-32f;
 		Block_Encode_EncodePass_FitExpCurve(x, y, 5, &Decay, &Amplitude);
 	}
 
