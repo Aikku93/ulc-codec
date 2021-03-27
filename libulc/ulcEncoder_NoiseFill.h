@@ -44,40 +44,54 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 	};
 
 	//! Analyze the values at all subblocks
-	//! NOTE: We really want to emphasize tone-masks-noise
-	//! here (ie. in the presence of tones, we want noise to
-	//! be extremely quiet), so we analyze in an expanded domain.
 	//! NOTE: The purpose of putting the values into bins is
 	//! to avoid noise-fill pre-echo by getting the noise
 	//! amplitudes at all subblock positions and then using
 	//! an average that favours low amplitudes (geometric,
 	//! harmonic, etc). Comparing against the previous block
 	//! might also be helpful here.
+	//! NOTE: Weighting is applied to emphasize unpredictable
+	//! areas and penalize predictable ones using extrapolation.
 	int n;
-	int   SumN[MAX_BINS] = {0};
-	float Sum1[MAX_BINS] = {0.0f};
-	float Sum2[MAX_BINS] = {0.0f};
 	const int8_t *Mapping = BinMapping[WindowCtrl >> (4+1)]; //! Low bit of high nybble only selects L/R overlap scaling
-	for(n=0;n<N;n++) {
+
+	//! Fill in initial taps for prediction.
+	//! Start 16 samples back to ensure we always have
+	//! at least two samples for each bin.
+	float BinTap[MAX_BINS][2];
+	for(n=-16;n<0;n++) {
 		int Bin = Mapping[(Band+n) % 8u];
-		float c = ABS(Coef[Band+n]);
-		Sum1[Bin] += sqrtf(c);
-		Sum2[Bin] += c;
-		SumN[Bin]++;
+		BinTap[Bin][1] = BinTap[Bin][0];
+		BinTap[Bin][0] = Coef[Band+n];
 	}
 
-	//! Finally take the harmonic mean of the noise amplitudes
-	//! of all subblocks and combine it into the final fill level
-	float Total  = 0.0f;
-	int   TotalW = 0;
-	for(n=0;n<MAX_BINS;n++) {
-		int   sN = SumN[n]; if(!sN) continue;
-		float s1 = Sum1[n]; if(s1 == 0.0f) return 0.0f;
-		float s2 = Sum2[n];
-		Total += sqrtf(s2 * sN*SQR((float)sN)) / SQR(s1); //! 1/((s1/sN)^2 / Sqrt[s2/sN])
-		TotalW++;
+	//! Perform the actual analysis
+	int   SumN[MAX_BINS] = {0};
+	float Sum [MAX_BINS] = {0.0f};
+	float SumW[MAX_BINS] = {0.0f};
+	for(n=0;n<N;n++) {
+		int   Bin = Mapping[(Band+n) % 8u];
+		float c   = Coef[Band+n];
+		float w   = 1.0f + SQR(c - (2*BinTap[Bin][0] - BinTap[Bin][1]));
+		Sum [Bin] += w*ABS(c);
+		SumW[Bin] += w;
+		SumN[Bin] += 1;
+		BinTap[Bin][1] = BinTap[Bin][0];
+		BinTap[Bin][0] = c;
 	}
-	return TotalW ? 2.0f*SQR(TotalW / Total) : 0.0f; //! 0x1.6A09E6p1 = 2*Sqrt[2]
+
+	//! Get harmonic mean of all bins
+	//! NOTE: Scale by 2.0 to account for noise averaging at 0.5.
+	float Total  = 0.0f;
+	int   TotalN = 0;
+	for(n=0;n<MAX_BINS;n++) {
+		if(!SumN[n]) continue;
+		float s  = Sum [n]; if(s == 0.0f) break;
+		float sW = SumW[n];
+		Total  += sW / s;
+		TotalN += 1;
+	}
+	return Total ? (2.0f * TotalN/Total) : 0.0f;
 #undef MAX_BINS
 }
 
@@ -101,27 +115,31 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, i
 	//! Estimate the amplitude and decay parameters
 	float Amplitude = 0.0f;
 	float Decay     = 0.0f; {
-		int x0End = 0;
-		int x1End = N*1/4u;
-		int x2End = N*2/4u;
-		int x3End = N*3/4u;
-		int x4End = N*4/4u;
-		int x0Beg = -(N*4/4u); if(Band+x0Beg < FirstBand) x0Beg = FirstBand - Band;
-		int x1Beg = -(N*3/4u); if(Band+x1Beg < FirstBand) x1Beg = FirstBand - Band;
-		int x2Beg = -(N*2/4u); if(Band+x2Beg < FirstBand) x2Beg = FirstBand - Band;
-		int x3Beg = -(N*1/4u); if(Band+x3Beg < FirstBand) x3Beg = FirstBand - Band;
-		int x4Beg = -(N*0/4u); if(Band+x4Beg < FirstBand) x4Beg = FirstBand - Band;
+		//! FIXME: Using X[n] = Start*0.5 gives better results
+		//! than any other variation. WHY?! And this is probably
+		//! incredibly sub-optimal anyway; need a better method
+		//! to detect the decay envelope.
 		float x[5], y[5];
-		x[0] = (x0Beg + x0End) * 0.5f;
-		x[1] = (x1Beg + x1End) * 0.5f;
-		x[2] = (x2Beg + x2End) * 0.5f;
-		x[3] = (x3Beg + x3End) * 0.5f;
-		x[4] = (x4Beg + x4End) * 0.5f;
-		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x0Beg, x0End-x0Beg, WindowCtrl) + 0x1.0p-32f;
-		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x1Beg, x1End-x1Beg, WindowCtrl) + 0x1.0p-32f;
-		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x2Beg, x2End-x2Beg, WindowCtrl) + 0x1.0p-32f;
-		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x3Beg, x3End-x3Beg, WindowCtrl) + 0x1.0p-32f;
-		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x4Beg, x4End-x4Beg, WindowCtrl) + 0x1.0p-32f;
+		int x0Beg = -(N*1/4u);   if(Band+x0Beg < FirstBand) x0Beg = FirstBand - Band;
+		int x1Beg =  (N*0/4u); //if(Band+x1Beg < FirstBand) x1Beg = FirstBand - Band;
+		int x2Beg =  (N*1/4u); //if(Band+x2Beg < FirstBand) x2Beg = FirstBand - Band;
+		int x3Beg =  (N*2/4u); //if(Band+x3Beg < FirstBand) x3Beg = FirstBand - Band;
+		int x4Beg =  (N*3/4u); //if(Band+x4Beg < FirstBand) x4Beg = FirstBand - Band;
+		int x0End =  (     0);
+		int x1End =  (N*1/4u);
+		int x2End =  (N*2/4u);
+		int x3End =  (N*3/4u);
+		int x4End =  (N*4/4u);
+		x[0] = (x0Beg + 0*x0End) * 0.5f;
+		x[1] = (x1Beg + 0*x1End) * 0.5f;
+		x[2] = (x2Beg + 0*x2End) * 0.5f;
+		x[3] = (x3Beg + 0*x3End) * 0.5f;
+		x[4] = (x4Beg + 0*x4End) * 0.5f;
+		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x0Beg, x0End-x0Beg, WindowCtrl);
+		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x1Beg, x1End-x1Beg, WindowCtrl);
+		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x2Beg, x2End-x2Beg, WindowCtrl);
+		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x3Beg, x3End-x3Beg, WindowCtrl);
+		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x4Beg, x4End-x4Beg, WindowCtrl);
 		Block_Encode_EncodePass_FitExpCurve(x, y, 5, &Decay, &Amplitude);
 	}
 
