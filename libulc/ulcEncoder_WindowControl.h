@@ -5,6 +5,8 @@
 /**************************************/
 #pragma once
 /**************************************/
+#include <math.h>
+/**************************************/
 
 //! Get optimal log base-2 overlap and window scalings for transients
 //! The idea is that if a transient is relatively centered with the
@@ -100,17 +102,20 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! larger threshold than expected. This large threshold
 	//! is key to avoiding triggering during non-transient
 	//! events, which maintains high-quality output.
+	//! NOTE: The maximum possible value for SmoothGain is
+	//! 1 / (1-DecayRate). Despite resulting in abnormally
+	//! large numbers relative to the normalized range, this
+	//! is still bound and shouldn't cause issues.
 	{
+		const float Ratio     = 0x1.1FEB34p-1f; //! -5.0dB (mixing ratio is 1:X, Instantaneous:Integrated)
+		const float DecayRate = 0x1.EFCF24p-1f; //! -0.3dB/sample (Infinity gain: 30.0dB. Add Ratio gain for final gain)
 		float *Buf = StepBuffer;
 		float SmoothGain = *CompressorGain, Norm = 0.25f / nChan;
 		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
-			//! This basically corresponds to a compressor.
-			//!  Attack rate:  -1.0dB/sample (10^( -1.0/20) = 0x1.C8520Bp-1)
-			//!  Release rate: 12.0dB/sample (10^(-12.0/20) = 0x1.013798p-2)
 			float v = sqrtf(Buf[n] * Norm);
 			float d = v - SmoothGain;
-			SmoothGain = 0x1.C8520Bp-1f*SmoothGain + 0x1.013798p-2f*v;
-			Buf[n] = SQR(SQR(SQR(d)));
+			SmoothGain = DecayRate*SmoothGain + Ratio*v;
+			Buf[n] = SQR(SQR(SQR(d))); //! (30dB + -5dB)*8 = 200dB = ~33bits
 		}
 		*CompressorGain = SmoothGain;
 		Buf[n] = 0.0f; //! Last sample is unavailable - Exclude from analysis
@@ -172,9 +177,12 @@ static inline int Block_Transform_GetWindowCtrl(
 			R  = (R  != 0.0f) ? (R  / Rw)  : MIN_LOG;
 
 			//! Get the ratios between segments
-			float RatioL = L - LL;
-			float RatioM = M - L;
-			      RatioR = R - M;
+			//! NOTE: R is squared (doubled in log domain) to account
+			//! for its overlap with M... maybe. This just worked out
+			//! to give the best results without janky hacks.
+			float RatioL =   L - LL;
+			float RatioM =   M - L;
+			      RatioR = 2*R - M;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
@@ -204,18 +212,11 @@ static inline int Block_Transform_GetWindowCtrl(
 		break;
 	}
 
-	//! Re-map the ratio to better fit the overlap scaling,
-	//! and compress back from the expanded (X^8) domain.
-	//! NOTE: I'm not entirely sure why this works, but it
-	//! appears to resemble a 1/Tanh[E^(-Ratio/8)] curve
-	//! for Ratio <= 10.
-	if(Ratio > 0.0f) Ratio = 1.0f + SQR(Ratio * (1.0f/8));
-
 	//! Determine the overlap scaling for the transition region
 	int OverlapScale = 0;
-	if(Ratio >= 0x1.6A09E6p0f) {      //! Ratio >= 2^0.5
-		if(Ratio < 0x1.6A09E6p6f) //! Ratio <  2^6.5
-			OverlapScale = (int)(0x1.715476p0f*logf(Ratio) + 0.5f); //! 1/Log[2]
+	if(Ratio >= 0x1.62E430p1f) {      //! Ratio >= Log[2^0.5]*8
+		if(Ratio < 0x1.205967p5f) //! Ratio <  Log[2^6.5]*8
+			OverlapScale = (int)(0x1.715476p-3f*Ratio + 0.5f); //! 1/Log[2] * (1/8)
 		else
 			OverlapScale = 7;
 		while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
