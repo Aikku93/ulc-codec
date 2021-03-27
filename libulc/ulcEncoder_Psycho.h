@@ -49,8 +49,8 @@ static inline float Block_Transform_GetMaskedLevel(
 		//! NOTE: Offset at Band+0.5.
 		//! NOTE: Round up the end band so that we always have at
 		//! least two bands to analyze for spectral flatness.
-		BandBeg = (int)(0.90f*Band);
-		BandEnd = (int)(1.15f*Band);
+		BandBeg = (int)(0.90f*Band + 0.45f);
+		BandEnd = (int)(1.15f*Band+ 0x1.933333p0f); //! 0.575 + 0x1.FFFFFFp-1
 		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 	}
 
