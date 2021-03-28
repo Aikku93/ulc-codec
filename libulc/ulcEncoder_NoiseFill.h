@@ -50,8 +50,6 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 	//! an average that favours low amplitudes (geometric,
 	//! harmonic, etc). Comparing against the previous block
 	//! might also be helpful here.
-	//! NOTE: Weighting is applied to emphasize unpredictable
-	//! areas and penalize predictable ones using extrapolation.
 	int n;
 	const int8_t *Mapping = BinMapping[WindowCtrl >> (4+1)]; //! Low bit of high nybble only selects L/R overlap scaling
 
@@ -70,10 +68,19 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 	float Sum [MAX_BINS] = {0.0f};
 	float SumW[MAX_BINS] = {0.0f};
 	for(n=0;n<N;n++) {
+		//! The idea here is as follows:
+		//!  Noise amplitude remains constant under filtering,
+		//!  so bandpass filter to remove contributions from
+		//!  smooth coefficients and transient sinusoids (the
+		//!  latter only when its frequency is distant from
+		//!  Pi/2 radians). Follow this up by weighting with
+		//!  the residual of extrapolation about Pi/2, which
+		//!  should take care of transients in that region
+		//!  but leave us the noise signal.
 		int   Bin = Mapping[(Band+n) % 8u];
-		float c   = Coef[Band+n];
-		float w   = 1.0f + SQR(c - (2*BinTap[Bin][0] - BinTap[Bin][1]));
-		Sum [Bin] += w*ABS(c);
+		float c   = Coef[Band+n], cPred = -BinTap[Bin][1]; //! Prediction at Pi/2 radians: H(z) = 1 / (1+z^-2)
+		float w   = 1.0f + SQR(c - cPred); //! Residual after prediction at Pi/2
+		Sum [Bin] += w*ABS(c + cPred);     //! Bandpass filter: H(z) = 1 + z^-2 (gain of 2.0)
 		SumW[Bin] += w;
 		SumN[Bin] += 1;
 		BinTap[Bin][1] = BinTap[Bin][0];
@@ -81,7 +88,9 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 	}
 
 	//! Get harmonic mean of all bins
-	//! NOTE: Scale by 2.0 to account for noise averaging at 0.5.
+	//! NOTE: Final amplitude should be scaled by 2.0 to account
+	//! for noise averaging at 2.0. However, this is already the
+	//! case due to the bandpass filter not having unity gain.
 	float Total  = 0.0f;
 	int   TotalN = 0;
 	for(n=0;n<MAX_BINS;n++) {
@@ -91,7 +100,7 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 		Total  += sW / s;
 		TotalN += 1;
 	}
-	return Total ? (2.0f * TotalN/Total) : 0.0f;
+	return Total ? (TotalN/Total) : 0.0f;
 #undef MAX_BINS
 }
 
