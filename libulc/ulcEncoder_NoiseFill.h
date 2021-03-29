@@ -30,7 +30,7 @@ static int Block_Encode_EncodePass_FitExpCurve(const float *X, const float *Y, i
 }
 
 //! Get the amplitude of noise in a segment (via mean and noise-to-signal ratio)
-static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Band, int N, int WindowCtrl) {
+static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Band, int N, int FirstBand, int WindowCtrl) {
 #define MAX_BINS 4
 	static const int8_t BinMapping[8][8] = {
 		{0,0,0,0,0,0,0,0}, //! 000x: N/1
@@ -56,11 +56,17 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 	//! Fill in initial taps for prediction.
 	//! Start 16 samples back to ensure we always have
 	//! at least two samples for each bin.
+	//! NOTE: This can go out of bounds, so check the indices
+	//! prior to dereferencing to avoid issues.
 	float BinTap[MAX_BINS][2];
+	for(n=0;n<MAX_BINS;n++) BinTap[n][0] = BinTap[n][1] = 0.0f;
 	for(n=-16;n<0;n++) {
-		int Bin = Mapping[(Band+n) % 8u];
-		BinTap[Bin][1] = BinTap[Bin][0];
-		BinTap[Bin][0] = Coef[Band+n];
+		int Idx = Band+n;
+		if(Idx >+ FirstBand) {
+			int Bin = Mapping[Idx % 8u];
+			BinTap[Bin][1] = BinTap[Bin][0];
+			BinTap[Bin][0] = Coef[Band+n];
+		}
 	}
 
 	//! Perform the actual analysis
@@ -107,13 +113,13 @@ static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Ba
 /**************************************/
 
 //! Get the quantized noise amplitude for encoding
-static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Band, int N, int WindowCtrl) {
+static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Band, int N, int FirstBand, int WindowCtrl) {
 	//! Quantize the noise amplitude into final code
 	//! NOTE: This is encoded at higher precision, because it spans
 	//! the full 4bit range, meaning we have an extra Log2[16^2 / 7^2]
 	//! bits to play with (2.385 bits, so use 3.0 for simplicity,
 	//! especially since noise should be lower than the maximum value).
-	float Amplitude = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band, N, WindowCtrl);
+	float Amplitude = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band, N, FirstBand, WindowCtrl);
 	int NoiseQ = (int)sqrtf(Amplitude * 8.0f*q); //! <- Round down
 	if(NoiseQ > 0xF+1) NoiseQ = 0xF+1;
 	return NoiseQ;
@@ -144,11 +150,11 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, i
 		x[2] = (x2Beg + 0*x2End) * 0.5f;
 		x[3] = (x3Beg + 0*x3End) * 0.5f;
 		x[4] = (x4Beg + 0*x4End) * 0.5f;
-		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x0Beg, x0End-x0Beg, WindowCtrl);
-		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x1Beg, x1End-x1Beg, WindowCtrl);
-		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x2Beg, x2End-x2Beg, WindowCtrl);
-		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x3Beg, x3End-x3Beg, WindowCtrl);
-		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x4Beg, x4End-x4Beg, WindowCtrl);
+		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x0Beg, x0End-x0Beg, FirstBand, WindowCtrl);
+		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x1Beg, x1End-x1Beg, FirstBand, WindowCtrl);
+		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x2Beg, x2End-x2Beg, FirstBand, WindowCtrl);
+		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x3Beg, x3End-x3Beg, FirstBand, WindowCtrl);
+		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x4Beg, x4End-x4Beg, FirstBand, WindowCtrl);
 		Block_Encode_EncodePass_FitExpCurve(x, y, 5, &Decay, &Amplitude);
 	}
 
