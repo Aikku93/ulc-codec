@@ -79,6 +79,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	uint8_t **DstBuffer,
 	int      *Size,
 	int       nOutCoef,
+	int       FirstBand,
 	int       WindowCtrl
 ) {
 	(void)WindowCtrl; //! WindowCtrl is only used with ULC_USE_NOISE_CODING
@@ -126,7 +127,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				if(zR >= 31) {
 					v = zR - 31; if(v > 0xFF) v = 0xFF;
 					n = v + 31;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, Coef, NextCodedIdx, n, WindowCtrl);
+					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, Coef, NextCodedIdx, n, FirstBand, WindowCtrl);
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0xE,      DstBuffer, Size);
@@ -219,6 +220,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 		&DstBuffer, \
 		&Size, \
 		nOutCoef, \
+		ChanLastIdx-BlockSize, \
 		WindowCtrl \
 	)
 		for(;;Idx++) {
