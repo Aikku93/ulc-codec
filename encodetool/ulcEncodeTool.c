@@ -168,14 +168,22 @@ int main(int argc, const char *argv[]) {
 		uint64_t TotalSize = 0;
 		double ActualAvgComplexity = 0.0;
 		size_t BlkLastUpdate = 0;
-		clock_t NextUpdateTime = clock();
+		clock_t LastUpdateTime = clock() - DISPLAY_UPDATE_RATE;
 		for(Blk=0;Blk<nBlk;Blk++) {
 			//! Show progress
-			if(clock() >= NextUpdateTime) {
+			//! NOTE: Take difference and use unsigned comparison to
+			//! get correct results in the comparison on signed overflows.
+			//! uint64_t might be overkill, depending on the implementation.
+			if((uint64_t)(clock()-LastUpdateTime) >= DISPLAY_UPDATE_RATE) {
 				size_t nBlkProcessed = 2 * (Blk-BlkLastUpdate); //! Updated every 0.5s, displayed as X*s^-1
-				printf("\rBlock %u/%u (%.2f%%) | %u Blocks/Second (%.2f X rt)", Blk, nBlk, Blk*100.0/nBlk, nBlkProcessed, nBlkProcessed*BlockSize / (double)RateHz);
+				printf(
+					"\rBlock %u/%u (%.2f%% | %.2f X rt) | Average: %.2fkbps",
+					Blk, nBlk, Blk*100.0/nBlk,
+					nBlkProcessed*BlockSize / (double)RateHz,
+					Blk ? (TotalSize * RateHz/1000.0 / (Blk * BlockSize)) : 0.0f
+				);
 				fflush(stdout);
-				NextUpdateTime += DISPLAY_UPDATE_RATE;
+				LastUpdateTime += DISPLAY_UPDATE_RATE;
 				BlkLastUpdate   = Blk;
 			}
 
