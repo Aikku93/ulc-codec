@@ -11,7 +11,22 @@
 #define SQR(x) ((x)*(x))
 /**************************************/
 
-//! Pattern for decimated subblocks
+//! Subblock count for a block
+static inline int ULC_Helper_SubBlockCount(int Decimation) {
+	static const int8_t Count[8] = {
+		1, //! 0001: N/1
+		2, //! 001x: N/2,N/2
+		3, //! 010x: N/4,N/4,N/2
+		3, //! 011x: N/2,N/4,N/4
+		4, //! 100x: N/8,N/8,N/4,N/2
+		4, //! 101x: N/4,N/8,N/8,N/2
+		4, //! 110x: N/2,N/8,N/8,N/4
+		4, //! 111x: N/2,N/4,N/8,N/8
+	};
+	return Count[Decimation >> 1];
+}
+
+//! Subblock decimation pattern
 //! Usage:
 //!  PatternBase = &PatternTable[DecimationNybble >> 1];
 //!  PatternNext = PatternBase;
@@ -33,6 +48,24 @@ static inline const int8_t *ULC_Helper_SubBlockDecimationPattern(int Decimation)
 		{1, 2, 3, 3}, //! 111x: N/2,N/4,N/8,N/8
 	};
 	return Pattern[Decimation >> 1];
+}
+
+//! Subblock coefficient interleaving pattern
+//! The decimation nybble comes from Block_Transform_GetLogOverlapScale(),
+//! corresponding to the upper/second nybble for decimated blocks.
+#define ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO 8u
+static inline const int8_t *ULC_Helper_SubBlockInterleavePattern(int Decimation) {
+	static const int8_t Mapping[8][8] = {
+		{0,0,0,0,0,0,0,0}, //! 0001: N/1
+		{0,1,0,1,0,1,0,1}, //! 001x: N/2,N/2
+		{0,1,2,2,0,1,2,2}, //! 010x: N/4,N/4,N/2
+		{0,0,1,2,0,0,1,2}, //! 011x: N/2,N/4,N/4
+		{0,1,2,2,3,3,3,3}, //! 100x: N/8,N/8,N/4,N/2
+		{0,0,1,2,3,3,3,3}, //! 101x: N/4,N/8,N/8,N/2
+		{0,0,0,0,1,2,3,3}, //! 110x: N/2,N/8,N/8,N/4
+		{0,0,0,0,1,1,2,3}, //! 111x: N/2,N/4,N/8,N/8
+	};
+	return Mapping[Decimation >> 1];
 }
 
 //! Transient subblock index from decimation pattern
