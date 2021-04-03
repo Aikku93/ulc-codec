@@ -73,16 +73,17 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	float     QuantSum,
 	float     QuantWeight,
 	const float *Coef,
+	const float *CoefNoise,
 	const int   *CoefIdx,
 	int       NextCodedIdx,
 	int      *PrevQuant,
 	uint8_t **DstBuffer,
 	int      *Size,
 	int       nOutCoef,
-	int       FirstBand,
 	int       WindowCtrl
 ) {
-	(void)WindowCtrl; //! WindowCtrl is only used with ULC_USE_NOISE_CODING
+	(void)CoefNoise;  //! CoefNoise is only used with ULC_USE_NOISE_CODING
+	(void)WindowCtrl; //! Ditto WindowCtrl
 
 	//! Write/update the quantizer
 	float q; {
@@ -127,7 +128,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				if(zR >= 31) {
 					v = zR - 31; if(v > 0xFF) v = 0xFF;
 					n = v + 31;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, Coef, NextCodedIdx, n, FirstBand, WindowCtrl);
+					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, CoefNoise, NextCodedIdx, n, WindowCtrl);
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0xE,      DstBuffer, Size);
@@ -189,8 +190,12 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nOutCoef) {
 	int BlockSize   = State->BlockSize;
 	int Chan, nChan = State->nChan;
-	const float *Coef    = State->TransformBuffer;
-	const int   *CoefIdx = State->TransformIndex;
+	const float *Coef      = State->TransformBuffer;
+	const float *CoefNoise = State->TransformBuffer;
+	const int   *CoefIdx   = State->TransformIndex;
+#if ULC_USE_NOISE_CODING
+	CoefNoise = State->TransformNoise;
+#endif
 
 	//! Begin coding
 	int Idx  = 0;
@@ -214,13 +219,13 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 		QuantSum, \
 		QuantWeight, \
 		Coef, \
+		CoefNoise, \
 		CoefIdx, \
 		NextCodedIdx, \
 		&PrevQuant, \
 		&DstBuffer, \
 		&Size, \
 		nOutCoef, \
-		ChanLastIdx-BlockSize, \
 		WindowCtrl \
 	)
 		for(;;Idx++) {
@@ -279,7 +284,15 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(PrevQuant != -1) {
 				int NoiseQ = 0, NoiseDecay = 0;
 #if ULC_USE_NOISE_CODING
-				Block_Encode_EncodePass_GetHFExtParams(Coef, (float)(8u << PrevQuant), NextCodedIdx, n, ChanLastIdx-BlockSize, WindowCtrl, &NoiseQ, &NoiseDecay);
+				Block_Encode_EncodePass_GetHFExtParams(
+					CoefNoise,
+					(float)(8u << PrevQuant),
+					NextCodedIdx,
+					n,
+					WindowCtrl,
+					&NoiseQ,
+					&NoiseDecay
+				);
 #endif
 				Block_Encode_WriteNybble(NoiseQ, &DstBuffer, &Size);
 				if(NoiseQ) Block_Encode_WriteNybble(NoiseDecay, &DstBuffer, &Size);

@@ -8,162 +8,143 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! Fit an exponential curve using linear least-squares
-static int Block_Encode_EncodePass_FitExpCurve(const float *X, const float *Y, int N, float *m, float *c) {
-	int n;
-	float SumX  = 0.0f, SumX2 = 0.0f;
-	float SumY  = 0.0f, SumY2 = 0.0f;
-	float SumXY = 0.0f;
-	int   SumN  = 0;
-	for(n=0;n<N;n++) if(Y[n] != 0.0f) {
-		float x = X[n];
-		float y = logf(Y[n]);
-		SumX  += x, SumX2 += SQR(x);
-		SumY  += y, SumY2 += SQR(y);
-		SumXY += x*y;
-		SumN++;
-	}
-	float Det = SumN*SumX2 - SQR(SumX); if(Det == 0.0f) return 0;
-	*m = expf((SumN*SumXY - SumX*SumY)  / Det);
-	*c = expf((SumY*SumX2 - SumX*SumXY) / Det);
-	return 1;
-}
-
-//! Get the amplitude of noise in a segment (via mean and noise-to-signal ratio)
-static float Block_Encode_EncodePass_GetNoiseAmplitude(const float *Coef, int Band, int N, int FirstBand, int WindowCtrl) {
-#define MAX_BINS 4
-	static const int8_t BinMapping[8][8] = {
-		{0,0,0,0,0,0,0,0}, //! 000x: N/1
-		{0,1,0,1,0,1,0,1}, //! 001x: N/2,N/2
-		{0,1,2,2,0,1,2,2}, //! 010x: N/4,N/4,N/2
-		{0,0,1,2,0,0,1,2}, //! 011x: N/2,N/4,N/4
-		{0,1,2,2,3,3,3,3}, //! 100x: N/8,N/8,N/4,N/2
-		{0,0,1,2,3,3,3,3}, //! 101x: N/4,N/8,N/8,N/2
-		{0,0,0,0,1,2,3,3}, //! 110x: N/2,N/8,N/8,N/4
-		{0,0,0,0,1,1,2,3}, //! 111x: N/2,N/4,N/8,N/8
-	};
-
-	//! Analyze the values at all subblocks
-	//! NOTE: The purpose of putting the values into bins is
-	//! to avoid noise-fill pre-echo by getting the noise
-	//! amplitudes at all subblock positions and then using
-	//! an average that favours low amplitudes (geometric,
-	//! harmonic, etc). Comparing against the previous block
-	//! might also be helpful here.
-	int n;
-	const int8_t *Mapping = BinMapping[WindowCtrl >> (4+1)]; //! Low bit of high nybble only selects L/R overlap scaling
-
-	//! Fill in initial taps for prediction.
-	//! Start 16 samples back to ensure we always have
-	//! at least two samples for each bin.
-	//! NOTE: This can go out of bounds, so check the indices
-	//! prior to dereferencing to avoid issues.
-	float BinTap[MAX_BINS][2];
-	for(n=0;n<MAX_BINS;n++) BinTap[n][0] = BinTap[n][1] = 0.0f;
-	for(n=-16;n<0;n++) {
-		int Idx = Band+n;
-		if(Idx >+ FirstBand) {
-			int Bin = Mapping[Idx % 8u];
-			BinTap[Bin][1] = BinTap[Bin][0];
-			BinTap[Bin][0] = Coef[Band+n];
-		}
-	}
-
-	//! Perform the actual analysis
-	int   SumN[MAX_BINS] = {0};
-	float Sum [MAX_BINS] = {0.0f};
-	float SumW[MAX_BINS] = {0.0f};
-	for(n=0;n<N;n++) {
-		//! The idea here is as follows:
-		//!  Noise amplitude remains constant under filtering,
-		//!  so bandpass filter to remove contributions from
-		//!  smooth coefficients and transient sinusoids (the
-		//!  latter only when its frequency is distant from
-		//!  Pi/2 radians). Follow this up by weighting with
-		//!  the residual of extrapolation about Pi/2, which
-		//!  should take care of transients in that region
-		//!  but leave us the noise signal.
-		int   Bin = Mapping[(Band+n) % 8u];
-		float c   = Coef[Band+n], cPred = -BinTap[Bin][1]; //! Prediction at Pi/2 radians: H(z) = 1 / (1+z^-2)
-		float w   = 1.0f + SQR(c - cPred); //! Residual after prediction at Pi/2
-		Sum [Bin] += w*ABS(c + cPred);     //! Bandpass filter: H(z) = 1 + z^-2 (gain of 2.0)
-		SumW[Bin] += w;
-		SumN[Bin] += 1;
-		BinTap[Bin][1] = BinTap[Bin][0];
-		BinTap[Bin][0] = c;
-	}
-
-	//! Get harmonic mean of all bins
-	//! NOTE: Final amplitude should be scaled by 2.0 to account
-	//! for noise averaging at 2.0. However, this is already the
-	//! case due to the bandpass filter not having unity gain.
-	float Total  = 0.0f;
-	int   TotalN = 0;
-	for(n=0;n<MAX_BINS;n++) {
-		if(!SumN[n]) continue;
-		float s  = Sum [n]; if(s == 0.0f) break;
-		float sW = SumW[n];
-		Total  += sW / s;
-		TotalN += 1;
-	}
-	return Total ? (TotalN/Total) : 0.0f;
-#undef MAX_BINS
-}
-
-/**************************************/
-
 //! Get the quantized noise amplitude for encoding
-static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Band, int N, int FirstBand, int WindowCtrl) {
+static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Band, int N, int WindowCtrl) {
+	//! Analyze for the noise amplitude
+	float Amplitude; {
+		//! NOTE: The purpose of putting the values into bins is
+		//! to avoid noise-fill pre-echo by getting the noise
+		//! amplitudes at all subblock positions and then using
+		//! an average that favours low amplitudes (geometric,
+		//! harmonic, etc). Comparing against the previous block
+		//! might also be helpful here.
+		int n;
+		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
+
+		//! Perform the actual analysis
+		float Sum [ULC_MAX_SUBBLOCKS] = {0.0f};
+		float SumW[ULC_MAX_SUBBLOCKS] = {0.0f};
+		for(n=0;n<N;n++) {
+			int   Bin  = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
+			float y    = Coef[Band+n];
+			float w    = 1.0f + y;
+			Sum [Bin] += w*y;
+			SumW[Bin] += w;
+		}
+
+		//! Get harmonic mean of all bins
+		//! NOTE: Scale by 2.0 to account for noise averaging at 0.5.
+		float Total  = 0.0f;
+		int   TotalN = 0;
+		int   nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
+		for(n=0;n<nSubBlocks;n++) {
+			float s  = Sum [n]; if(s == 0.0f) return 0;
+			float sW = SumW[n];
+			Total  += (sW / s);
+			TotalN += 1;
+		}
+		Amplitude = Total ? (2.0f * TotalN/Total) : 0.0f;
+	}
+
 	//! Quantize the noise amplitude into final code
 	//! NOTE: This is encoded at higher precision, because it spans
 	//! the full 4bit range, meaning we have an extra Log2[16^2 / 7^2]
 	//! bits to play with (2.385 bits, so use 3.0 for simplicity,
 	//! especially since noise should be lower than the maximum value).
-	float Amplitude = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band, N, FirstBand, WindowCtrl);
 	int NoiseQ = (int)sqrtf(Amplitude * 8.0f*q); //! <- Round down
 	if(NoiseQ > 0xF+1) NoiseQ = 0xF+1;
 	return NoiseQ;
 }
 
 //! Compute quantized HF extension parameters for encoding
-static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, int Band, int N, int FirstBand, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
-	//! Estimate the amplitude and decay parameters
+static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, int Band, int N, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
+	//! Solve for weighted least-squares (in the log domain, for exponential fitting)
 	float Amplitude = 0.0f;
 	float Decay     = 0.0f; {
-		//! FIXME: Using X[n] = Start*0.5 gives better results
-		//! than any other variation. WHY?! And this is probably
-		//! incredibly sub-optimal anyway; need a better method
-		//! to detect the decay envelope.
-		float x[5], y[5];
-		int x0Beg = -(N*1/4u);   if(Band+x0Beg < FirstBand) x0Beg = FirstBand - Band;
-		int x1Beg =  (N*0/4u); //if(Band+x1Beg < FirstBand) x1Beg = FirstBand - Band;
-		int x2Beg =  (N*1/4u); //if(Band+x2Beg < FirstBand) x2Beg = FirstBand - Band;
-		int x3Beg =  (N*2/4u); //if(Band+x3Beg < FirstBand) x3Beg = FirstBand - Band;
-		int x4Beg =  (N*3/4u); //if(Band+x4Beg < FirstBand) x4Beg = FirstBand - Band;
-		int x0End =  (     0);
-		int x1End =  (N*1/4u);
-		int x2End =  (N*2/4u);
-		int x3End =  (N*3/4u);
-		int x4End =  (N*4/4u);
-		x[0] = (x0Beg + 0*x0End) * 0.5f;
-		x[1] = (x1Beg + 0*x1End) * 0.5f;
-		x[2] = (x2Beg + 0*x2End) * 0.5f;
-		x[3] = (x3Beg + 0*x3End) * 0.5f;
-		x[4] = (x4Beg + 0*x4End) * 0.5f;
-		y[0] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x0Beg, x0End-x0Beg, FirstBand, WindowCtrl);
-		y[1] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x1Beg, x1End-x1Beg, FirstBand, WindowCtrl);
-		y[2] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x2Beg, x2End-x2Beg, FirstBand, WindowCtrl);
-		y[3] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x3Beg, x3End-x3Beg, FirstBand, WindowCtrl);
-		y[4] = Block_Encode_EncodePass_GetNoiseAmplitude(Coef, Band+x4Beg, x4End-x4Beg, FirstBand, WindowCtrl);
-		Block_Encode_EncodePass_FitExpCurve(x, y, 5, &Decay, &Amplitude);
+		//! As with normal noise-fill, group everything into bins
+		int n;
+		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
+
+		//! Next, accumulate all the data into their respective bins.
+		//! NOTE: The analysis is the same as in normal noise-fill,
+		//! but with a further weight to balance out values towards
+		//! the tail.
+		float SumX [ULC_MAX_SUBBLOCKS] = {0.0f};
+		float SumX2[ULC_MAX_SUBBLOCKS] = {0.0f};
+		float SumXY[ULC_MAX_SUBBLOCKS] = {0.0f};
+		float SumY [ULC_MAX_SUBBLOCKS] = {0.0f};
+		float SumW [ULC_MAX_SUBBLOCKS] = {0.0f};
+		for(n=0;n<N;n++) {
+			int   Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
+			float x = (float)n;
+			float y = Coef[Band+n];
+			float w = (1.0f + y) * SQR((float)(N-n)/N);
+			float yLog = -0x1.62E430p4f; //! Log[2^-32]
+			if(y > 0x1.0p-32f) {
+#if 0 //! Can be VERY slow
+				yLog = logf(y);
+#else
+				//! Quick and dirty logarithm
+				//! Polynomial (with x = 0.0 .. 1.0):
+				//!  a*x + b*x^2 + c*x^3
+				//!  a = 1
+				//!  b = -15 - 3*Log[2] + 12*Log[4]
+				//!  c =  14 + 4*Log[2] - 12*Log[4]
+				//! This gives an approximation to Log[1+x], with PSNR = 59.3dB.
+				//! The exponent part is then trivial, forming:
+				//!  Log[2]*Exponent + Log[1+Mantissa]
+				union {
+					float f;
+					struct {
+						uint32_t m:23;
+						uint32_t e:9; //! Technically, {e:8,s:1}, but s=0 always
+					};
+				} v = {.f = y};
+				uint64_t m = 0xE348115793F6000ull - v.m*0x8C58828E7ull;      //! .61
+					 m = ((uint64_t)v.m*v.m >> 14) * (m >> 29);          //! .64
+					 m = ((uint64_t)v.m     << 41) - m;                  //! .64; final value for mantissa part
+					 m = ((int)v.e - 127)*0xB17217F7D1CF78ll + (m >> 8); //! .56 (SIGNED!)
+				yLog = (int64_t)m * 0x1.0p-56f;
+#endif
+			}
+			SumX [Bin] += w*x;
+			SumX2[Bin] += w*x*x;
+			SumXY[Bin] += w*x*yLog;
+			SumY [Bin] += w  *yLog;
+			SumW [Bin] += w;
+		}
+
+		//! Solve for each bin and accumulate for harmonic mean
+		int Total = 0;
+		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
+		for(n=0;n<nSubBlocks;n++) {
+			float Det = SQR(SumX[n]) - SumW[n]*SumX2[n]; //! NOTE: Negated to get E^(-x) for harmonic mean
+			if(Det != 0.0f) {
+				Amplitude += expf((SumX2[n]*SumY [n] - SumX[n]*SumXY[n]) / Det);
+				Decay     += expf((SumW [n]*SumXY[n] - SumX[n]*SumY [n]) / Det);
+				Total++;
+			} else {
+				//! Play it safe and disable HF extension
+				Amplitude = 0.0f;
+				Decay     = 0.0f;
+				Total     = 0;
+				break;
+			}
+		}
+
+		//! Get final values
+		//! NOTE: Scale Amplitude by 2Sqrt[2] for some reason.
+		//! Probably something to do with the least-squares fit?
+		if(Total) {
+			Amplitude = Total/Amplitude * 0x1.6A09E6p1f;
+			Decay     = Total/Decay;
+		}
 	}
 
 	//! Quantize amplitude and decay
-	     if(Decay < SQR(1/32.0f)*0.5f) Amplitude = 0.0f; //! Disable fill with too fast decay
-	else if(Decay > 1.0f) Decay = 0.0f;
-	else                  Decay = sqrtf(1.0f - Decay); //! <- Re-map
-	int NoiseQ     = (int)sqrtf(Amplitude * q);        //! <- Round down
-	int NoiseDecay = (int)(Decay*32 - 1 + 0.5f);
+	Decay = (Decay > 1.0f) ? 0.0f : sqrtf(1.0f - Decay); //! <- Re-map
+	int NoiseQ     = (int)sqrtf(Amplitude * q); //! <- Round down
+	int NoiseDecay = (int)ceilf(Decay*32 - 1);  //! <- Round up (rounds down after inverse mapping)
 	if(NoiseQ     > 0xF) NoiseQ     = 0xF;
 	if(NoiseDecay < 0x0) NoiseDecay = 0x0;
 	if(NoiseDecay > 0xF) NoiseDecay = 0xF;
