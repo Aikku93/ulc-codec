@@ -20,6 +20,9 @@
 //! 1 == Use window switching
 #define ULC_USE_WINDOW_SWITCHING 1
 
+//! Maximum number of subblocks present in a block
+#define ULC_MAX_SUBBLOCKS 4
+
 //! Lowest possible coefficient value
 #define ULC_COEF_EPS (0x1.0p-31f) //! 4+0xE+0xC = Maximum extended-precision quantizer
 
@@ -50,6 +53,7 @@ struct ULC_EncoderState_t {
 	//!   float SampleBuffer   [nChan*BlockSize]
 	//!   float TransformBuffer[nChan*BlockSize]
 	//!   float TransformNepers[nChan*BlockSize]
+	//!   float TransformNoise [nChan*BlockSize] <- With ULC_USE_NOISE_CODING only
 	//!   float TransformFwdLap[nChan*BlockSize/2]
 	//!   float TransientEnergy[BlockSize]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
@@ -63,6 +67,9 @@ struct ULC_EncoderState_t {
 	float *SampleBuffer;
 	float *TransformBuffer;
 	float *TransformNepers;
+#if ULC_USE_NOISE_CODING
+	float *TransformNoise;
+#endif
 	float *TransformFwdLap;
 	float *TransientEnergy;
 	float *TransformTemp;
