@@ -259,6 +259,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		float *BufferSamples = State->SampleBuffer;
 		float *BufferMDCT    = State->TransformBuffer;
 		float *BufferNepers  = State->TransformNepers;
+#if ULC_USE_NOISE_CODING
+		float *BufferNoise   = State->TransformNoise;
+#endif
 		float *BufferIndex   = (float*)State->TransformIndex;
 		float *BufferFwdLap  = State->TransformFwdLap;
 		float *BufferTemp    = State->TransformTemp;
@@ -338,15 +341,52 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! in the first place, as the output of the MDCT itself
 				//! should've been normalized already.
 				//! PONDER: Modify Fourier_MDCT() to do this automatically?
+				//! NOTE: While we're at it, we also decorrelate the signal
+				//! using a simple 2nd order LPC filter, used in noise-fill.
+				//! The idea here is to remove transient sinusoids from the
+				//! analysis during noise-fill, as correlated signals without
+				//! this correction tend to be detected as loud noise.
 				float Norm = 2.0f / SubBlockSize;
-				for(n=0;n<SubBlockSize;n++) {
-					BufferMDCT[n] *= Norm;
-					BufferMDST[n] *= Norm;
+#if ULC_USE_NOISE_CODING
+				float w01 = 0.0f, w11 = 0.0f;
+				float w02 = 0.0f, w12 = 0.0f, w22 = 0.0f;
+				BufferMDCT[0] *= Norm, BufferMDST[0] *= Norm;
+				BufferMDCT[1] *= Norm, BufferMDST[1] *= Norm;
+				for(n=2;n<SubBlockSize;n++) {
+					BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
+					float c0 = BufferMDCT[n];
+					float c1 = BufferMDCT[n-1];
+					float c2 = BufferMDCT[n-2];
+					w01 += c0*c1;
+					w02 += c0*c2;
+					w11 += c1*c1;
+					w12 += c1*c2;
+					w22 += c2*c2;
 				}
 
+				//! Solve for LPC parameters and store whitened signal
+				float C1 = 0.0f; //! On indeterminate solution, use no prediction - signal is likely noise (or silence)
+				float C2 = 0.0f;
+				float Det = w11*w22 - w12*w12;
+				if(Det != 0.0f) {
+					C1 = (w12*w02 - w01*w22) / Det;
+					C2 = (w01*w12 - w11*w02) / Det;
+				}
+				BufferNoise[0] = 0.0f;
+				BufferNoise[1] = 0.0f;
+				for(n=2;n<SubBlockSize;n++) {
+					float r = BufferMDCT[n] + C1*BufferMDCT[n-1] + C2*BufferMDCT[n-2];
+					BufferNoise[n] = ABS(r);
+				}
+#else
+				for(n=0;n<SubBlockSize;n++) BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
+#endif
 				//! Move to the next subblock
-				BufferMDCT += SubBlockSize;
-				BufferMDST += SubBlockSize;
+				BufferMDCT  += SubBlockSize;
+				BufferMDST  += SubBlockSize;
+#if ULC_USE_NOISE_CODING
+				BufferNoise += SubBlockSize;
+#endif
 			}
 
 			//! Cache the sample data for the next block
@@ -358,9 +398,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		BufferMDCT -= BlockSize*nChan; //! Rewind to start of buffer
 		BufferMDST -= BlockSize*nChan;
 
-		//! Perform importance analysis
-		//! NOTE: Without psychoacoustics, we still perform some
-		//! analysis for ABR coding modes (complexity analysis).
+		//! Perform encoding analysis
 		{
 			//! Combine the energy of all channels' MDCT+MDST coefficients
 			//! into normalized (by maximum) fixed-point integer values.
@@ -405,8 +443,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					Complexity += Abs2, ComplexityW += sqrtf(Abs2);
 				}
 				if(Complexity) {
-					//! Entropy doesn't directly translate to quality
-					//! very well, so map it through a square-root curve
 					float ComplexityScale = 0x1.62E430p-1f*(31 - __builtin_clz(BlockSize)); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
 					Complexity = logf(SQR(ComplexityW) / Complexity) / ComplexityScale;
 					if(Complexity < 0.0f) Complexity = 0.0f; //! In case of round-off error
@@ -479,14 +515,19 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			int Decimation = WindowCtrl >> 4;
 			BufferMDCT   = State->TransformBuffer;
 			BufferNepers = State->TransformNepers;
+#if ULC_USE_NOISE_CODING
+			BufferNoise  = State->TransformNoise;
+#endif
 			BufferIndex  = (float*)State->TransformIndex;
 			for(Chan=0;Chan<nChan;Chan++) {
-				Block_Transform_BufferInterleave(BufferMDCT,   BufferTemp, BlockSize, Decimation);
-				Block_Transform_BufferInterleave(BufferNepers, BufferTemp, BlockSize, Decimation);
-				Block_Transform_BufferInterleave(BufferIndex,  BufferTemp, BlockSize, Decimation);
-				BufferMDCT   += BlockSize;
-				BufferNepers += BlockSize;
-				BufferIndex  += BlockSize;
+#define INTERLEAVE(Buf) Block_Transform_BufferInterleave(Buf, BufferTemp, BlockSize, Decimation); Buf += BlockSize
+				INTERLEAVE(BufferMDCT);
+				INTERLEAVE(BufferNepers);
+#if ULC_USE_NOISE_CODING
+				INTERLEAVE(BufferNoise);
+#endif
+				INTERLEAVE(BufferIndex);
+#undef INTERLEAVE
 			}
 		}
 	}
