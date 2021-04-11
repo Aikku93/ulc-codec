@@ -5,8 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <math.h>
-/**************************************/
 #define ABS(x) ((x) < 0 ? (-(x)) : (x))
 #define SQR(x) ((x)*(x))
 /**************************************/
@@ -78,53 +76,31 @@ static inline int ULC_Helper_TransientSubBlockIndex(int Decimation) {
 
 /**************************************/
 
-//! Spectral flatness measure
-//! Adapted from "Note on measures for spectral flatness"
-//! DOI: 10.1049/el.2009.1977
-//! Optimized derivation (for a single loop):
-//!  Given a sequence x[0..N-1]:
-//!  Let `f` be the output value, and `b` an arbitrary base:
-//!   f = 2^(-g / log_b(N)) - 1
-//!   where `g` = Sum(y[n]*log_b(y[n]))
-//!   and y = x[n] / Sum(x[0..N])
-//!  Letting `a` = Sum(x[0..N]) and replacing `y` by its
-//!  definition, we then get:
-//!   g = Sum(x[n]/a * log_b(x[n]/a))
-//!  Use logarithm rules to expand:
-//!   g = Sum(x[n]/a * (log_b(x[n]) - log_b(a)))
-//!   g = Sum(x[n] * log_b(x[n]) / a) - Sum(x[n] * log_b(a) / a)
-//!  Factor out `a` and `log_b(a)`:
-//!   g = (1/a)*Sum(x[n] * log_b(x[n])) - (1/a)*log_b(a)*Sum(x[n])
-//!  And since `a` = Sum(x[0..N]):
-//!   g = (1/a)*Sum(x[n] * log_b(x[n])) - log_b(Sum(x[n]))
-//!  This means that we only need to compute two sums:
-//!   a = Sum(x[n])
-//!   f = Sum(x[n] * log_b(x[n]))
-//!  and combine as
-//!   g = (1/a)*f - log_b(a)
-//!  As the sums are independent, this can be performed in a single step.
-//! NOTE: Unused, and only here for reference
-static inline __attribute__((always_inline)) float ULC_Helper_SpectralFlatness(const float *Buf, int N) {
-	int i;
-	float a = 0.0f, f = 0.0f;
-	for(i=0;i<N;i++) {
-		float Val = SQR(Buf[i]);
-		a += Val;
-		if(Val != 0.0f) f += Val*logf(Val);
-	}
-	if(a == 0.0f) return 1.0f;
-	return exp2f((logf(a) - f/a) / logf(N)) - 1.0f;
-}
-
-//! Masking bandwidth estimation
-//! NOTE: Unused, and only here for reference
-static inline __attribute__((always_inline)) float ULC_Helper_MaskingBandwidth(float Fc) {
-#if 0 //! Bark scale
-	return 50.21f + Fc*(1.0f/8.73f + Fc*(1.0f/93945.23f));
-#else
-	//! ERB scale
-	return 24.7f + 0.107939f*Fc;
-#endif
+//! Quick and dirty logarithm
+//! Polynomial (with x = 0.0 .. 1.0):
+//!  a*x + b*x^2 + c*x^3
+//!  a = 1
+//!  b = -15 - 3*Log[2] + 12*Log[4]
+//!  c =  14 + 4*Log[2] - 12*Log[4]
+//! This gives an approximation to Log[1+x], with PSNR = 59.3dB.
+//! The exponent part is then trivial, forming:
+//!  Log[2]*Exponent + Log[1+Mantissa]
+//! NOTE: Returns Log[2^-126] for Log[0].
+//! NOTE: Assumes x is normal (not NaN, +/-inf) and non-negative.
+//! NOTE: Biased by 2^-126 to avoid dealing with subnormals.
+static inline __attribute__((always_inline)) float ULC_FastLnApprox(float x) {
+	union {
+		float f;
+		struct {
+			uint32_t m:23;
+			uint32_t e:9; //! Technically, {e:8,s:1}, but s=0 always
+		};
+	} v = {.f = x + 0x1.0p-126f};
+	uint64_t m = 0xE348115793F6000ull - v.m*0x8C58828E7ull;      //! .61
+		 m = ((uint64_t)v.m*v.m >> 14) * (m >> 29);          //! .64
+		 m = ((uint64_t)v.m     << 41) - m;                  //! .64; final value for mantissa part
+		 m = ((int)v.e - 127)*0xB17217F7D1CF78ll + (m >> 8); //! .56 (SIGNED!)
+	return (int64_t)m * 0x1.0p-56f;
 }
 
 /**************************************/
