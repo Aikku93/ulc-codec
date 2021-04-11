@@ -42,12 +42,10 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 #define CREATE_BUFFER(Name, Sz) int Name##_Offs = AllocSize; AllocSize += Sz
 	CREATE_BUFFER(SampleBuffer,    sizeof(float) * (nChan* BlockSize   ));
 	CREATE_BUFFER(TransformBuffer, sizeof(float) * (nChan* BlockSize   ));
-	CREATE_BUFFER(TransformNepers, sizeof(float) * (nChan* BlockSize   ));
 #if ULC_USE_NOISE_CODING
 	CREATE_BUFFER(TransformNoise,  sizeof(float) * (nChan* BlockSize   ));
 #endif
 	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*(BlockSize/2)));
-	CREATE_BUFFER(TransientEnergy, sizeof(float) * (       BlockSize   ));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * ((nChan + (nChan < 2)) * BlockSize));
 	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan* BlockSize   ));
 #undef CREATE_BUFFER
@@ -60,22 +58,18 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
 	State->SampleBuffer    = (float*)(Buf + SampleBuffer_Offs);
 	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
-	State->TransformNepers = (float*)(Buf + TransformNepers_Offs);
 #if ULC_USE_NOISE_CODING
 	State->TransformNoise  = (float*)(Buf + TransformNoise_Offs);
 #endif
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
-	State->TransientEnergy = (float*)(Buf + TransientEnergy_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
 
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
-	State->TransientCompressorGain = 0.0f;
 	for(i=0;i<nChan*(BlockSize  );i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
-	for(i=0;i<      (BlockSize  );i++) State->TransientEnergy[i] = 0.0f;
 
 	//! Success
 	return 1;
