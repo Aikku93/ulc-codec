@@ -24,27 +24,23 @@ static inline void Block_Transform_WriteNepersAndIndices(
 	const float *MaskingNp,
 #endif
 	const float *Coef,
-	      float *CoefNp,
 	      int   *nNzCoef,
 	      int    BlockSize
 ) {
 	int Band;
 	for(Band=0;Band<BlockSize;Band++) {
-		float Val = Coef[Band];
-
 		//! Coefficient inside codeable range?
-		if(ABS(Val) < 0.5f*ULC_COEF_EPS) {
-			CoefNp [Band] = ULC_COEF_NEPER_OUT_OF_RANGE;
+		float Val = ABS(Coef[Band]);
+		if(Val < 0.5f*ULC_COEF_EPS) {
 			CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
 		} else {
-			float ValNp = logf(ABS(Val));
+			float ValNp = logf(Val);
 			float MaskedValNp = ValNp;
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Apply psychoacoustic corrections to this band energy
 			MaskedValNp -= MaskingNp[Band];
 #endif
 			//! Store the sort value for this coefficient
-			CoefNp [Band] = ValNp;
 			CoefIdx[Band] = MaskedValNp;
 			(*nNzCoef)++;
 		}
@@ -239,9 +235,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
 		Data,
 		State->SampleBuffer,
-		State->TransientEnergy,
 		State->TransformTemp,
-		&State->TransientCompressorGain,
 		BlockSize,
 		nChan
 	);
@@ -258,16 +252,15 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		int n, Chan;
 		float *BufferSamples = State->SampleBuffer;
 		float *BufferMDCT    = State->TransformBuffer;
-		float *BufferNepers  = State->TransformNepers;
 #if ULC_USE_NOISE_CODING
 		float *BufferNoise   = State->TransformNoise;
 #endif
 		float *BufferIndex   = (float*)State->TransformIndex;
 		float *BufferFwdLap  = State->TransformFwdLap;
 		float *BufferTemp    = State->TransformTemp;
-		float *BufferMDST    = BufferNepers;                       //! NOTE: Aliasing of BufferNepers
+		float *BufferMDST    = BufferIndex;                       //! NOTE: Aliasing of BufferIndex
 #if ULC_USE_PSYCHOACOUSTICS
-		float *MaskingNp     = BufferNepers + (nChan-1)*BlockSize; //! NOTE: Aliasing of BufferNepers in last channel
+		float *MaskingNp     = BufferIndex + (nChan-1)*BlockSize; //! NOTE: Aliasing of BufferIndex in last channel
 #endif
 		//! Apply M/S transform to the data
 		//! NOTE: Fully normalized; not orthogonal.
@@ -341,42 +334,58 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! in the first place, as the output of the MDCT itself
 				//! should've been normalized already.
 				//! PONDER: Modify Fourier_MDCT() to do this automatically?
-				//! NOTE: While we're at it, we also decorrelate the signal
-				//! using a simple 2nd order LPC filter, used in noise-fill.
-				//! The idea here is to remove transient sinusoids from the
-				//! analysis during noise-fill, as correlated signals without
-				//! this correction tend to be detected as loud noise.
+				//! NOTE: While we're at it, we also perform noise analysis.
 				float Norm = 2.0f / SubBlockSize;
 #if ULC_USE_NOISE_CODING
-				float w01 = 0.0f, w11 = 0.0f;
-				float w02 = 0.0f, w12 = 0.0f, w22 = 0.0f;
-				BufferMDCT[0] *= Norm, BufferMDST[0] *= Norm;
-				BufferMDCT[1] *= Norm, BufferMDST[1] *= Norm;
-				for(n=2;n<SubBlockSize;n++) {
+				//! Convert MDCT+MDST to amplitude (treat as Re+Im pairs);
+				//! this creates an amplitude envelope of the spectrum
+				for(n=0;n<SubBlockSize;n++) {
 					BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
-					float c0 = BufferMDCT[n];
-					float c1 = BufferMDCT[n-1];
-					float c2 = BufferMDCT[n-2];
-					w01 += c0*c1;
-					w02 += c0*c2;
-					w11 += c1*c1;
-					w12 += c1*c2;
-					w22 += c2*c2;
+					BufferTemp[n]  = sqrtf(SQR(BufferMDCT[n]) + SQR(BufferMDST[n]));
 				}
 
-				//! Solve for LPC parameters and store whitened signal
-				float C1 = 0.0f; //! On indeterminate solution, use no prediction - signal is likely noise (or silence)
-				float C2 = 0.0f;
-				float Det = w11*w22 - w12*w12;
-				if(Det != 0.0f) {
-					C1 = (w12*w02 - w01*w22) / Det;
-					C2 = (w01*w12 - w11*w02) / Det;
-				}
+				//! Perform a bandpass filter to remove DC terms inserted
+				//! by transients. This is ugly and not perfect, but is
+				//! good enough for the time being.
+				//! NOTE: Gain of 2.0.
 				BufferNoise[0] = 0.0f;
 				BufferNoise[1] = 0.0f;
 				for(n=2;n<SubBlockSize;n++) {
-					float r = BufferMDCT[n] + C1*BufferMDCT[n-1] + C2*BufferMDCT[n-2];
-					BufferNoise[n] = ABS(r);
+					BufferNoise[n] = ABS(BufferTemp[n] - BufferTemp[n-2]);
+				}
+
+				//! Spread the noise in both directions and then take the
+				//! RMS amplitude of both spreads. The idea being that if
+				//! we then take a harmonic mean of the envelope, we should
+				//! get the noise level with the exclusion of tones.
+				//! ie. We're only trying to patch over the low-amplitude
+				//! parts of noise signals.
+				//! NOTE: We multiply the level by 2.0 to account for noise
+				//! averaging out to half its amplitude... However, we've
+				//! already implicitly multipled by 2.0 in the above filter
+				//! so I'm not sure why it's necessary to do it again.
+				//! Possibly something to do with using a harmonic mean
+				//! in the noise-fill routines?
+				//! TODO: This can detect scalloping as noise, because we
+				//! smoothed out the spectrum and are now relying on the
+				//! assumption that the local minima are the noise level.
+				{
+					float Tap = 0.0f;
+					float Decay = 0.25f, OneMinusDecay = 1.0f - Decay;
+					for(n=SubBlockSize-1;n>=0;n--) {
+						Tap += BufferNoise[n] * OneMinusDecay;
+						BufferTemp[n] = Tap;
+						Tap *= Decay;
+					}
+				}
+				{
+					float Tap = 0.0f;
+					float Decay = 0.25f, OneMinusDecay = 1.0f - Decay;
+					for(n=0;n<SubBlockSize;n++) {
+						Tap += BufferNoise[n] * OneMinusDecay;
+						BufferNoise[n] = 2.0f * sqrtf(SQR(Tap) + SQR(BufferTemp[n]));
+						Tap *= Decay;
+					}
 				}
 #else
 				for(n=0;n<SubBlockSize;n++) BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
@@ -483,21 +492,19 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
 					int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
 
-					//! Store the Neper-domain coefficients and sorting (importance) indices
+					//! Store the sorting (importance) indices
 					Block_Transform_WriteNepersAndIndices(
 						BufferIndex,
 #if ULC_USE_PSYCHOACOUSTICS
 						MaskingNp,
 #endif
 						BufferMDCT,
-						BufferNepers,
 						&nNzCoef,
 						SubBlockSize
 					);
 
 					//! Move to the next subblock
 					BufferMDCT   += SubBlockSize;
-					BufferNepers += SubBlockSize;
 					BufferIndex  += SubBlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
 					MaskingNp    += SubBlockSize;
@@ -514,7 +521,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		if(WindowCtrl & 0x8) {
 			int Decimation = WindowCtrl >> 4;
 			BufferMDCT   = State->TransformBuffer;
-			BufferNepers = State->TransformNepers;
 #if ULC_USE_NOISE_CODING
 			BufferNoise  = State->TransformNoise;
 #endif
@@ -522,7 +528,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(Chan=0;Chan<nChan;Chan++) {
 #define INTERLEAVE(Buf) Block_Transform_BufferInterleave(Buf, BufferTemp, BlockSize, Decimation); Buf += BlockSize
 				INTERLEAVE(BufferMDCT);
-				INTERLEAVE(BufferNepers);
 #if ULC_USE_NOISE_CODING
 				INTERLEAVE(BufferNoise);
 #endif

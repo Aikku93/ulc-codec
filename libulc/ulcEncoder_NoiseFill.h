@@ -24,16 +24,17 @@ static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Ban
 		//! Perform the actual analysis
 		float Sum [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumW[ULC_MAX_SUBBLOCKS] = {0.0f};
+		int   SumN[ULC_MAX_SUBBLOCKS] = {0};
 		for(n=0;n<N;n++) {
 			int   Bin  = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
 			float y    = Coef[Band+n];
-			float w    = 1.0f + y;
+			float w    = 1.0f / (0x1.0p-32f + y);
 			Sum [Bin] += w*y;
 			SumW[Bin] += w;
+			SumN[Bin] += 1;
 		}
 
 		//! Get harmonic mean of all bins
-		//! NOTE: Scale by 2.0 to account for noise averaging at 0.5.
 		float Total  = 0.0f;
 		int   TotalN = 0;
 		int   nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
@@ -43,7 +44,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Ban
 			Total  += (sW / s);
 			TotalN += 1;
 		}
-		Amplitude = Total ? (2.0f * TotalN/Total) : 0.0f;
+		Amplitude = Total ? (TotalN/Total) : 0.0f;
 	}
 
 	//! Quantize the noise amplitude into final code
@@ -66,52 +67,25 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, i
 		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
 
 		//! Next, accumulate all the data into their respective bins.
-		//! NOTE: The analysis is the same as in normal noise-fill,
-		//! but with a further weight to balance out values towards
-		//! the tail.
+		//! NOTE: The analysis is the same as in normal noise-fill.
 		float SumX [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumX2[ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumXY[ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumY [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumW [ULC_MAX_SUBBLOCKS] = {0.0f};
+		int   SumN [ULC_MAX_SUBBLOCKS] = {0};
 		for(n=0;n<N;n++) {
 			int   Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
 			float x = (float)n;
 			float y = Coef[Band+n];
-			float w = (1.0f + y) * SQR((float)(N-n)/N);
-			float yLog = -0x1.62E430p4f; //! Log[2^-32]
-			if(y > 0x1.0p-32f) {
-#if 0 //! Can be VERY slow
-				yLog = logf(y);
-#else
-				//! Quick and dirty logarithm
-				//! Polynomial (with x = 0.0 .. 1.0):
-				//!  a*x + b*x^2 + c*x^3
-				//!  a = 1
-				//!  b = -15 - 3*Log[2] + 12*Log[4]
-				//!  c =  14 + 4*Log[2] - 12*Log[4]
-				//! This gives an approximation to Log[1+x], with PSNR = 59.3dB.
-				//! The exponent part is then trivial, forming:
-				//!  Log[2]*Exponent + Log[1+Mantissa]
-				union {
-					float f;
-					struct {
-						uint32_t m:23;
-						uint32_t e:9; //! Technically, {e:8,s:1}, but s=0 always
-					};
-				} v = {.f = y};
-				uint64_t m = 0xE348115793F6000ull - v.m*0x8C58828E7ull;      //! .61
-					 m = ((uint64_t)v.m*v.m >> 14) * (m >> 29);          //! .64
-					 m = ((uint64_t)v.m     << 41) - m;                  //! .64; final value for mantissa part
-					 m = ((int)v.e - 127)*0xB17217F7D1CF78ll + (m >> 8); //! .56 (SIGNED!)
-				yLog = (int64_t)m * 0x1.0p-56f;
-#endif
-			}
+			float w = SQR(N-n);
+			float yLog = ULC_FastLnApprox(y);
 			SumX [Bin] += w*x;
 			SumX2[Bin] += w*x*x;
 			SumXY[Bin] += w*x*yLog;
 			SumY [Bin] += w  *yLog;
 			SumW [Bin] += w;
+			SumN [Bin] += 1;
 		}
 
 		//! Solve for each bin and accumulate for harmonic mean
@@ -133,10 +107,8 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, i
 		}
 
 		//! Get final values
-		//! NOTE: Scale Amplitude by 2Sqrt[2] for some reason.
-		//! Probably something to do with the least-squares fit?
 		if(Total) {
-			Amplitude = Total/Amplitude * 0x1.6A09E6p1f;
+			Amplitude = Total/Amplitude;
 			Decay     = Total/Decay;
 		}
 	}
