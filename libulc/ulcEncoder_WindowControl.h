@@ -7,6 +7,8 @@
 /**************************************/
 #include <math.h>
 /**************************************/
+#include "ulcHelper.h"
+/**************************************/
 
 //! Get optimal log base-2 overlap and window scalings for transients
 //! The idea is that if a transient is relatively centered with the
@@ -43,19 +45,17 @@
 //!    0001: N/1*
 //!  Transient subblocks are thus conveniently indexed via
 //!  POPCNT (minus 1 to remove the unary count 'stop' bit)
+struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t {
+	float Sum, SumW;
+};
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	const float *Data,
 	const float *LastBlockData,
-	float *LastTransientEnergy,
-	float *StepBuffer,
-	float *CompressorGain,
+	      float *StepBuffer,
 	int BlockSize,
 	int nChan
 ) {
 	int n, Chan;
-
-	//! Copy the transient energy from the previous block
-	for(n=0;n<BlockSize;n++) StepBuffer[n] = LastTransientEnergy[n];
 
 	//! Perform a bandpass filter to isolate the energy that is
 	//! important to transient detection. Generally, LF energy
@@ -65,85 +65,125 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//!  H(z) = z^1 - z^-1
 	//! NOTE: This filter does not have unity gain, as doing so
 	//! would add some multiplications that reduce performance.
-	//! This will be compensated for later.
-	//! NOTE: Recompute the sample at the boundary between the
-	//! previous block and this one, as it wasn't available in
-	//! the previous block (and was set to 0).
-	for(n=BlockSize;n<BlockSize*2;n++) StepBuffer[n] = 0.0f;
+	//! NOTE: We end up missing the first sample of the old
+	//! block, and the last sample of the new block; this really
+	//! shouldn't affect things, though.
+	//! NOTE: We decimate by a factor of 2 to save a bit of memory
+	//! and because the results should be almost the same anyway.
+	//! NOTE: BPFILT() accepts z^-1,1,z^1 for flexibility if we
+	//! ever need to change the filter formula.
+	for(n=0;n<BlockSize;n++) StepBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-#define BPFILT(zM1, z1) ((z1) - (zM1))
-		float *Dst = StepBuffer + BlockSize;
+#define BPFILT(zM1, z0, z1) ((z1) - (zM1))
+		float *Dst = StepBuffer;
 		const float *SrcOld = LastBlockData + Chan*BlockSize;
 		const float *SrcNew = Data          + Chan*BlockSize;
-		n = BlockSize-1;
-		Dst[-1] += SQR(BPFILT(SrcOld[n-1], SrcNew[0])); //! Fix up last sample of previous block
-		*Dst++  += SQR(BPFILT(SrcOld[n],   SrcNew[1]));
-		for(n=1;n<BlockSize-1;n++) {
-			*Dst++ += SQR(BPFILT(SrcNew[n-1], SrcNew[n+1]));
+		{
+			*Dst   += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry about n=1/2
+			*Dst++ += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
 		}
-		//*Dst++ += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry about N-1/2, and a HP filter with symmetry about N-1
+		for(n=1;n<BlockSize/2-1;n++) {
+			*Dst   += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
+			*Dst++ += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
+		}
+		{
+			*Dst   += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
+			*Dst++ += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcNew[0])), SrcOld++;
+			*Dst   += SQR(BPFILT(SrcOld[0], SrcNew[0], SrcNew[1]));
+			*Dst++ += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+		}
+		for(n=1;n<BlockSize/2-1;n++) {
+			*Dst   += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst++ += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+		}
+		{
+			*Dst   += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst++ += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry about n=N-1/2
+		}
 #undef BPFILT
 	}
 
-	//! Filter the BP energy to extract transient spikes.
-	//! The idea is to take the difference between the
-	//! instantaneous energy, and the integrated energy
-	//! (using a leaky integrator). The main point of
-	//! interest here is the final step:
-	//!  Buf[n] = d^8
-	//! This exponentiation corresponds to a dynamic-range
-	//! expander (1:8 ratio), and what it achieves is
-	//! to lower the noise floor (corresponding to minor
-	//! variations in energy and 'soft' transients) so that
-	//! non-transient events are less likely to trigger at
-	//! a given threshold, while improving the resolution
-	//! of 'real' transients by separating them cleanly
-	//! from the noise floor, allowing us to use a much
-	//! larger threshold than expected. This large threshold
-	//! is key to avoiding triggering during non-transient
-	//! events, which maintains high-quality output.
-	//! NOTE: The maximum possible value for SmoothGain is
-	//! 1 / (1-DecayRate). Despite resulting in abnormally
-	//! large numbers relative to the normalized range, this
-	//! is still bound and shouldn't cause issues.
-	{
-		const float Ratio     = 0x1.1FEB34p-1f; //! -5.0dB (mixing ratio is 1:X, Instantaneous:Integrated)
-		const float DecayRate = 0x1.EFCF24p-1f; //! -0.3dB/sample (Infinity gain: 30.0dB. Add Ratio gain for final gain)
-		float *Buf = StepBuffer;
-		float SmoothGain = *CompressorGain, Norm = 0.25f / nChan;
-		for(n=BlockSize-1;n<BlockSize*2-1;n++) {
-			float v = sqrtf(Buf[n] * Norm);
-			float d = v - SmoothGain;
-			SmoothGain = DecayRate*SmoothGain + Ratio*v;
-			Buf[n] = SQR(SQR(SQR(d))); //! (30dB + -5dB)*8 = 200dB = ~33bits
+	//! Compute back-propagated energy (ie. how much energy we
+	//! can tolerate as part of pre-echo).
+	//! NOTE: While we're at it, we also apply the square root
+	//! needed to get the RMS energy over all channels.
+	float *BackMasking = StepBuffer + BlockSize; {
+		//! Decay curve: -0.5dB/sample
+		//! Calculation:
+		//!  10^(-dBPerSample/20 * 2) = E^(Log[10]*(-dBPerSample/20) * 2)
+		//! NOTE: Exponent multiplied by 2 to account for decimation by 2.
+		float *Src = StepBuffer  + BlockSize; //! Iterated backwards
+		float *Dst = BackMasking + BlockSize; //! Iterated backwards
+		float  Tap = 0.0f, Decay = 0x1.C8520Bp-1f, OneMinusDecay = 0x1.BD6FA8p-4f;
+		for(n=0;n<BlockSize;n++) {
+			float v = sqrtf(*--Src); *Src = v;
+			Tap += v * OneMinusDecay;
+			*--Dst = Tap;
+			Tap *= Decay;
 		}
-		*CompressorGain = SmoothGain;
-		Buf[n] = 0.0f; //! Last sample is unavailable - Exclude from analysis
 	}
 
-	//! Save the new transient energy back to the caching buffer
-	for(n=0;n<BlockSize;n++) LastTransientEnergy[n] = StepBuffer[BlockSize + n];
+	//! Compute forward-propagated energy (ie. how much energy we
+	//! can tolerate as part of post-echo), and differentiate with
+	//! respect to backwards-propagated energy to capture changes
+	//! in the signal envelope for analysis. This differentiated
+	//! energy is then put into a smooth-max/entropy sum for
+	//! accelerating analysis in window-switch/overlap-scale.
+	{
+		//! Decay curve: -0.2dB/sample
+		int AnalysisIntervalMask = BlockSize/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4)
+		const float *Src = StepBuffer;
+		      float  Tap = 0.0f, Decay = 0x1.E8F4CAp-1f, OneMinusDecay = 0x1.70B363p-5f;
+		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *Dst = (void*)StepBuffer; //! void* cast avoids a nasty, long typecast
+		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t  Tmp = {.Sum = 0.0f, .SumW = 0.0f};
+		for(n=0;n<BlockSize;n++) {
+			Tap += *Src++ * OneMinusDecay;
+			float d = *BackMasking++ - Tap;
+			Tap *= Decay;
+
+			//! Accumulate to sums.
+			//! Because everything would be summed up in the search loop
+			//! of Block_Transform_GetWindowCtrl(), we sum as much as we
+			//! can here to reuse as many computations as possible.
+			//! NOTE: These sums bear some similarity to Shannon entropy,
+			//! but I'm not sure of the connection. This formulation seems
+			//! to give the best results at any block size, though.
+			//! NOTE: Even though we are using non-linear weights, the
+			//! sum normalizes to a linear logarithm (this is important
+			//! in the threshold analyses). Also, taking the logarithm of
+			//! the original value should preserve accuracy a bit better.
+			//! NOTE: We shouldn't need very precise logarithms here, so
+			//! just use a cheaper approximation.
+			float w = SQR(SQR(d));
+			Tmp.SumW += w, Tmp.Sum += w*ULC_FastLnApprox(ABS(d));
+
+			//! Wrapping around to next segment?
+			if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
+		}
+	}
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
 	const float *LastBlockData,
-	float *LastTransientEnergy,
-	float *StepBuffer,
-	float *CompressorGain,
+	      float *StepBuffer,
 	int BlockSize,
 	int nChan
 ) {
 	int n;
 
-	//! Perform filtering to enhance transient analysis
-	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, LastTransientEnergy, StepBuffer, CompressorGain, BlockSize, nChan);
+	//! Perform filtering to obtain pre-echo analysis
+	//! NOTE: Output data is stored as a struct to improve performance (SIMD
+	//! optimizable, in theory). The void* cast avoids a nasty, long typecast.
+	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, StepBuffer, BlockSize, nChan);
+	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *TransientData = (void*)StepBuffer;
 
 	//! Begin binary search for transient segment until it stops on the R side,
 	//! at which point the ratio for the transition region is stored
 	float Ratio;
-	int Decimation     = 0b0001;
-	int SubBlockSize_2 = BlockSize/2;
-	for(StepBuffer += SubBlockSize_2;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block
+	int Decimation    = 0b0001;
+	int SubBlockSize  = BlockSize;
+	int AnalysisLen  = ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO;
+	for(TransientData += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
 		//! Find the peak ratio within each segment (L/M/R),
 		//! making sure to store the transition region ratio
 		enum { POS_L, POS_M, POS_R};
@@ -153,36 +193,32 @@ static inline int Block_Transform_GetWindowCtrl(
 			const float MIN_LOG = -100.0f;
 
 			//! Get the energy of each segment (LL/L/M/R)
-			//! NOTE: We are computing a log-domain smooth-max here,
-			//! which has some relation to Shannon entropy. I'm not
-			//! entirely sure what the connection is, but this seems
-			//! to give the best results even for large block sizes.
-			float LL = 0.0f, LLw = 0.0f;
-			float L  = 0.0f, Lw  = 0.0f;
-			float M  = 0.0f, Mw  = 0.0f;
-			float R  = 0.0f, Rw  = 0.0f;
-			for(n=0;n<SubBlockSize_2;n++) {
-				float ll = StepBuffer[n - SubBlockSize_2];
-				float l  = StepBuffer[n];
-				float m  = StepBuffer[n + SubBlockSize_2];
-				float r  = StepBuffer[n + SubBlockSize_2*2];
-				if(ll != 0.0f) LLw += ll, LL += ll * logf(ll);
-				if(l  != 0.0f) Lw  += l,  L  += l  * logf(l);
-				if(m  != 0.0f) Mw  += m,  M  += m  * logf(m);
-				if(r  != 0.0f) Rw  += r,  R  += r  * logf(r);
+			struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t LL, L, M, R;
+			LL.Sum = LL.SumW = 0.0f;
+			L .Sum = L .SumW = 0.0f;
+			M .Sum = M .SumW = 0.0f;
+			R .Sum = R .SumW = 0.0f;
+			for(n=0;n<AnalysisLen;n++) {
+#define SUM_DATA(Dst, Src) Dst.Sum  += Src.Sum, Dst.SumW += Src.SumW
+				SUM_DATA(LL, TransientData[-1*AnalysisLen + n]);
+				SUM_DATA(L,  TransientData[ 0*AnalysisLen + n]);
+				SUM_DATA(M,  TransientData[+1*AnalysisLen + n]);
+				SUM_DATA(R,  TransientData[+2*AnalysisLen + n]);
+#undef SUM_DATA
 			}
-			LL = (LL != 0.0f) ? (LL / LLw) : MIN_LOG;
-			L  = (L  != 0.0f) ? (L  / Lw)  : MIN_LOG;
-			M  = (M  != 0.0f) ? (M  / Mw)  : MIN_LOG;
-			R  = (R  != 0.0f) ? (R  / Rw)  : MIN_LOG;
-
-			//! Get the ratios between segments
+#define FINALIZE_DATA(x) x.Sum = (x.Sum != 0.0f) ? (x.Sum / x.SumW) : MIN_LOG
+			FINALIZE_DATA(LL);
+			FINALIZE_DATA(L);
+			FINALIZE_DATA(M);
+			FINALIZE_DATA(R);
+#undef FINALIZE_DATA
+			//! Get the ratios between the segments
 			//! NOTE: R is squared (doubled in log domain) to account
 			//! for its overlap with M... maybe. This just worked out
 			//! to give the best results without janky hacks.
-			float RatioL =   L - LL;
-			float RatioM =   M - L;
-			      RatioR = 2*R - M;
+			float RatioL =   L.Sum - LL.Sum;
+			float RatioM =   M.Sum - L .Sum;
+			      RatioR = 2*R.Sum - M .Sum;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
@@ -192,17 +228,21 @@ static inline int Block_Transform_GetWindowCtrl(
 
 		//! Can we decimate?
 		//! NOTE: Minimum subblock size of 64 samples.
-		if(ULC_USE_WINDOW_SWITCHING && Decimation < 0x8 && SubBlockSize_2 > 64/2) {
+		//! NOTE: Checking AnalysisLen should be better than checking
+		//! Decimation directly, as then we can change the maximum allowed
+		//! decimation without changing this code.
+		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && SubBlockSize > 64) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 0x1.62E430p1f) { //! Log[Sqrt[2]^8]
+			if(RatioPos != POS_R && Ratio >= 0x1.62E430p-2f) { //! Log[Sqrt[2]]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
-					Decimation  = (Decimation<<1) | 0;
+					Decimation     = (Decimation<<1) | 0;
 				else
-					Decimation  = (Decimation<<1) | 1,
-					StepBuffer += SubBlockSize_2;
-				SubBlockSize_2 /= 2;
+					Decimation     = (Decimation<<1) | 1,
+					TransientData += AnalysisLen;
+				AnalysisLen  /= 2;
+				SubBlockSize /= 2;
 				continue;
 			}
 		}
@@ -214,12 +254,12 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Determine the overlap scaling for the transition region
 	int OverlapScale = 0;
-	if(Ratio >= 0x1.62E430p1f) {      //! Ratio >= Log[2^0.5]*8
-		if(Ratio < 0x1.205967p5f) //! Ratio <  Log[2^6.5]*8
-			OverlapScale = (int)(0x1.715476p-3f*Ratio + 0.5f); //! 1/Log[2] * (1/8)
+	if(Ratio >= 0x1.62E430p-2f) {     //! Ratio >= Log[2^0.5]
+		if(Ratio < 0x1.205967p2f) //! Ratio <  Log[2^6.5]
+			OverlapScale = (int)(0x1.715476p0f*Ratio + 0.5f); //! 1/Log[2]
 		else
 			OverlapScale = 7;
-		while((SubBlockSize_2 >> OverlapScale) < 16/2) OverlapScale--; //! Minimum 16-sample overlap
+		while((SubBlockSize >> OverlapScale) < 16) OverlapScale--; //! Minimum 16-sample overlap
 	}
 
 	//! Return the combined overlap+window switching parameters
