@@ -151,7 +151,7 @@ void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 			_mm256_store_ps(Dst + 8, b); Dst += 16;
 		}
 #elif defined(__SSE__)
-		__m256 a, b, c, d;
+		__m128 a, b, c, d;
 		__m128 a0, a1;
 		__m128 b0, b1;
 		for(i=0;i<N/2;i+=8) {
