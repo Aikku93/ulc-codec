@@ -40,31 +40,34 @@ void Fourier_DCT3 (float *Buf, float *Tmp, int N);
 void Fourier_DCT4 (float *Buf, float *Tmp, int N);
 void Fourier_DCT4T(float *Buf, float *Tmp, int N);
 
-//! MDCT/IMDCT (based on DCT-IV; scaled)
+//! MDCT+MDST/IMDCT (based on DCT-IV; scaled)
 //! Arguments:
+//!  MDCT[N]
+//!  MDST[n]
+//!  New[N]
+//!  Lap[N]
 //!  BufOut[N]
 //!  BufIn[N]
 //!  BufLap[N/2]
 //!  BufTmp[N]
-//!  BufMDST[N]
 //! Implemented transforms (matrix form):
 //!  mtxMDCT  = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
+//!  mtxMDST  = Table[Sin[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
 //!  mtxIMDCT = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k,2N}, {n, N}]
 //! NOTE:
-//!  -N must be a power of two, and >= 8
+//!  -N must be a power of two, and >= 16
 //!  -Overlap must be a multiple of 16
 //!  -BufOut must not be the same as BufIn
 //!  -Sine window (modulated lapped transform)
 //!  -Shifted basis that results in phase inversion
 //!   relative to 'normal' I/MDCT calculations.
 //!   Negate input (MDCT) and output (IMDCT) if
-//!   'correct' I/MDCT coefficients are needed
-//!  -Simultaneous MDST calculation allows re-use of
-//!   the aliased data. Pass NULL if undesired.
+//!   'correct' I/MDCT coefficients are needed.
+//!   MDST coefficients are NOT phase inverted.
 //!  -BufIn can be the same as BufTmp. However, this
 //!   implies trashing of the buffer contents.
 //!  -MDCT uses DCT4T(), IMDCT uses DCT4()
-void Fourier_MDCT (float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, float *BufMDST);
+void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap);
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
 
 /**************************************/

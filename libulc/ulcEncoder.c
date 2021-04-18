@@ -40,14 +40,14 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! blocks' worth of data (MDCT+MDST coefficients for analysis).
 	int AllocSize = 0;
 #define CREATE_BUFFER(Name, Sz) int Name##_Offs = AllocSize; AllocSize += Sz
-	CREATE_BUFFER(SampleBuffer,    sizeof(float) * (nChan* BlockSize   ));
-	CREATE_BUFFER(TransformBuffer, sizeof(float) * (nChan* BlockSize   ));
+	CREATE_BUFFER(SampleBuffer,    sizeof(float) * (nChan*BlockSize   ));
+	CREATE_BUFFER(TransformBuffer, sizeof(float) * (nChan*BlockSize   ));
 #if ULC_USE_NOISE_CODING
-	CREATE_BUFFER(TransformNoise,  sizeof(float) * (nChan* BlockSize   ));
+	CREATE_BUFFER(TransformNoise,  sizeof(float) * (nChan*BlockSize   ));
 #endif
-	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*(BlockSize/2)));
+	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*BlockSize   ));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * ((nChan + (nChan < 2)) * BlockSize));
-	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan* BlockSize   ));
+	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan*BlockSize   ));
 #undef CREATE_BUFFER
 
 	//! Allocate buffer space
@@ -68,8 +68,8 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
-	for(i=0;i<nChan*(BlockSize  );i++) State->SampleBuffer   [i] = 0.0f;
-	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformFwdLap[i] = 0.0f;
+	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
+	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
 
 	//! Success
 	return 1;

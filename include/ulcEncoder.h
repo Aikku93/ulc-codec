@@ -53,7 +53,7 @@ struct ULC_EncoderState_t {
 	//!   float SampleBuffer   [nChan*BlockSize]
 	//!   float TransformBuffer[nChan*BlockSize]
 	//!   float TransformNoise [nChan*BlockSize] <- With ULC_USE_NOISE_CODING only
-	//!   float TransformFwdLap[nChan*BlockSize/2]
+	//!   float TransformFwdLap[nChan*BlockSize]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
 	//! BufferData contains the original pointer returned by malloc()
