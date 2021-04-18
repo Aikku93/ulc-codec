@@ -9,7 +9,7 @@
 /**************************************/
 
 //! Get the quantized noise amplitude for encoding
-static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Band, int N, int WindowCtrl) {
+static int Block_Encode_EncodePass_GetNoiseQ(const float *Coef, float q, int Band, int N, int WindowCtrl) {
 	//! Analyze for the noise amplitude
 	float Amplitude; {
 		//! NOTE: The purpose of putting the values into bins is
@@ -21,17 +21,13 @@ static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Ban
 		int n;
 		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
 
-		//! Perform the actual analysis
+		//! Perform the actual analysis (geometric mean in each bin)
 		float Sum [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumW[ULC_MAX_SUBBLOCKS] = {0.0f};
-		int   SumN[ULC_MAX_SUBBLOCKS] = {0};
 		for(n=0;n<N;n++) {
-			int   Bin  = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
-			float y    = Coef[Band+n];
-			float w    = 1.0f / (0x1.0p-32f + y);
-			Sum [Bin] += w*y;
-			SumW[Bin] += w;
-			SumN[Bin] += 1;
+			int Bin  = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
+			Sum [Bin] += ULC_FastLnApprox(Coef[Band+n]);
+			SumW[Bin] += 1.0f;
 		}
 
 		//! Get harmonic mean of all bins
@@ -39,9 +35,9 @@ static int Block_Encode_EncodePass_GetNoiseQ(float q, const float *Coef, int Ban
 		int   TotalN = 0;
 		int   nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
 		for(n=0;n<nSubBlocks;n++) {
-			float s  = Sum [n]; if(s == 0.0f) return 0;
-			float sW = SumW[n];
-			Total  += (sW / s);
+			float s  = Sum [n];
+			float sW = SumW[n]; if(sW == 0.0f) return 0;
+			Total  += expf(-s/sW);
 			TotalN += 1;
 		}
 		Amplitude = Total ? (TotalN/Total) : 0.0f;
@@ -77,9 +73,8 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, i
 		for(n=0;n<N;n++) {
 			int   Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
 			float x = (float)n;
-			float y = Coef[Band+n];
 			float w = SQR(N-n);
-			float yLog = ULC_FastLnApprox(y);
+			float yLog = ULC_FastLnApprox(Coef[Band+n]);
 			SumX [Bin] += w*x;
 			SumX2[Bin] += w*x*x;
 			SumXY[Bin] += w*x*yLog;

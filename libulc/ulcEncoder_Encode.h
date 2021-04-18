@@ -128,7 +128,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				if(zR >= 31) {
 					v = zR - 31; if(v > 0xFF) v = 0xFF;
 					n = v + 31;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(q, CoefNoise, NextCodedIdx, n, WindowCtrl);
+					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, q, NextCodedIdx, n, WindowCtrl);
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0xE,      DstBuffer, Size);
