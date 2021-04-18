@@ -105,8 +105,17 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 
 	//! Compute back-propagated energy (ie. how much energy we
 	//! can tolerate as part of pre-echo).
+	//! NOTE: We increase the signal gain here so that we are
+	//! less likely to run into underflow isuses with exp-decay.
+	//! To avoid adding an extra multiplication just to increase
+	//! the gain, we fold it into OneMinusDecay for both backwards
+	//! and forwards spreading calculations.
+	//! Note that if RescaleGain is changed, the bias in the
+	//! FINALIZE_DATA() macro must be updated (we rely on the
+	//! step data being normalized at that stage).
 	//! NOTE: While we're at it, we also apply the square root
 	//! needed to get the RMS energy over all channels.
+	float RescaleGain = 0x1.0p24f / (2.0f * 2.0f * nChan); //! *0.5 for decimation, *0.5 for BP gain
 	float *BackMasking = StepBuffer + BlockSize; {
 		//! Decay curve: -0.5dB/sample
 		//! Calculation:
@@ -114,7 +123,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! NOTE: Exponent multiplied by 2 to account for decimation by 2.
 		float *Src = StepBuffer  + BlockSize; //! Iterated backwards
 		float *Dst = BackMasking + BlockSize; //! Iterated backwards
-		float  Tap = 0.0f, Decay = 0x1.C8520Bp-1f, OneMinusDecay = 0x1.BD6FA8p-4f;
+		float  Tap = 0.0f, Decay = 0x1.C8520Bp-1f, OneMinusDecay = 0x1.BD6FA8p-4f * RescaleGain;
 		for(n=0;n<BlockSize;n++) {
 			float v = sqrtf(*--Src); *Src = v;
 			Tap += v * OneMinusDecay;
@@ -133,7 +142,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! Decay curve: -0.2dB/sample
 		int AnalysisIntervalMask = BlockSize/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4)
 		const float *Src = StepBuffer;
-		      float  Tap = 0.0f, Decay = 0x1.E8F4CAp-1f, OneMinusDecay = 0x1.70B363p-5f;
+		      float  Tap = 0.0f, Decay = 0x1.E8F4CAp-1f, OneMinusDecay = 0x1.70B363p-5f * RescaleGain;
 		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *Dst = (void*)StepBuffer; //! void* cast avoids a nasty, long typecast
 		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t  Tmp = {.Sum = 0.0f, .SumW = 0.0f};
 		for(n=0;n<BlockSize;n++) {
@@ -206,16 +215,13 @@ static inline int Block_Transform_GetWindowCtrl(
 				SUM_DATA(R,  TransientData[+2*AnalysisLen + n]);
 #undef SUM_DATA
 			}
-#define FINALIZE_DATA(x) x.Sum = (x.Sum != 0.0f) ? (x.Sum / x.SumW) : MIN_LOG
+#define FINALIZE_DATA(x) x.Sum = (x.Sum != 0.0f) ? (x.Sum / x.SumW - 0x1.0A2B24p4f) : MIN_LOG //! -0x1.0A2B24p4 = Log[2^-24]; undo rescaling
 			FINALIZE_DATA(LL);
 			FINALIZE_DATA(L);
 			FINALIZE_DATA(M);
 			FINALIZE_DATA(R);
 #undef FINALIZE_DATA
 			//! Get the ratios between the segments
-			//! NOTE: R is squared (doubled in log domain) to account
-			//! for its overlap with M... maybe. This just worked out
-			//! to give the best results without janky hacks.
 			float RatioL =   L.Sum - LL.Sum;
 			float RatioM =   M.Sum - L .Sum;
 			      RatioR = 2*R.Sum - M .Sum;
