@@ -281,7 +281,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
 				//! Get the size of this subblock and its overlap
 				int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
-				int OverlapSize = BlockSize >> DecimationPattern[SubBlockIdx];
+				int OverlapSize  = SubBlockSize;
 				if(SubBlockIdx == ThisTransientSubBlockIdx) OverlapSize >>= (WindowCtrl & 0x7);
 
 				//! If the next block's first subblock is smaller than
@@ -295,38 +295,70 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					if(OverlapSize > NextBlockSubBlockSize) OverlapSize = NextBlockSubBlockSize;
 				}
 
-				//! If we have a long block, all the data is prepared and
-				//! we can move straight on to the transform
-				const float *SmpBuf = BufferSamples;
-				if(SubBlockSize != BlockSize) {
-					//! Use a scratch buffer for sample data
-					SmpBuf = BufferTemp;
+				//! Cycle data through the lapping buffer
+				float *SmpBuf = BufferTemp; {
+					float *SmpDst = SmpBuf;
 
-					//! With decimation, we cycle data through the lapping
-					//! buffer, so that it will be ready for future calls
-					int LapExtra = (BlockSize - SubBlockSize) / 2;
-					float *LapBuf = BufferFwdLap + LapExtra;
+					/*!   |            . | .____________|
+					      |            . |/.            |
+					      |            . | .            |
+					      |            . | .            |
+					      |____________./| .            |
+					      |            . | .            |
+					      <-    L    -><-M-><-    R    ->
+					      <-BlockSize/2->|<-BlockSize/2->
+					      <-         BlockSize         ->
 
-					//! Get samples from the lapping buffer
-					int LapCopy = (LapExtra < SubBlockSize) ? LapExtra : SubBlockSize;
-					for(n=0;n<LapCopy;n++)   BufferTemp[n] = LapBuf[-1-n];
-					for(;n<SubBlockSize;n++) BufferTemp[n] = *BufferSamples++;
+					    L_Size = (BlockSize - SubBlockSize)/2
+					    M_Size = SubBlockSize
+					    R_Size = (BlockSize - SubBlockSize)/2
+					    L_Offs = 0
+					    M_Offs = (BlockSize - SubBlockSize)/2
+					    R_Offs = (BlockSize + SubBlockSize)/2
 
-					//! Shuffle new samples into it
-					int NewCopy = LapExtra - LapCopy;
-					for(n=0;n<NewCopy;n++) LapBuf[-1-n] = LapBuf[-1-n-LapCopy];
-					for(;n<LapExtra;n++) LapBuf[-1-n] = *BufferSamples++;
-				} else BufferSamples += SubBlockSize;
+					    The L segment contains all 0s.
+					    The M segment contains our lapping data.
+					    The R segment contains data that we must transform.
 
-				//! Perform the actual MDCT
-				Fourier_MDCT(
+					    Therefore:
+					    When using Fourier_MDCT_MDST(), we must align BufferFwdLap
+					    with the M segment, and cycle data through the R segment.
+					!*/
+
+					//! Point to the R segment and get its size
+					float *LapBuf = BufferFwdLap + (BlockSize+SubBlockSize)/2;
+					int LapRem = (BlockSize-SubBlockSize)/2;
+
+					//! Do we have the full [sub]block in the lapping buffer?
+					if(LapRem < SubBlockSize) {
+						//! Don't have enough samples in lapping buffer
+						//! for the full block - stream new data in and
+						//! refill the lapping buffer
+						for(n=0;n<LapRem;n++) *SmpDst++ = LapBuf[n];
+						for(n=LapRem;n<SubBlockSize;n++) *SmpDst++ = *BufferSamples++;
+						for(n=0;n<LapRem;n++) LapBuf[n] = *BufferSamples++;
+					} else {
+						//! We got a full [sub]block, and we might have data
+						//! remaining in the lapping buffer. This data must
+						//! now be shifted down and then the lapping buffer
+						//! refilled with new data
+						float *Dst = LapBuf;
+						float *Src = LapBuf + SubBlockSize;
+						for(n=0;n<SubBlockSize;n++) *SmpDst++ = LapBuf[n];
+						for(n=SubBlockSize;n<LapRem;n++) *Dst++ = *Src++;
+						for(n=0;n<SubBlockSize;n++) *Dst++ = *BufferSamples++;
+					}
+				}
+
+				//! Perform the actual MDCT+MDST
+				Fourier_MDCT_MDST(
 					BufferMDCT,
+					BufferMDST,
 					SmpBuf,
 					BufferFwdLap + (BlockSize-SubBlockSize)/2,
 					BufferTemp,
 					SubBlockSize,
-					OverlapSize,
-					BufferMDST
+					OverlapSize
 				);
 
 				//! Normalize the MDCT (and MDST) coefficients
@@ -338,63 +370,31 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				float Norm = 2.0f / SubBlockSize;
 #if ULC_USE_NOISE_CODING
 				//! Convert MDCT+MDST to amplitude (treat as Re+Im pairs);
-				//! this creates an amplitude envelope of the spectrum
+				//! this creates an amplitude envelope of the spectrum.
 				for(n=0;n<SubBlockSize;n++) {
-					BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
-					BufferTemp[n]  = sqrtf(SQR(BufferMDCT[n]) + SQR(BufferMDST[n]));
+					float Re = (BufferMDCT[n] *= Norm);
+					float Im = (BufferMDST[n] *= Norm);
+					float a  = sqrtf(SQR(Re) + SQR(Im));
+					BufferTemp[n] = a;
 				}
 
-				//! Perform a bandpass filter to remove DC terms inserted
-				//! by transients. This is ugly and not perfect, but is
-				//! good enough for the time being.
-				//! NOTE: Gain of 2.0.
-				BufferNoise[0] = 0.0f;
-				BufferNoise[1] = 0.0f;
-				for(n=2;n<SubBlockSize;n++) {
-					BufferNoise[n] = ABS(BufferTemp[n] - BufferTemp[n-2]);
+				//! Next we apply a filter to remove transient contributions
+				//! and rescale in preparation for geometric mean analysis
+				//! during noise-fill computations
+				BufferNoise[0] = ULC_COEF_EPS;
+				for(n=1;n<SubBlockSize-1;n++) {
+					//! 0x1.6A09E6p0 = Sqrt[2]
+					BufferNoise[n] = ULC_COEF_EPS + 0x1.6A09E6p0f*ABS(-BufferTemp[n-1] + 2.0f*BufferTemp[n] + -BufferTemp[n+1]);
 				}
-
-				//! Spread the noise in both directions and then take the
-				//! RMS amplitude of both spreads. The idea being that if
-				//! we then take a harmonic mean of the envelope, we should
-				//! get the noise level with the exclusion of tones.
-				//! ie. We're only trying to patch over the low-amplitude
-				//! parts of noise signals.
-				//! NOTE: We multiply the level by 2.0 to account for noise
-				//! averaging out to half its amplitude... However, we've
-				//! already implicitly multipled by 2.0 in the above filter
-				//! so I'm not sure why it's necessary to do it again.
-				//! Possibly something to do with using a harmonic mean
-				//! in the noise-fill routines?
-				//! TODO: This can detect scalloping as noise, because we
-				//! smoothed out the spectrum and are now relying on the
-				//! assumption that the local minima are the noise level.
-				{
-					float Tap = 0.0f;
-					float Decay = 0.25f, OneMinusDecay = 1.0f - Decay;
-					for(n=SubBlockSize-1;n>=0;n--) {
-						Tap += BufferNoise[n] * OneMinusDecay;
-						BufferTemp[n] = Tap;
-						Tap *= Decay;
-					}
-				}
-				{
-					float Tap = 0.0f;
-					float Decay = 0.25f, OneMinusDecay = 1.0f - Decay;
-					for(n=0;n<SubBlockSize;n++) {
-						Tap += BufferNoise[n] * OneMinusDecay;
-						BufferNoise[n] = 2.0f * sqrtf(SQR(Tap) + SQR(BufferTemp[n]));
-						Tap *= Decay;
-					}
-				}
+				BufferNoise[SubBlockSize-1] = ULC_COEF_EPS;
 #else
 				for(n=0;n<SubBlockSize;n++) BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
 #endif
 				//! Move to the next subblock
-				BufferMDCT  += SubBlockSize;
-				BufferMDST  += SubBlockSize;
+				BufferMDCT   += SubBlockSize;
+				BufferMDST   += SubBlockSize;
 #if ULC_USE_NOISE_CODING
-				BufferNoise += SubBlockSize;
+				BufferNoise  += SubBlockSize;
 #endif
 			}
 
@@ -402,7 +402,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(n=0;n<BlockSize;n++) BufferSamples[n-BlockSize] = *Data++;
 
 			//! Move to the next channel
-			BufferFwdLap += BlockSize/2u;
+			BufferFwdLap += BlockSize;
 		}
 		BufferMDCT -= BlockSize*nChan; //! Rewind to start of buffer
 		BufferMDST -= BlockSize*nChan;
@@ -428,17 +428,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! just a slight nudge to improve integer precision.
 				//! NOTE: Using M/S makes no difference to using L/R; the
 				//! equations cancel out the inner terms, leaving 2L^2+2R^2.
-				//! NOTE: Using only the MDST coefficients here appears to
-				//! improve results. Intuitively, this makes some sense (in
-				//! particular: transients in MDST are rotated by Pi/2 radians
-				//! and so when the final masked levels are computed, the
-				//! Re^2+Im^2 cancels out to 1.0), but this probably bears more
-				//! investigation before this comment can be removed/corrected.
 				//! NOTE: We simultaneously compute the complexity here, using
 				//! a simplified approach to spectral flatness to avoid using
 				//! logarithms in this loop.
-				//! NOTE: Using the raw [absolute] value appears to improve
-				//! noise-masks-tone analysis, increasing perceived brightness.
 				float Norm = 0.0f;
 				float Complexity = 0.0f, ComplexityW = 0.0f;
 				const float *MDCTSrc = BufferMDCT;
@@ -446,9 +438,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
 					float Re = *MDCTSrc++, Re2 = SQR(Re);
 					float Im = *MDSTSrc++, Im2 = SQR(Im);
-					float v = (fBufferEnergy[n] += ABS(Im));
-					if(v > Norm) Norm = v;
 					float Abs2 = Re2 + Im2;
+					float v = (fBufferEnergy[n] += Abs2);
+					if(v > Norm) Norm = v;
 					Complexity += Abs2, ComplexityW += sqrtf(Abs2);
 				}
 				if(Complexity) {
