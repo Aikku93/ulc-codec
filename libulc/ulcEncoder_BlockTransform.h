@@ -252,15 +252,19 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		int n, Chan;
 		float *BufferSamples = State->SampleBuffer;
 		float *BufferMDCT    = State->TransformBuffer;
+		float *BufferIndex   = (float*)State->TransformIndex;
+		float *BufferFwdLap  = State->TransformFwdLap;
 #if ULC_USE_NOISE_CODING
 		float *BufferNoise   = State->TransformNoise;
 #endif
-		float *BufferIndex   = (float*)State->TransformIndex;
-		float *BufferFwdLap  = State->TransformFwdLap;
 		float *BufferTemp    = State->TransformTemp;
 		float *BufferMDST    = BufferIndex;                       //! NOTE: Aliasing of BufferIndex
 #if ULC_USE_PSYCHOACOUSTICS
 		float *MaskingNp     = BufferIndex + (nChan-1)*BlockSize; //! NOTE: Aliasing of BufferIndex in last channel
+		float *BufferAmp2    = BufferTemp + BlockSize;            //! NOTE: Using upper half of BufferTemp
+
+		//! Clear the amplitude buffer; we'll be accumulating all channels here
+		for(n=0;n<BlockSize;n++) BufferAmp2[n] = 0.0f;
 #endif
 		//! Apply M/S transform to the data
 		//! NOTE: Fully normalized; not orthogonal.
@@ -271,9 +275,10 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			BufferSamples[n + BlockSize] = (L-R) * 0.5f;
 		}
 
-		//! Transform the input data
+		//! Transform the input data and get complexity measure (ABR, VBR modes)
 		int ThisTransientSubBlockIdx = ULC_Helper_TransientSubBlockIndex(WindowCtrl >> 4);
 		const int8_t *DecimationPattern = ULC_Helper_SubBlockDecimationPattern(WindowCtrl >> 4);
+		float Complexity = 0.0f, ComplexityW = 0.0f;
 		for(Chan=0;Chan<nChan;Chan++) {
 			//! Process each subblock sequentially
 			const float *BufferMDCTEnd = BufferMDCT + BlockSize;
@@ -361,40 +366,68 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					OverlapSize
 				);
 
-				//! Normalize the MDCT (and MDST) coefficients
-				//! This simplifies analysis later on and is 'more correct'
-				//! in the first place, as the output of the MDCT itself
-				//! should've been normalized already.
-				//! PONDER: Modify Fourier_MDCT() to do this automatically?
-				//! NOTE: While we're at it, we also perform noise analysis.
+				//! Normalize spectrum, and accumulate amplitude by
+				//! treating MDCT as Re and MDST as Im (akin to DFT)
 				float Norm = 2.0f / SubBlockSize;
-#if ULC_USE_NOISE_CODING
-				//! Convert MDCT+MDST to amplitude (treat as Re+Im pairs);
-				//! this creates an amplitude envelope of the spectrum.
 				for(n=0;n<SubBlockSize;n++) {
 					float Re = (BufferMDCT[n] *= Norm);
 					float Im = (BufferMDST[n] *= Norm);
-					float a  = sqrtf(SQR(Re) + SQR(Im));
-					BufferTemp[n] = a;
+					float Abs2 = SQR(Re) + SQR(Im);
+#if ULC_USE_NOISE_CODING
+					BufferTemp[n]  = Abs2;
+#endif
+#if ULC_USE_PSYCHOACOUSTICS
+					BufferAmp2[n] += Abs2;
+#endif
 				}
 
-				//! Next we apply a filter to remove transient contributions
-				//! and rescale in preparation for geometric mean analysis
-				//! during noise-fill computations
-				BufferNoise[0] = ULC_COEF_EPS;
-				for(n=1;n<SubBlockSize-1;n++) {
-					//! 0x1.6A09E6p0 = Sqrt[2]
-					BufferNoise[n] = ULC_COEF_EPS + 0x1.6A09E6p0f*ABS(-BufferTemp[n-1] + 2.0f*BufferTemp[n] + -BufferTemp[n+1]);
-				}
-				BufferNoise[SubBlockSize-1] = ULC_COEF_EPS;
-#else
-				for(n=0;n<SubBlockSize;n++) BufferMDCT[n] *= Norm, BufferMDST[n] *= Norm;
-#endif
-				//! Move to the next subblock
-				BufferMDCT   += SubBlockSize;
-				BufferMDST   += SubBlockSize;
+				//! Remove transient bias for noise amplitude spectrum
+				//! and add this subblock to the complexity analysis.
+				//! Transfer function: H(z) = -z^-1 + 2 - z^1 (zero-phase highpass)
+				//! NOTE: In theory, this has non-unity-gain of 4.0. In practice,
+				//! however, the gain is 2.0 because of the non-negative inputs.
+				//! NOTE: 'Transient biasing' refers to the fact that transients
+				//! form a sinusoid in the Re and Im parts, but they are exactly
+				//! Pi/2 radians apart. By adding Re^2+Im^2, they form a constant
+				//! amplitude throughout the spectrum, which we then subtract to
+				//! avoid biasing issues in noise and complexity analysis.
+				//! NOTE: For noise analysis, we use a geometric mean to determine
+				//! the correct noise amplitude. However, the geometric mean tends
+				//! towards 1/E rather than 0.5 for white noise. So we scale by E
+				//! to compensate and get unity amplitude, but then scale by 0.5
+				//! to account for this filter's gain. 0x1.5BF0A9p0 = E/2.
+				//! NOTE: We apply the filter over the squared samples, because
+				//! this appears to give better results for some reason. The
+				//! scaling then works out to have a gain of Sqrt[2], but this
+				//! appears to sound better than unity gain for some reason.
+				{
+					float v, v2;
 #if ULC_USE_NOISE_CODING
-				BufferNoise  += SubBlockSize;
+# define STORE_VALUE(n, Expr) \
+	v2 = (Expr), v = sqrtf(v2), \
+	Complexity += v2, ComplexityW += v, \
+	BufferNoise[n] = 0x1.5BF0A9p0f * v
+#else
+# define STORE_VALUE(n, Expr) \
+	v2 = (Expr), v = sqrtf(v2), \
+	Complexity += v2, ComplexityW += v
+#endif
+					STORE_VALUE(0, 2.0f * ABS(BufferTemp[0] - BufferTemp[1])); //! H(z) = -z^1 + 2 - z^1 = 2 - 2z^1
+					for(n=1;n<SubBlockSize-1;n++) {
+						STORE_VALUE(n, ABS(-BufferTemp[n-1] + 2.0f*BufferTemp[n] - BufferTemp[n+1]));
+					}
+					STORE_VALUE(n, 2.0f * ABS(BufferTemp[n] - BufferTemp[n-1])); //! H(z) = -z^1 + 2 - z^1 = 2 - 2z^1
+#undef STORE_VALUE
+				}
+
+				//! Move to the next subblock
+				BufferMDCT  += SubBlockSize;
+				BufferMDST  += SubBlockSize;
+#if ULC_USE_PSYCHOACOUSTICS
+				BufferAmp2  += SubBlockSize;
+#endif
+#if ULC_USE_NOISE_CODING
+				BufferNoise += SubBlockSize;
 #endif
 			}
 
@@ -403,62 +436,61 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 
 			//! Move to the next channel
 			BufferFwdLap += BlockSize;
+#if ULC_USE_PSYCHOACOUSTICS
+			BufferAmp2   -= BlockSize; //! <- Accumulated across all channels - rewind
+#endif
 		}
 		BufferMDCT -= BlockSize*nChan; //! Rewind to start of buffer
 		BufferMDST -= BlockSize*nChan;
 
 		//! Perform encoding analysis
 		{
-			//! Combine the energy of all channels' MDCT+MDST coefficients
-			//! into normalized (by maximum) fixed-point integer values.
-			//! For some reason, it seems to work better to combine the
-			//! channels for analysis, rather than use each one separately.
-#if ULC_USE_PSYCHOACOUSTICS
-			uint32_t *BufferEnergy   = (uint32_t*)(BufferTemp);
-			uint32_t *BufferEnergyNp = (uint32_t*)(BufferTemp + BlockSize);
-#endif
-			{
-				float *fBufferEnergy = BufferTemp;
-				for(n=0;n<BlockSize;n++) fBufferEnergy[n] = 0.0f;
+			//! Finalize and store block complexity
+			if(Complexity) {
+				//! Based off the same principles of normalized entropy:
+				//!  Entropy = (Log[Total[x]] - Total[x*Log[x]]/Total[x]) / Log[N]
+				//! Instead of accumulating log values, we accumulate
+				//! raw values, meaning we need to take the log:
+				//!  Total[x*Log[x]]/Total[x] -> Log[Total[x*x]/Total[x]]
+				//! Simplifying:
+				//!   (Log[Total[x]] - Log[Total[x*x]/Total[x]]) / Log[N]
+				//!  =(Log[Total[x] / (Total[x*x]/Total[x])) / Log[N]
+				//!  =Log[Total[x]^2 / Total[x^2]] / Log[N]
+				float ComplexityScale = 0x1.62E430p-1f*(31 - __builtin_clz(BlockSize)); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
+				Complexity = logf(SQR(ComplexityW) / Complexity) / ComplexityScale;
+				if(Complexity < 0.0f) Complexity = 0.0f; //! In case of round-off error
+				if(Complexity > 1.0f) Complexity = 1.0f;
+			}
+			State->BlockComplexity = Complexity;
 
-				//! Sum energy and get the maximum value
+			//! Perform psychoacoustic analysis
+#if ULC_USE_PSYCHOACOUSTICS
+			{
+				//! Combine the energy of all channels' MDCT+MDST coefficients
+				//! into normalized (by maximum) fixed-point integer values.
+				//! For some reason, it seems to work better to combine the
+				//! channels for analysis, rather than use each one separately.
+				uint32_t *BufferEnergy   = (uint32_t*)(BufferTemp);
+				uint32_t *BufferEnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+
+				//! Find the maximum value for normalization
 				//! NOTE: Ideally, we'd take the maximum of each subblock, but
 				//! this should work well enough for our purposes, as all
 				//! coefficients are "normalized" to begin with, and this is
 				//! just a slight nudge to improve integer precision.
 				//! NOTE: Using M/S makes no difference to using L/R; the
 				//! equations cancel out the inner terms, leaving 2L^2+2R^2.
-				//! NOTE: We simultaneously compute the complexity here, using
-				//! a simplified approach to spectral flatness to avoid using
-				//! logarithms in this loop.
-				float Norm = 0.0f;
-				float Complexity = 0.0f, ComplexityW = 0.0f;
-				const float *MDCTSrc = BufferMDCT;
-				const float *MDSTSrc = BufferMDST;
-				for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-					float Re = *MDCTSrc++, Re2 = SQR(Re);
-					float Im = *MDSTSrc++, Im2 = SQR(Im);
-					float Abs2 = Re2 + Im2;
-					float v = (fBufferEnergy[n] += Abs2);
-					if(v > Norm) Norm = v;
-					Complexity += Abs2, ComplexityW += sqrtf(Abs2);
-				}
-				if(Complexity) {
-					float ComplexityScale = 0x1.62E430p-1f*(31 - __builtin_clz(BlockSize)); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
-					Complexity = logf(SQR(ComplexityW) / Complexity) / ComplexityScale;
-					if(Complexity < 0.0f) Complexity = 0.0f; //! In case of round-off error
-					if(Complexity > 1.0f) Complexity = 1.0f;
-					State->BlockComplexity = Complexity;
-				} else State->BlockComplexity = 0.0f;
-#if ULC_USE_PSYCHOACOUSTICS
-				//! Find the integer normalization factor and convert
+				float v, Norm = 0.0f;
+				for(n=0;n<BlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
+
+				//! Find the integer normalization factor and convert to integers
 				//! NOTE: Maximum value for BufferEnergyNp is Log[2 * 2^32], so rescale by
 				//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
 				if(Norm != 0.0f) {
 					const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
 					Norm = 0x1.0p32f / Norm;
 					for(n=0;n<BlockSize;n++) {
-						float p   = fBufferEnergy[n] * Norm;
+						float p   = BufferAmp2[n] * Norm;
 						float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
 						p   = ceilf(p);
 						pNp = ceilf(pNp*LogScale);
@@ -473,9 +505,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					//! avoid re-calculating for each channel, as the analysis isn't cheap
 					Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferEnergy, BufferEnergyNp, BlockSize, DecimationPattern);
 				}
-#endif
 			}
-
+#endif
 			//! Analyze each channel
 			for(Chan=0;Chan<nChan;Chan++) {
 				//! Analyze each subblock separately
@@ -496,10 +527,10 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					);
 
 					//! Move to the next subblock
-					BufferMDCT   += SubBlockSize;
-					BufferIndex  += SubBlockSize;
+					BufferMDCT  += SubBlockSize;
+					BufferIndex += SubBlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
-					MaskingNp    += SubBlockSize;
+					MaskingNp   += SubBlockSize;
 #endif
 				}
 #if ULC_USE_PSYCHOACOUSTICS
@@ -512,11 +543,11 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		//! Interleave the transform data for coding
 		if(WindowCtrl & 0x8) {
 			int Decimation = WindowCtrl >> 4;
-			BufferMDCT   = State->TransformBuffer;
+			BufferMDCT  = State->TransformBuffer;
 #if ULC_USE_NOISE_CODING
-			BufferNoise  = State->TransformNoise;
+			BufferNoise = State->TransformNoise;
 #endif
-			BufferIndex  = (float*)State->TransformIndex;
+			BufferIndex = (float*)State->TransformIndex;
 			for(Chan=0;Chan<nChan;Chan++) {
 #define INTERLEAVE(Buf) Block_Transform_BufferInterleave(Buf, BufferTemp, BlockSize, Decimation); Buf += BlockSize
 				INTERLEAVE(BufferMDCT);
