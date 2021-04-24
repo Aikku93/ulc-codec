@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 /**************************************/
 #include "ulcDecoder.h"
 /**************************************/
@@ -159,6 +160,8 @@ int main(int argc, const char *argv[]) {
 		.BlockSize  = Header.BlockSize,
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
+		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds
+
 		//! Process blocks
 		int      n, Chan;
 		int      nChan       = Header.nChan;
@@ -166,12 +169,23 @@ int main(int argc, const char *argv[]) {
 		float   *BlockBuffer = State.BlockBuffer;
 		int16_t *BlockOutput = State.BlockOutput;
 		uint32_t Blk, nBlk = Header.nBlocks;
+		size_t BlkLastUpdate = 0;
+		clock_t LastUpdateTime = clock() - DISPLAY_UPDATE_RATE;
 		for(Blk=0;Blk<nBlk;Blk++) {
 			//! Show progress
-			//! NOTE: Only displaying every 4th block; slowdown occurs otherwise
-			if(Blk%4u == 0) {
-				printf("\rBlock %u/%u (%.2f%%)...", Blk, nBlk, Blk*100.0f/nBlk);
+			//! NOTE: Take difference and use unsigned comparison to
+			//! get correct results in the comparison on signed overflows.
+			//! uint64_t might be overkill, depending on the implementation.
+			if((uint64_t)(clock()-LastUpdateTime) >= DISPLAY_UPDATE_RATE) {
+				size_t nBlkProcessed = 2 * (Blk-BlkLastUpdate); //! Updated every 0.5s, displayed as X*s^-1
+				printf(
+					"\rBlock %u/%u (%.2f%% | %.2f X rt)",
+					Blk, nBlk, Blk*100.0/nBlk,
+					nBlkProcessed*BlockSize / (double)Header.RateHz
+				);
 				fflush(stdout);
+				LastUpdateTime += DISPLAY_UPDATE_RATE;
+				BlkLastUpdate   = Blk;
 			}
 
 			//! Decode block
