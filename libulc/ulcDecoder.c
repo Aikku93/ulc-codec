@@ -11,13 +11,7 @@
 #include "ulcDecoder.h"
 #include "ulcHelper.h"
 /**************************************/
-#if defined(__AVX__)
-# define BUFFER_ALIGNMENT 32u //! __mm256
-#elif defined(__SSE__)
-# define BUFFER_ALIGNMENT 16u //! __mm128
-#else
-# define BUFFER_ALIGNMENT  4u //! float
-#endif
+#define BUFFER_ALIGNMENT 64u //! Always align memory to 64-byte boundaries (preparation for AVX-512)
 /**************************************/
 
 //! Just for consistency
