@@ -128,7 +128,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				if(zR >= 31) {
 					v = zR - 31; if(v > 0xFF) v = 0xFF;
 					n = v + 31;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, q, NextCodedIdx, n, WindowCtrl);
+					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, WindowCtrl, q);
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0xE,      DstBuffer, Size);
@@ -286,10 +286,10 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 #if ULC_USE_NOISE_CODING
 				Block_Encode_EncodePass_GetHFExtParams(
 					CoefNoise,
-					(float)(8u << PrevQuant),
 					NextCodedIdx,
 					n,
 					WindowCtrl,
+					(float)(8u << PrevQuant),
 					&NoiseQ,
 					&NoiseDecay
 				);

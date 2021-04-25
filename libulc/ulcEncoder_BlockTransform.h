@@ -236,6 +236,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		Data,
 		State->SampleBuffer,
 		State->TransformTemp,
+		&State->WindowCtrlTap,
 		BlockSize,
 		nChan
 	);
@@ -395,7 +396,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! the correct noise amplitude. However, the geometric mean tends
 				//! towards 1/E rather than 0.5 for white noise. So we scale by E
 				//! to compensate and get unity amplitude, but then scale by 0.5
-				//! to account for this filter's gain. 0x1.5BF0A9p0 = E/2.
+				//! to account for this filter's gain. As the computations work
+				//! in the log domain, we take the logarithm here and then add
+				//! Log[E/2] (0x1.3A37A0p-2) to change a multiply into an add.
 				//! NOTE: We apply the filter over the squared samples, because
 				//! this appears to give better results for some reason. The
 				//! scaling then works out to have a gain of Sqrt[2], but this
@@ -406,7 +409,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 # define STORE_VALUE(n, Expr) \
 	v2 = (Expr), v = sqrtf(v2), \
 	Complexity += v2, ComplexityW += v, \
-	BufferNoise[n] = 0x1.5BF0A9p0f * v
+	BufferNoise[n] = ULC_FastLnApprox(v) + 0x1.3A37A0p-2f
 #else
 # define STORE_VALUE(n, Expr) \
 	v2 = (Expr), v = sqrtf(v2), \

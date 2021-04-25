@@ -9,7 +9,7 @@
 /**************************************/
 
 //! Get the quantized noise amplitude for encoding
-static int Block_Encode_EncodePass_GetNoiseQ(const float *Coef, float q, int Band, int N, int WindowCtrl) {
+static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int N, int WindowCtrl, float q) {
 	//! Analyze for the noise amplitude
 	float Amplitude; {
 		//! NOTE: The purpose of putting the values into bins is
@@ -25,22 +25,21 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *Coef, float q, int Ban
 		float Sum [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumW[ULC_MAX_SUBBLOCKS] = {0.0f};
 		for(n=0;n<N;n++) {
-			int Bin  = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
-			Sum [Bin] += ULC_FastLnApprox(Coef[Band+n]);
+			int Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
+			Sum [Bin] += LogCoef[Band+n];
 			SumW[Bin] += 1.0f;
 		}
 
-		//! Get harmonic mean of all bins
-		float Total  = 0.0f;
-		int   TotalN = 0;
-		int   nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
+		//! Find the minimum bin amplitude
+		Amplitude = 1.0f; //! <- Arbitrarily large, but shouldn't need to be larger than 1.0
+		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
 		for(n=0;n<nSubBlocks;n++) {
 			float s  = Sum [n];
-			float sW = SumW[n]; if(sW == 0.0f) return 0;
-			Total  += expf(-s/sW);
-			TotalN += 1;
+			float sW = SumW[n]; if(sW == 0.0f) continue; //! Bin not affected by fill - ignore it
+			float a  = s/sW;
+			if(a < Amplitude) Amplitude = a;
 		}
-		Amplitude = Total ? (TotalN/Total) : 0.0f;
+		Amplitude = expf(Amplitude);
 	}
 
 	//! Quantize the noise amplitude into final code
@@ -54,58 +53,58 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *Coef, float q, int Ban
 }
 
 //! Compute quantized HF extension parameters for encoding
-static void Block_Encode_EncodePass_GetHFExtParams(const float *Coef, float q, int Band, int N, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
+static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, int WindowCtrl, float q, int *_NoiseQ, int *_NoiseDecay) {
 	//! Solve for weighted least-squares (in the log domain, for exponential fitting)
-	float Amplitude = 0.0f;
-	float Decay     = 0.0f; {
+	float Amplitude, Decay; {
 		//! As with normal noise-fill, group everything into bins
 		int n;
 		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
 
 		//! Next, accumulate all the data into their respective bins.
 		//! NOTE: The analysis is the same as in normal noise-fill.
+		//! But this time carrying a weight that decays the higher
+		//! in frequency we go (with the idea being that these
+		//! reconstructed frequencies will matter less and less,
+		//! so long as the start is close enough to the original).
+		float w = 1.0f;
 		float SumX [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumX2[ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumXY[ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumY [ULC_MAX_SUBBLOCKS] = {0.0f};
 		float SumW [ULC_MAX_SUBBLOCKS] = {0.0f};
-		int   SumN [ULC_MAX_SUBBLOCKS] = {0};
 		for(n=0;n<N;n++) {
 			int   Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
 			float x = (float)n;
-			float w = SQR(N-n);
-			float yLog = ULC_FastLnApprox(Coef[Band+n]);
+			float yLog = LogCoef[Band+n];
 			SumX [Bin] += w*x;
 			SumX2[Bin] += w*x*x;
 			SumXY[Bin] += w*x*yLog;
 			SumY [Bin] += w  *yLog;
 			SumW [Bin] += w;
-			SumN [Bin] += 1;
+			w *= 0.99f;
 		}
 
-		//! Solve for each bin and accumulate for harmonic mean
-		int Total = 0;
+		//! Solve for each bin, then take the minimum amplitude
+		//! of each bin, alongside the geometric mean decay
+		Amplitude = 1.0f; //! <- Arbitrarily large, but shouldn't need to be larger than 1.0
+		Decay     = 0.0f;
 		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
 		for(n=0;n<nSubBlocks;n++) {
-			float Det = SQR(SumX[n]) - SumW[n]*SumX2[n]; //! NOTE: Negated to get E^(-x) for harmonic mean
+			if(SumW[n] == 0.0f) continue; //! Bin not affected by fill - ignore it
+			float Det = SumW[n]*SumX2[n] - SQR(SumX[n]);
 			if(Det != 0.0f) {
-				Amplitude += expf((SumX2[n]*SumY [n] - SumX[n]*SumXY[n]) / Det);
-				Decay     += expf((SumW [n]*SumXY[n] - SumX[n]*SumY [n]) / Det);
-				Total++;
+				float a = (SumX2[n]*SumY [n] - SumX[n]*SumXY[n]) / Det;
+				float d = (SumW [n]*SumXY[n] - SumX[n]*SumY [n]) / Det;
+				if(a < Amplitude) Amplitude = a;
+				Decay += d;
 			} else {
 				//! Play it safe and disable HF extension
-				Amplitude = 0.0f;
-				Decay     = 0.0f;
-				Total     = 0;
-				break;
+				*_NoiseQ = *_NoiseDecay = 0;
+				return;
 			}
 		}
-
-		//! Get final values
-		if(Total) {
-			Amplitude = Total/Amplitude;
-			Decay     = Total/Decay;
-		}
+		Amplitude = expf(Amplitude);
+		Decay     = expf(Decay/nSubBlocks);
 	}
 
 	//! Quantize amplitude and decay
