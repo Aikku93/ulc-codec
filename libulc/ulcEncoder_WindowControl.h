@@ -52,6 +52,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	const float *Data,
 	const float *LastBlockData,
 	      float *StepBuffer,
+	      float *SmoothingTap,
 	int BlockSize,
 	int nChan
 ) {
@@ -103,67 +104,84 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 #undef BPFILT
 	}
 
-	//! Compute back-propagated energy (ie. how much energy we
-	//! can tolerate as part of pre-echo).
-	//! NOTE: We increase the signal gain here so that we are
-	//! less likely to run into underflow isuses with exp-decay.
-	//! To avoid adding an extra multiplication just to increase
-	//! the gain, we fold it into OneMinusDecay for both backwards
-	//! and forwards spreading calculations.
-	//! Note that if RescaleGain is changed, the bias in the
-	//! FINALIZE_DATA() macro must be updated (we rely on the
-	//! step data being normalized at that stage).
+	//! We increase the signal gain so that we are less likely to
+	//! run into underflow isuses with exp-decay. To avoid adding
+	//! an extra multiplication just to increase the gain, we fold
+	//! it into OneMinusDecay for the spreading calculations.
+	//! NOTE: We spread energy forwards, and then backwards. This
+	//! lets us use a fairly accurate estimate for the backwards
+	//! spreading tap.
+	const float RescaleGain = 0x1.0p48f / (2.0f * 2.0f * nChan); //! *0.5 for decimation, *0.5 for BP gain
+	float Tap = *SmoothingTap;
+	float *MaskingError = StepBuffer + BlockSize;
+
+	//! Compute forward-propagated energy (ie. how much energy we
+	//! can tolerate as part of post-echo).
 	//! NOTE: While we're at it, we also apply the square root
 	//! needed to get the RMS energy over all channels.
-	float RescaleGain = 0x1.0p24f / (2.0f * 2.0f * nChan); //! *0.5 for decimation, *0.5 for BP gain
-	float *BackMasking = StepBuffer + BlockSize; {
-		//! Decay curve: -0.5dB/sample
+	//! NOTE: It's important to keep the smoothing tap accurate,
+	//! so we save it across blocks. Because of lapping, the save
+	//! point is at the start of the new block, corresponding to
+	//! StepBuffer[BlockSize/2] (/2 due to decimation). We could
+	//! also buffer that many samples, but that needs more memory.
+	{
+		//! Decay curve: -0.2dB/sample (approx. -8.8dB/ms @ 44.1kHz)
 		//! Calculation:
 		//!  10^(-dBPerSample/20 * 2) = E^(Log[10]*(-dBPerSample/20) * 2)
 		//! NOTE: Exponent multiplied by 2 to account for decimation by 2.
-		float *Src = StepBuffer  + BlockSize; //! Iterated backwards
-		float *Dst = BackMasking + BlockSize; //! Iterated backwards
-		float  Tap = 0.0f, Decay = 0x1.C8520Bp-1f, OneMinusDecay = 0x1.BD6FA8p-4f * RescaleGain;
-		for(n=0;n<BlockSize;n++) {
-			float v = sqrtf(*--Src); *Src = v;
+		const float Decay = 0x1.E8F4CAp-1f, OneMinusDecay = 0x1.70B363p-5f * RescaleGain;
+		float *Src = StepBuffer;
+		float *Dst = MaskingError;
+		for(n=0;n<BlockSize/2;n++) {
+			float v = sqrtf(*Src); *Src++ = v;
 			Tap += v * OneMinusDecay;
-			*--Dst = Tap;
+			*Dst++ = Tap;
+			Tap *= Decay;
+		}
+		*SmoothingTap = Tap;
+		for(;n<BlockSize;n++) {
+			float v = sqrtf(*Src); *Src++ = v;
+			Tap += v * OneMinusDecay;
+			*Dst++ = Tap;
 			Tap *= Decay;
 		}
 	}
 
-	//! Compute forward-propagated energy (ie. how much energy we
-	//! can tolerate as part of post-echo), and differentiate with
-	//! respect to backwards-propagated energy to capture changes
-	//! in the signal envelope for analysis. This differentiated
-	//! energy is then put into a smooth-max/entropy sum for
-	//! accelerating analysis in window-switch/overlap-scale.
+	//! Compute back-propagated energy (ie. how much energy we
+	//! can tolerate as part of pre-echo) and differentiate
+	//! with respect to the forwards-propagated energy; this
+	//! difference gives our "masking error".
+	//! NOTE: We re-use the forwards-spreading tap here for
+	//! improved characteristics.
 	{
-		//! Decay curve: -0.2dB/sample
-		int AnalysisIntervalMask = BlockSize/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4)
-		const float *Src = StepBuffer;
-		      float  Tap = 0.0f, Decay = 0x1.E8F4CAp-1f, OneMinusDecay = 0x1.70B363p-5f * RescaleGain;
-		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *Dst = (void*)StepBuffer; //! void* cast avoids a nasty, long typecast
-		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t  Tmp = {.Sum = 0.0f, .SumW = 0.0f};
+		//! Decay curve: -0.7dB/sample (approx. -30.9dB/ms @ 44.1kHz)
+		const float Decay = 0x1.B3C85Dp-1f, OneMinusDecay = 0x1.30DE8Ap-3f * RescaleGain;
+		const float *Src = StepBuffer   + BlockSize; //! Iterated backwards
+		      float *Dst = MaskingError + BlockSize; //! Iterated backwards
 		for(n=0;n<BlockSize;n++) {
-			Tap += *Src++ * OneMinusDecay;
-			float d = *BackMasking++ - Tap;
+			float v = *--Src;
+			Tap += v * OneMinusDecay;
+			*--Dst -= Tap;
 			Tap *= Decay;
+		}
+	}
+
+	//! Plug the differentiated energy into an entropy accumulator
+	{
+		int AnalysisIntervalMask = BlockSize/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4)
+		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t
+			*Dst = (void*)StepBuffer, //! void* cast avoids a nasty, long typecast
+		         Tmp = {.Sum = 0.0f, .SumW = 0.0f};
+		for(n=0;n<BlockSize;n++) {
+			float d = *MaskingError++;
 
 			//! Accumulate to sums.
 			//! Because everything would be summed up in the search loop
 			//! of Block_Transform_GetWindowCtrl(), we sum as much as we
 			//! can here to reuse as many computations as possible.
-			//! NOTE: These sums bear some similarity to Shannon entropy,
-			//! but I'm not sure of the connection. This formulation seems
-			//! to give the best results at any block size, though.
-			//! NOTE: Even though we are using non-linear weights, the
-			//! sum normalizes to a linear logarithm (this is important
-			//! in the threshold analyses). Also, taking the logarithm of
-			//! the original value should preserve accuracy a bit better.
 			//! NOTE: We shouldn't need very precise logarithms here, so
 			//! just use a cheaper approximation.
-			float w = SQR(SQR(d));
+			float w = SQR(d);
 			Tmp.SumW += w, Tmp.Sum += w*ULC_FastLnApprox(ABS(d));
 
 			//! Wrapping around to next segment?
@@ -175,6 +193,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
 	const float *LastBlockData,
 	      float *StepBuffer,
+	      float *SmoothingTap,
 	int BlockSize,
 	int nChan
 ) {
@@ -183,7 +202,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! Perform filtering to obtain pre-echo analysis
 	//! NOTE: Output data is stored as a struct to improve performance (SIMD
 	//! optimizable, in theory). The void* cast avoids a nasty, long typecast.
-	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, StepBuffer, BlockSize, nChan);
+	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, StepBuffer, SmoothingTap, BlockSize, nChan);
 	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *TransientData = (void*)StepBuffer;
 
 	//! Begin binary search for transient segment until it stops on the R side,
@@ -215,16 +234,16 @@ static inline int Block_Transform_GetWindowCtrl(
 				SUM_DATA(R,  TransientData[+2*AnalysisLen + n]);
 #undef SUM_DATA
 			}
-#define FINALIZE_DATA(x) x.Sum = (x.Sum != 0.0f) ? (x.Sum / x.SumW - 0x1.0A2B24p4f) : MIN_LOG //! -0x1.0A2B24p4 = Log[2^-24]; undo rescaling
+#define FINALIZE_DATA(x) x.Sum = (x.Sum != 0.0f) ? (x.Sum / x.SumW) : MIN_LOG
 			FINALIZE_DATA(LL);
 			FINALIZE_DATA(L);
 			FINALIZE_DATA(M);
 			FINALIZE_DATA(R);
 #undef FINALIZE_DATA
 			//! Get the ratios between the segments
-			float RatioL =   L.Sum - LL.Sum;
-			float RatioM =   M.Sum - L .Sum;
-			      RatioR = 2*R.Sum - M .Sum;
+			float RatioL = L.Sum - LL.Sum;
+			float RatioM = M.Sum - L .Sum;
+			      RatioR = R.Sum - M .Sum;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;

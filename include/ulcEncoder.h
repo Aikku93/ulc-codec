@@ -60,6 +60,7 @@ struct ULC_EncoderState_t {
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
 	float  BlockComplexity;   //! Coefficient distribution complexity (0 = Highly tonal, 1 = Highly noisy)
+	float  WindowCtrlTap;     //! Sample tap for smoothing control
 	void  *BufferData;
 	float *SampleBuffer;
 	float *TransformBuffer;
