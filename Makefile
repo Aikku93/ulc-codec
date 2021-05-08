@@ -1,3 +1,8 @@
+.phony: common
+.phony: encodetool
+.phony: decodetool
+.phony: clean
+
 #----------------------------#
 # Directories
 #----------------------------#
@@ -7,8 +12,8 @@ RELDIR := release
 
 INCDIR := include
 COMMON_SRCDIR := fourier libulc
-ENCODETOOL_SRCDIR := encodetool
-DECODETOOL_SRCDIR := decodetool
+ENCODETOOL_SRCDIR := tools
+DECODETOOL_SRCDIR := tools
 
 #----------------------------#
 # Cross-compilation, compile flags
@@ -33,8 +38,8 @@ LD := $(ARCHCROSS)gcc
 #----------------------------#
 
 COMMON_SRC     := $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/*.c))
-ENCODETOOL_SRC := $(foreach dir, $(ENCODETOOL_SRCDIR), $(wildcard $(dir)/*.c))
-DECODETOOL_SRC := $(foreach dir, $(DECODETOOL_SRCDIR), $(wildcard $(dir)/*.c))
+ENCODETOOL_SRC := $(ENCODETOOL_SRCDIR)/ulcEncodeTool.c
+DECODETOOL_SRC := $(ENCODETOOL_SRCDIR)/ulcDecodeTool.c
 COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(notdir $(COMMON_SRC:.c=.o)))
 ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(ENCODETOOL_SRC:.c=.o)))
 DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.c=.o)))
@@ -63,7 +68,6 @@ $(OBJDIR) $(RELDIR) :; mkdir -p $@
 # make common
 #----------------------------#
 
-.phony: common
 common : $(COMMON_OBJ)
 
 $(COMMON_OBJ) : $(COMMON_SRC) | $(OBJDIR)
@@ -72,7 +76,6 @@ $(COMMON_OBJ) : $(COMMON_SRC) | $(OBJDIR)
 # make encodetool
 #----------------------------#
 
-.phony: encodetool
 encodetool : $(ENCODETOOL_EXE)
 
 $(ENCODETOOL_OBJ) : $(ENCODETOOL_SRC) | $(OBJDIR)
@@ -84,7 +87,6 @@ $(ENCODETOOL_EXE) : $(COMMON_OBJ) $(ENCODETOOL_OBJ) | $(RELDIR)
 # make decodetool
 #----------------------------#
 
-.phony: decodetool
 decodetool : $(DECODETOOL_EXE)
 
 $(DECODETOOL_OBJ) : $(DECODETOOL_SRC) | $(OBJDIR)
@@ -96,7 +98,6 @@ $(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
 # make clean
 #----------------------------#
 
-.phony: clean
 clean :; rm -rf $(OBJDIR) $(RELDIR)
 
 #----------------------------#
