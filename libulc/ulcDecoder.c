@@ -17,7 +17,7 @@
 //! Just for consistency
 #define MIN_CHANS    1
 #define MAX_CHANS  255
-#define MIN_BANDS   64
+#define MIN_BANDS  256
 #define MAX_BANDS 8192
 
 /**************************************/
@@ -34,35 +34,26 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	if(BlockSize < MIN_BANDS || BlockSize > MAX_BANDS) return -1;
 	if((BlockSize & (-BlockSize)) != BlockSize)        return -1;
 
-	//! Get buffer offsets+sizes
-	//! PONDER: As with the encoder, this... is probably not ideal
-	int TransformBuffer_Size  = sizeof(float)  * (nChan* BlockSize   );
-	int TransformTemp_Size    = sizeof(float)  * (       BlockSize   );
-	int TransformInvLap_Size  = sizeof(float)  * (nChan*(BlockSize/2));
-	int _TransformInvLap_Size = sizeof(float*) * (nChan              );
-	int TransformBuffer_Offs  = 0;
-	int TransformTemp_Offs    = TransformBuffer_Offs + TransformBuffer_Size;
-	int TransformInvLap_Offs  = TransformTemp_Offs   + TransformTemp_Size;
-	int _TransformInvLap_Offs = TransformInvLap_Offs + TransformInvLap_Size;
-	int AllocSize             = _TransformInvLap_Offs + _TransformInvLap_Size;
+	//! Get buffer offsets and allocation size
+	int AllocSize = 0;
+#define CREATE_BUFFER(Name, Sz) int Name##_Offs = AllocSize; AllocSize += Sz
+	CREATE_BUFFER(TransformBuffer, sizeof(float) * (nChan* BlockSize   ));
+	CREATE_BUFFER(TransformTemp,   sizeof(float) * (       BlockSize   ));
+	CREATE_BUFFER(TransformInvLap, sizeof(float) * (nChan*(BlockSize/2)));
+#undef CREATE_BUFFER
 
 	//! Allocate buffer space
 	char *Buf = State->BufferData = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
 	if(!Buf) return -1;
 
 	//! Initialize state
-	int i, Chan;
+	int i;
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
-	State->OverlapSize     = BlockSize;
-	State->TransformBuffer = (float *)(Buf + TransformBuffer_Offs);
-	State->TransformTemp   = (float *)(Buf + TransformTemp_Offs);
-	State->TransformInvLap = (float**)(Buf + _TransformInvLap_Offs);
-	for(Chan=0;Chan<nChan;Chan++) {
-		State->TransformInvLap[Chan] = (float*)(Buf + TransformInvLap_Offs) + Chan*(BlockSize/2);
-
-		//! Everything can remain uninitialized except for the lapping buffer
-		for(i=0;i<BlockSize/2;i++) State->TransformInvLap[Chan][i] = 0.0f;
-	}
+	State->OverlapSize     = 0;
+	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
+	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
+	State->TransformInvLap = (float*)(Buf + TransformInvLap_Offs);
+	for(i=0;i<nChan*(BlockSize/2);i++) State->TransformInvLap[i] = 0.0f;
 
 	//! Success
 	return 1;
@@ -215,15 +206,16 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
 	int    n;
-	int    nChan            = State->nChan;
-	int    BlockSize        = State->BlockSize;
-	float *TransformBuffer  = State->TransformBuffer;
-	float *TransformTemp    = State->TransformTemp;
-	float **TransformInvLap = State->TransformInvLap;
+	int    nChan           = State->nChan;
+	int    BlockSize       = State->BlockSize;
+	float *TransformBuffer = State->TransformBuffer;
+	float *TransformTemp   = State->TransformTemp;
+	float *TransformInvLap = State->TransformInvLap;
+	const float *ModulationWindow = State->ModulationWindow;
 
 	//! Begin decoding
 	int Chan, Size = 0;
-	int NextOverlapSize = 0; //! <- Shuts gcc up
+	int LastOverlapSize = 0; //! <- Shuts gcc up
 	int WindowCtrl; {
 		//! Read window control information
 		WindowCtrl = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
@@ -232,7 +224,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 	}
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Reset overlap scaling for this channel
-		NextOverlapSize = State->OverlapSize;
+		LastOverlapSize = State->OverlapSize;
 
 		//! Start decoding coefficients
 		//! NOTE: If the block is decimated, then output coefficients to the
@@ -245,9 +237,9 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			//! [8h,0h,]Fh: Stop
 			do *CoefDst++ = 0.0f; while(--CoefRem);
 		} else for(;;) {
-			//! -7h..+7h: Normal
+			//! -7h..-1h, +1..+7h: Normal
 			v = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
-			if(v != -0x8) {
+			if(v != -0x8 && v != 0x0) {
 				//! Store linearized, dequantized coefficient
 				v = (v < 0) ? (-v*v) : (+v*v);
 				*CoefDst++ = v * Quant;
@@ -255,48 +247,48 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				continue;
 			}
 
-			//! Unpack escape code
-			v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-			if(v != 0x0) {
-				//! Short run?
-				int nZ;
-				if(v < 0xE) nZ = v + 2; //! 8h,1h..Eh: 3 .. 15 zeros
-				else {
-					//! 8h,Eh,Zh,Yh,Xh: 31 .. 286 noise samples
-					//! 8h,Fh,Yh,Xh:    31 .. 286 zeros
-					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-					nZ  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (nZ<<4);
-					nZ += 31;
-				}
+			//! 0h,Zh,Yh,Xh: Noise fill (16 .. 271 coefficients)
+			if(v == 0x0) {
+				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (n<<4);
+				n += 16;
+				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
+				CoefRem -= n;
 
-				//! Clipping to avoid buffer overflow on corrupted blocks
-				if(nZ > CoefRem) nZ = CoefRem;
-
-				//! Insert zeros (or do noise-fill)
-				CoefRem -= nZ;
-				if(v != 0xE) do *CoefDst++ = 0.0f; while(--nZ);
-				else {
-					//! Noise-fill mode
-					//! NOTE: The scale is quantized in higher precision. See
-					//! ulcEncoder_Encode.h for details.
-					v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
-					float p = (v*v) * Quant * (1 / 8.0f);
-					do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--nZ);
-				}
+				//! NOTE: The scale is quantized in higher precision. See
+				//! ulcEncoder_Encode.h for details.
+				v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
+				float p = (v*v) * Quant * (1 / 8.0f);
+				do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
 				if(CoefRem == 0) break;
-			} else {
-				//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
-				//! 8h,0h,Fh,0h:           Stop
-				//! 8h,0h,Fh,1h..Fh,Xh:    Noise-fill
-				float q = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
-				if(q != 0.0f) { Quant = q; continue; }
+				continue;
+			}
 
-				//! 8h,0h,Fh,0h:        Stop
-				//! 8h,0h,Fh,1h..Fh,Xh: Noise-fill
+			//! 8h,1h..Eh:   Zero run ( 1 ..  14 coefficients)
+			//! 8h,Fh,Yh,Xh: Zero run (29 .. 284 coefficients)
+			v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+			if(v != 0x0) {
+				if(v < 0xF) n = v;
+				else {
+					n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+					n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (n<<4);
+					n += 29;
+				}
+				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
+				CoefRem -= n;
+				do *CoefDst++ = 0.0f; while(--n);
+				if(CoefRem == 0) break;
+				continue;
+			}
+
+			//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
+			//! 8h,0h,Fh,0h:           Stop
+			//! 8h,0h,Fh,1h..Fh,Xh:    Noise fill (exp-decay to end)
+			float q = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
+			if(q != 0.0f) Quant = q;
+			else {
 				v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-				if(!v) {
-					do *CoefDst++ = 0.0f; while(--CoefRem);
-				} else {
+				if(v) {
 					float p = (v*v) * Quant * (1 / 8.0f);
 					v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
 					float Decay = 1.0f - (v*v)*0x1.0p-10f; //! (1/32)^2
@@ -304,7 +296,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 						*CoefDst++ = p * Block_Decode_RandomCoef();
 						p *= Decay;
 					} while(--CoefRem);
-				}
+				} else do *CoefDst++ = 0.0f; while(--CoefRem);
 				break;
 			}
 		}
@@ -317,32 +309,27 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 		const int8_t *DecimationPattern = ULC_Helper_SubBlockDecimationPattern(WindowCtrl >> 4);
 		      float *Dst = DstData + Chan*BlockSize;
 		const float *Src = TransformBuffer, *SrcEnd = TransformBuffer + BlockSize;
-		      float *Lap = TransformInvLap[Chan];
+		      float *Lap = TransformInvLap;
 		for(SubBlockIdx=0;(Src < SrcEnd);SubBlockIdx++) {
-			//! Get the subblock size and overlap, then update for the next subblock
+			//! Get the subblock size and overlap
 			int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
-			int OverlapSize  = NextOverlapSize;
-			if(SubBlockIdx == TransientSubBlockIdx) {
-				NextOverlapSize = SubBlockSize >> (WindowCtrl & 0x7);
-			} else {
-				NextOverlapSize = SubBlockSize;
-			}
+			int OverlapSize  = SubBlockSize;
+			if(SubBlockIdx == TransientSubBlockIdx)
+				OverlapSize >>= (WindowCtrl & 0x7);
 
-			//! If the overlap from the last block is larger than this subblock,
-			//! limit it.
-			//! NOTE: This is the complement to the encoder changing the overlap
-			//! for a proceeding block, and is the reason for the coding delay.
-			if(OverlapSize > SubBlockSize) OverlapSize = SubBlockSize;
+			//! Limit overlap to that of the last subblock
+			if(OverlapSize > LastOverlapSize) OverlapSize = LastOverlapSize;
+			LastOverlapSize = SubBlockSize;
 
 			//! A single long block can be read straight into the output buffer
 			if(SubBlockSize == BlockSize) {
-				Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+				Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize, ModulationWindow);
 				break;
 			}
 
 			//! For small blocks, we store the decoded data to a scratch buffer
 			float *DecBuf = TransformTemp + SubBlockSize;
-			Fourier_IMDCT(DecBuf, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
+			Fourier_IMDCT(DecBuf, Src, Lap, TransformTemp, SubBlockSize, OverlapSize, ModulationWindow);
 			Src += SubBlockSize;
 
 			//! Output samples from the lapping buffer, and cycle
@@ -356,6 +343,9 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			for(n=0;n<NewCopy;n++) LapBuf[-1-n] = LapBuf[-1-n-LapCopy];
 			for(;n<LapExtra;n++) LapBuf[-1-n] = *DecBuf++;
 		}
+
+		//! Move to next channel
+		TransformInvLap += BlockSize/2;
 	}
 
 	//! Undo M/S transform
@@ -367,8 +357,8 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 		DstData[n + BlockSize] = M-S;
 	}
 
-	//! Store the last overlap size obtained, and return the number of bits read
-	State->OverlapSize = NextOverlapSize;
+	//! Store the last overlap, and return the number of bits read
+	State->OverlapSize = LastOverlapSize;
 	return Size;
 }
 
