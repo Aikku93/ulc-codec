@@ -15,9 +15,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 		//! NOTE: The purpose of putting the values into bins is
 		//! to avoid noise-fill pre-echo by getting the noise
 		//! amplitudes at all subblock positions and then using
-		//! an average that favours low amplitudes (geometric,
-		//! harmonic, etc). Comparing against the previous block
-		//! might also be helpful here.
+		//! a measure that favours low amplitudes (eg. minimum).
 		int n;
 		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
 
