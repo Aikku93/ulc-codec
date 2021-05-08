@@ -39,16 +39,25 @@
 //! Encoder state structure
 //! NOTE:
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
-//!  -{RateHz, nChan, BlockSize, BlockOverlap} must not change after calling ULC_EncoderState_Init()
+//!  -{RateHz, nChan, BlockSize, ModulationWindow} must not change after calling ULC_EncoderState_Init()
+//!  -To use custom modulation windows, store a pointer to the data at ModulationWindow.
+//!   This data must be physically laid out as:
+//!    {
+//!      ModulationWindow[16],
+//!      ModulationWindow[32],
+//!      ModulationWindow[64],
+//!      ...
+//!      ModulationWindow[BlockSize],
+//!    }
 struct ULC_EncoderState_t {
 	//! Global state
 	int RateHz;     //! Playback rate (used for rate control)
 	int nChan;      //! Channels in encoding scheme
 	int BlockSize;  //! Transform block size
+	const float *ModulationWindow;
 
 	//! Encoding state
 	//! Buffer memory layout:
-	//!  Data:
 	//!   char  _Padding[];
 	//!   float SampleBuffer   [nChan*BlockSize]
 	//!   float TransformBuffer[nChan*BlockSize]
@@ -56,11 +65,12 @@ struct ULC_EncoderState_t {
 	//!   float TransformFwdLap[nChan*BlockSize]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
+	//!   float TransientWindow[BlockSize/4]
 	//! BufferData contains the original pointer returned by malloc()
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
 	float  BlockComplexity;   //! Coefficient distribution complexity (0 = Highly tonal, 1 = Highly noisy)
-	float  WindowCtrlTap;     //! Sample tap for smoothing control
+	float  WindowCtrlTaps[2]; //! Sample taps for smoothing control
 	void  *BufferData;
 	float *SampleBuffer;
 	float *TransformBuffer;
@@ -69,6 +79,7 @@ struct ULC_EncoderState_t {
 #endif
 	float *TransformFwdLap;
 	float *TransformTemp;
+	float *TransientWindow;
 	int   *TransformIndex;
 };
 
@@ -86,12 +97,6 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 
 //! Encode block
 //! NOTE:
-//!  -Maximum size (in bits) for each block is:
-//!    8 + nChan*(8+4 + (16+4)*(BlockSize-1))
-//!     8    = Window shape[s] selection
-//!     8+4  = Initial quantizer ([8h,0h,]Eh,Xh) and first coefficient (Xh)
-//!     16+4 = Quantizer (8h,0h,Eh,Xh) + coefficient (Xh)
-//!   So output buffer size should be at least that size
 //!  -Input data must have its channels arranged sequentially;
 //!   For example:
 //!   {
@@ -131,10 +136,11 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!    60 < Quality <= 70 = Average <125kbps
 //!    70 < Quality <= 80 = Average <175kbps
 //!    80 < Quality <= 90 = Average <300kbps
-//! Returns the block size in bits
-int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps);
-int ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float AvgComplexity);
-int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality);
+//! Returns a pointer to the compressed data, and the block size in
+//! bits in Size (if NULL, size is not returned).
+const uint8_t *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps);
+const uint8_t *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity);
+const uint8_t *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Quality);
 
 /**************************************/
 //! EOF
