@@ -14,16 +14,23 @@
 #endif
 /**************************************/
 
-static inline __attribute__((always_inline)) void Block_Encode_WriteNybble(uint8_t x, uint8_t **Dst, int *Size) {
+//! The target memory is always aligned to 64 bytes, so just
+//! use whatever is most performant on the target architecture
+typedef uint32_t BitStream_t;
+#define BISTREAM_NBITS (8u*sizeof(BitStream_t))
+
+/**************************************/
+
+static inline __attribute__((always_inline)) void Block_Encode_WriteNybble(uint8_t x, BitStream_t **Dst, int *Size) {
 	//! Push nybble
 	*(*Dst) >>= 4;
-	*(*Dst)  |= x << 4;
+	*(*Dst)  |= x << (BISTREAM_NBITS - 4);
 	*Size += 4;
 
 	//! Next byte?
-	if((*Size)%8u == 0) (*Dst)++;
+	if((*Size)%BISTREAM_NBITS == 0) (*Dst)++;
 }
-static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(int qi, uint8_t **DstBuffer, int *Size, int Lead) {
+static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuffer, int *Size, int Lead) {
 	//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
 	int s = qi - 5;
 	if(Lead) {
@@ -77,7 +84,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	const int   *CoefIdx,
 	int       NextCodedIdx,
 	int      *PrevQuant,
-	uint8_t **DstBuffer,
+	BitStream_t **DstBuffer,
 	int      *Size,
 	int       nOutCoef,
 	int       WindowCtrl
@@ -98,15 +105,14 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	//! Write the coefficients
 	do {
 		//! Target coefficient doesn't collapse to 0?
-		if(ABS(Coef[CurIdx]*q) >= SQR(0.5f)) { //! Block_Encode_Quantize(Coef[CurIdx], q) != 0
+		int Qn = Block_Encode_Quantize(Coef[CurIdx], q);
+		if(Qn != 0x0) {
 			//! Code the zero runs
 			int n, v, zR = CurIdx - NextCodedIdx;
-			while(zR >= 3) {
-				Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-
-				//! Determine the quantized coefficient for noise-fill mode
+			while(zR) {
 #if ULC_USE_NOISE_CODING
-				//! 8h,Eh,Zh,Yh,Xh: 31 .. 286 noise samples
+				//! Determine the quantized coefficient for noise-fill mode
+				//! 0h,Zh,Yh,Xh: 16 .. 271 noise samples
 				//! NOTE: The range of noise samples is coded as a trade-off
 				//! between noise-fill commands and coded coefficients, as
 				//! noise-fill competes with coefficients we /want/ to code
@@ -115,9 +121,6 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				//! significant coefficients, but setting it too high can
 				//! cause degradation in small block sizes as well as when
 				//! we get many short runs.
-				//! TODO: Check the target coefficient's value; if it's
-				//! very close to the noise amplitude, combine it into
-				//! the noise run?
 				//! TODO: Is there a better min-number-of-coefficients?
 				//! Too low and this fights too much with the coefficients
 				//! we are actually trying to code (reducing the coding
@@ -125,13 +128,22 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				//! However, with small BlockSize (or SubBlockSize when
 				//! decimating), smaller runs are useful.
 				int NoiseQ = 0;
-				if(zR >= 31) {
-					v = zR - 31; if(v > 0xFF) v = 0xFF;
-					n = v + 31;
+				if(zR >= 16) {
+					v = zR - 16; if(v > 0xFF) v = 0xFF;
+					n = v  + 16;
 					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, WindowCtrl, q);
+
+					//! If the target coefficient is at a lower or equal level
+					//! to the noise level of the last noise fill run, then
+					//! skip it and count it as part of the fill in the next
+					//! coefficient we try encoding.
+					if(n == zR && SQR(Qn)*8 <= SQR(NoiseQ)) {
+						Qn = 0;
+						break;
+					}
 				}
 				if(NoiseQ) {
-					Block_Encode_WriteNybble(0xE,      DstBuffer, Size);
+					Block_Encode_WriteNybble(0x0,      DstBuffer, Size);
 					Block_Encode_WriteNybble(v>>4,     DstBuffer, Size);
 					Block_Encode_WriteNybble(v,        DstBuffer, Size);
 					Block_Encode_WriteNybble(NoiseQ-1, DstBuffer, Size);
@@ -139,17 +151,19 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 #endif
 					//! Determine which run type to use and get the number of zeros coded
 					//! NOTE: A short run takes 2 nybbles, and a long run takes 4 nybbles.
-					//! So two short runs of maximum length code up to 30 zeros with the
+					//! So two short runs of maximum length code up to 28 zeros with the
 					//! same efficiency as a long run, meaning that long runs start with
-					//! 31 zeros.
-					if(zR < 31) {
-						//! 8h,1h..Dh: 3 .. 15 zeros
-						n = zR; if(n > 15) n = 15;
-						Block_Encode_WriteNybble(n-2, DstBuffer, Size);
+					//! 29 zeros.
+					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+					if(zR < 29) {
+						//! 8h,1h..Eh: 1 .. 14 zeros
+						v = zR - 0; if(v > 0xE) v = 0xE;
+						n = v  + 0;
+						Block_Encode_WriteNybble(v, DstBuffer, Size);
 					} else {
-						//! 8h,Fh,Yh,Xh: 31 .. 286 zeros
-						v = zR-31; if(v > 0xFF) v = 0xFF;
-						n = v + 31;
+						//! 8h,Fh,Yh,Xh: 29 .. 284 zeros
+						v = zR - 29; if(v > 0xFF) v = 0xFF;
+						n = v  + 29;
 						Block_Encode_WriteNybble(0xF,  DstBuffer, Size);
 						Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
 						Block_Encode_WriteNybble(v,    DstBuffer, Size);
@@ -162,24 +176,18 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				zR           -= n;
 			}
 
-			//! Insert coded coefficients
-			//! NOTE:
-			//!  We might still have more coefficients marked for skipping,
-			//!  but this didn't take into account the actual statistics of
-			//!  the coded zero runs. This means that the coefficients might
-			//!  actually not collapse to 0, so we may as well code them anyway
-			//!  as it would cost the same either way (though they might quantize
-			//!  sub-optimally from not being considered originally)
-			do {
-				//! Get quantized coefficient
-				//! -7h..+7h
-				int Qn = Block_Encode_Quantize(Coef[NextCodedIdx], q);
+			//! -7h..-1h, +1h..+7h: Normal coefficient
+#if ULC_USE_NOISE_CODING
+			//! If we consider the coeffient as noise, don't code it here
+			if(Qn) {
+#endif
 				if(Qn < -7) Qn = -7;
 				if(Qn > +7) Qn = +7;
-
-				//! Write to output
 				Block_Encode_WriteNybble(Qn, DstBuffer, Size);
-			} while(++NextCodedIdx <= CurIdx);
+				NextCodedIdx++;
+#if ULC_USE_NOISE_CODING
+			}
+#endif
 		}
 
 		//! Move to the next coefficient
@@ -187,7 +195,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	} while(CurIdx < EndIdx);
 	return NextCodedIdx;
 }
-static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State, uint8_t *DstBuffer, int nOutCoef) {
+static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State, void *_DstBuffer, int nOutCoef) {
 	int BlockSize   = State->BlockSize;
 	int Chan, nChan = State->nChan;
 	const float *Coef      = State->TransformBuffer;
@@ -196,6 +204,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 #if ULC_USE_NOISE_CODING
 	CoefNoise = State->TransformNoise;
 #endif
+	BitStream_t *DstBuffer = _DstBuffer;
 
 	//! Begin coding
 	int Idx  = 0;
@@ -298,26 +307,23 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 				if(NoiseQ) Block_Encode_WriteNybble(NoiseDecay, &DstBuffer, &Size);
 			}
 		} else if(n > 0) {
-			//! If n < 4, then PrevQuant can't be invalid because
-			//! we must have coded /something/ to get to this point.
-			float q = (float)(1u << PrevQuant);
-			do {
-				//! At this point, it's more efficient to write coefficients
-				//! than a stop code. It's unlikely we'll have any actually
-				//! meaningful data here, but we may as well code it anyway.
-				int Qn = Block_Encode_Quantize(Coef[NextCodedIdx], q);
-				if(Qn < -7) Qn = -7;
-				if(Qn > +7) Qn = +7;
-				Block_Encode_WriteNybble(Qn, &DstBuffer, &Size);
-			} while(++NextCodedIdx < ChanLastIdx);
+			//! If we have less than 4 coefficients, it's cheaper to
+			//! store a zero run than to do anything else.
+			Block_Encode_WriteNybble(0x8, &DstBuffer, &Size);
+			Block_Encode_WriteNybble(n,   &DstBuffer, &Size);
 		}
 #undef WRITE_QUANT_ZONE
 	}
 
-	//! Pad final byte as needed
-	if(Size % 8u) Block_Encode_WriteNybble(0x0, &DstBuffer, &Size);
+	//! Align the output stream and pad size to bytes
+	*DstBuffer >>= BISTREAM_NBITS - (Size % BISTREAM_NBITS);
+	Size = (Size+7) &~ 7;
 	return Size;
 }
+
+/**************************************/
+
+#undef BISTREAM_NBITS
 
 /**************************************/
 //! EOF
