@@ -19,7 +19,7 @@
 
 #define MIN_CHANS    1
 #define MAX_CHANS  255
-#define MIN_BANDS   64 //! 64-point MDCT is pretty extreme, so setting this as the limit
+#define MIN_BANDS  256 //! Limited by the transient detector's decimation
 #define MAX_BANDS 8192
 #define MIN_OVERLAP 16 //! Depends on SIMD routines; setting as 16 arbitrarily
 
@@ -48,6 +48,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*BlockSize   ));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * ((nChan + (nChan < 2)) * BlockSize));
 	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan*BlockSize   ));
+	CREATE_BUFFER(TransientWindow, sizeof(float) * (      BlockSize/4 ));
 #undef CREATE_BUFFER
 
 	//! Allocate buffer space
@@ -63,14 +64,16 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 #endif
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
+	State->TransientWindow = (float*)(Buf + TransientWindow_Offs);
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
 
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
-	State->WindowCtrlTap  = 0.0f;
-	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
-	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
+	for(i=0;i<2;i++) State->WindowCtrlTaps[i] = 0.0f;
+	for(i=0;i<      BlockSize/4;i++) State->TransientWindow[i] = 0.0f;
+	for(i=0;i<nChan*BlockSize  ;i++) State->SampleBuffer   [i] = 0.0f;
+	for(i=0;i<nChan*BlockSize  ;i++) State->TransformFwdLap[i] = 0.0f;
 
 	//! Success
 	return 1;
@@ -87,7 +90,7 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State) {
 /**************************************/
 
 //! Encode block (CBR mode)
-int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, float RateKbps, int MaxCoef) {
+int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, void *DstBuffer, float RateKbps, int MaxCoef) {
 	int Size;
 	int nOutCoef  = -1;
 	int BitBudget = (int)((State->BlockSize * RateKbps) * 1000.0f/State->RateHz); //! NOTE: Truncate
@@ -111,28 +114,35 @@ int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, uint8_t *DstBuffe
 	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
-int ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps) {
+const uint8_t *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps) {
+	void *Buf = (void*)State->TransformTemp;
 	int MaxCoef = Block_Transform(State, SrcData);
-	return ULC_EncodeBlock_CBR_Core(State, DstBuffer, RateKbps, MaxCoef);
+	int Sz = ULC_EncodeBlock_CBR_Core(State, Buf, RateKbps, MaxCoef);
+	if(Size) *Size = Sz;
+	return Buf;
 }
 
 /**************************************/
 
 //! Encode block (ABR mode)
-int ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float RateKbps, float AvgComplexity) {
+const uint8_t *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity) {
 	//! NOTE: As below in VBR mode, I have no idea what the curve should
 	//! be; this was derived experimentally to closely match VBR output.
+	void *Buf = (void*)State->TransformTemp;
 	int MaxCoef = Block_Transform(State, SrcData);
 	float TargetKbps = RateKbps * powf(State->BlockComplexity / AvgComplexity, 1.9f); //! Roughly Log[15]*Sqrt[1/2]
-	return ULC_EncodeBlock_CBR_Core(State, DstBuffer, TargetKbps, MaxCoef);
+	int Sz = ULC_EncodeBlock_CBR_Core(State, Buf, TargetKbps, MaxCoef);
+	if(Size) *Size = Sz;
+	return Buf;
 }
 
 /**************************************/
 
 //! Encode block (VBR mode)
-int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Quality) {
+const uint8_t *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Quality) {
 	//! NOTE: The constant in front of the logarithm was experimentally
 	//! dervied; I have no idea what relation it bears to actual encoding.
+	void *Buf = (void*)State->TransformTemp;
 	float TargetComplexity = 15.0f*logf(100.0f / Quality); //! Or: -15.0*Log[Quality/100], but using Log[x] with x>=1.0 should be more accurate
 	int MaxCoef  = Block_Transform(State, SrcData);
 	int nTargetCoef = State->nChan*State->BlockSize; {
@@ -142,7 +152,9 @@ int ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, co
 		if(TargetComplexity > 0.0f) nTargetCoef = (int)(nTargetCoef * State->BlockComplexity / TargetComplexity);
 	}
 	if(nTargetCoef > MaxCoef) nTargetCoef = MaxCoef;
-	return Block_Encode_EncodePass(State, DstBuffer, nTargetCoef);
+	int Sz = Block_Encode_EncodePass(State, Buf, nTargetCoef);
+	if(Size) *Size = Sz;
+	return Buf;
 }
 
 /**************************************/
