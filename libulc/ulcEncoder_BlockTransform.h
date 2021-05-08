@@ -235,15 +235,17 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
 		Data,
 		State->SampleBuffer,
+		State->TransientWindow,
 		State->TransformTemp,
-		&State->WindowCtrlTap,
+		State->WindowCtrlTaps,
 		BlockSize,
-		nChan
+		nChan,
+		State->RateHz
 	);
-	int NextBlockSubBlockSize = BlockSize; {
-		//! Adjust for the first [sub]block's size
-		int NextDecimation = NextWindowCtrl >> 4;
-		NextBlockSubBlockSize >>= ULC_Helper_SubBlockDecimationPattern(NextDecimation)[0];
+	int NextBlockOverlap; {
+		int NextDecimation   = NextWindowCtrl >> 4;
+		    NextBlockOverlap = BlockSize >> ULC_Helper_SubBlockDecimationPattern(NextDecimation)[0];
+		if(ULC_Helper_TransientSubBlockIndex(NextDecimation) == 0) NextBlockOverlap >>= (NextWindowCtrl & 0x7);
 	}
 
 	//! Transform channels and insert keys for each codeable coefficient
@@ -251,6 +253,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	//! speed things up in the rate-control step
 	int nNzCoef = 0; {
 		int n, Chan;
+		const float *ModulationWindow = State->ModulationWindow;
 		float *BufferSamples = State->SampleBuffer;
 		float *BufferMDCT    = State->TransformBuffer;
 		float *BufferIndex   = (float*)State->TransformIndex;
@@ -285,21 +288,16 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			const float *BufferMDCTEnd = BufferMDCT + BlockSize;
 			int SubBlockIdx;
 			for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
-				//! Get the size of this subblock and its overlap
+				//! Get the size of this subblock and the overlap at the next
 				int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
-				int OverlapSize  = SubBlockSize;
-				if(SubBlockIdx == ThisTransientSubBlockIdx) OverlapSize >>= (WindowCtrl & 0x7);
-
-				//! If the next block's first subblock is smaller than
-				//! this one, set overlap to the smaller of the two.
-				//! NOTE: This is literally THE ONLY reason that there is a
-				//! coding delay in this codec (and most MDCT codecs).
+				int OverlapSize;
 				if(BufferMDCT+SubBlockSize < BufferMDCTEnd) {
-					int NextSubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx+1];
-					if(OverlapSize > NextSubBlockSize) OverlapSize = NextSubBlockSize;
-				} else {
-					if(OverlapSize > NextBlockSubBlockSize) OverlapSize = NextBlockSubBlockSize;
-				}
+					OverlapSize = BlockSize >> DecimationPattern[SubBlockIdx+1];
+					if(SubBlockIdx+1 == ThisTransientSubBlockIdx) OverlapSize >>= (WindowCtrl & 0x7);
+				} else OverlapSize = NextBlockOverlap;
+
+				//! Limit overlap to the maximum allowed by this subblock
+				if(OverlapSize > SubBlockSize) OverlapSize = SubBlockSize;
 
 				//! Cycle data through the lapping buffer
 				float *SmpBuf = BufferTemp; {
@@ -364,7 +362,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					BufferFwdLap + (BlockSize-SubBlockSize)/2,
 					BufferTemp,
 					SubBlockSize,
-					OverlapSize
+					OverlapSize,
+					ModulationWindow
 				);
 
 				//! Normalize spectrum, and accumulate amplitude by
