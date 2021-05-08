@@ -29,9 +29,9 @@
 //!          (A_r + B) + Reverse(B_r - A) = (A_r + B) + (B - A_r) = 2B
 //!           ^ Buffered         ^ New input data
 //!  Allowing us to reconstruct the inputs A,B.
-void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap) {
+void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
 	int i;
-	const float *WinS = Fourier_SinTableN(Overlap);
+	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
 	const float *WinC = WinS + Overlap;
 	const float *Lap   = BufLap + N/2;
 	const float *Tmp   = BufTmp + N/2;

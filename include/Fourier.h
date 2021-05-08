@@ -34,7 +34,11 @@ static inline __attribute__((always_inline)) const float *Fourier_SinTableN(int 
 //!  -DCT3() is the transposed version of DCT2(); all its code
 //!   is based on direct reversal of the steps in DCT2().
 //!  -DCT4T() is the transposed version of DCT4(); all its code
-//!   is based on direct reversal of the steps in DCT4().
+//!   is based on direct reversal of the steps in DCT4(). This
+//!   is mathematically equivalent to DCT4(), but may result in
+//!   better/worse round-off error, depending on the input.
+//!   Recommend using DCT4T() for converting time-domain signals
+//!   to the frequency domain, and DCT4() for the inverse.
 void Fourier_DCT2 (float *Buf, float *Tmp, int N);
 void Fourier_DCT3 (float *Buf, float *Tmp, int N);
 void Fourier_DCT4 (float *Buf, float *Tmp, int N);
@@ -58,7 +62,11 @@ void Fourier_DCT4T(float *Buf, float *Tmp, int N);
 //!  -N must be a power of two, and >= 16
 //!  -Overlap must be a multiple of 16
 //!  -BufOut must not be the same as BufIn
-//!  -Sine window (modulated lapped transform)
+//!  -Sine window (modulated lapped transform) is
+//!   used with ModulationWindow == NULL. To use
+//!   custom windows, they must match the format of
+//!   Fourier_SinTable[] (that is, sequential arrays
+//!   for different block sizes 16..N, in powers of 2).
 //!  -Shifted basis that results in phase inversion
 //!   relative to 'normal' I/MDCT calculations.
 //!   Negate input (MDCT) and output (IMDCT) if
@@ -67,8 +75,8 @@ void Fourier_DCT4T(float *Buf, float *Tmp, int N);
 //!  -BufIn can be the same as BufTmp. However, this
 //!   implies trashing of the buffer contents.
 //!  -MDCT uses DCT4T(), IMDCT uses DCT4()
-void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap);
-void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap);
+void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow);
+void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, const float *ModulationWindow);
 
 /**************************************/
 //! EOF

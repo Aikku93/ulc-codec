@@ -37,9 +37,9 @@
 //!     MDCT[N/2+n]   = -s*Old[n] + c*Old[N-1-n];
 //!     MDST[N/2+n]   = -s*Old[n] - c*Old[N-1-n];
 //!   }
-void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap) {
+void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
 	int n;
-	const float *WinS = Fourier_SinTableN(Overlap);
+	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
 	const float *WinC = WinS + Overlap;
 	      float *LapLo = Lap;
 	      float *LapHi = Lap + N;
