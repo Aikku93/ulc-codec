@@ -8,17 +8,11 @@
 /**************************************/
 #include "ulcEncoder.h"
 /**************************************/
-#if defined(__AVX__)
-# define BUFFER_ALIGNMENT 32u //! __mm256
-#elif defined(__SSE__)
-# define BUFFER_ALIGNMENT 16u //! __mm128
-#else
-# define BUFFER_ALIGNMENT 4u //! float
-#endif
+#define BUFFER_ALIGNMENT 64u //! __mm256
 /**************************************/
 
 //! Header magic value
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '1'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '2'<<24)
 
 /**************************************/
 
@@ -74,7 +68,7 @@ int main(int argc, const char *argv[]) {
 	//! Determine encoding mode (CBR/ABR/VBR) and set appropriate block encoding routine
 	//! NOTE: This is kinda janky, but works fine. The main problem is passing AvgComplexity,
 	//! which requires casting all the function pointers to a single form.
-	typedef int (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, uint8_t *DstBuffer, const float *SrcData, float Rate, float AvgComplexity);
+	typedef const uint8_t* (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Rate, float AvgComplexity);
 	BlockEncodeFnc_t BlockEncodeFnc;
 	                          BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_CBR;
 	if(AvgComplexity > 0.0f)  BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_ABR;
@@ -140,14 +134,12 @@ int main(int argc, const char *argv[]) {
 		uint16_t RateKbps;     //! [12h] Nominal coding rate
 		uint32_t StreamOffs;   //! [14h] Offset of data stream
 	} FileHeader = {
-		HEADER_MAGIC,
-		BlockSize,
-		0, //! MaxBlockSize filled later
-		(nSamp + BlockSize-1) / BlockSize + 2, //! +1 to account for coding delay, +1 to account for MDCT delay
-		RateHz,
-		nChan,
-		(uint16_t)RateKbps,
-		sizeof(FileHeader), //! Intended for inserting metadata between the header and the stream
+		.Magic      = HEADER_MAGIC,
+		.BlockSize  = BlockSize,
+		.nBlocks    = (nSamp + BlockSize-1) / BlockSize + 2, //! +1 to account for coding delay, +1 to account for MDCT delay
+		.RateHz     = RateHz,
+		.nChan      = nChan,
+		.RateKbps   = (uint16_t)RateKbps,
 	};
 	size_t FileHeaderOffs = ftell(OutFile);
 	fseek(OutFile, +sizeof(FileHeader), SEEK_CUR);
@@ -157,9 +149,13 @@ int main(int argc, const char *argv[]) {
 		.RateHz     = RateHz,
 		.nChan      = nChan,
 		.BlockSize  = BlockSize,
+		.ModulationWindow = NULL,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds
+
+		//! Store stream offset
+		FileHeader.StreamOffs = ftell(OutFile);
 
 		//! Process blocks
 		int n, Chan;
@@ -188,7 +184,6 @@ int main(int argc, const char *argv[]) {
 			}
 
 			//! Fill buffer data
-			//! BlockFetch[] is free after this
 			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BlockSize, InFile);
 			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
 				BlockBuffer[Chan*BlockSize+n] = ((size_t)n < nMax) ? (BlockFetch[n*nChan+Chan] * (1.0f/32768.0f)) : 0.0f;
@@ -196,8 +191,8 @@ int main(int argc, const char *argv[]) {
 
 			//! Encode block
 			//! Reuse BlockBuffer[] to avoid more memory allocation
-			uint8_t *EncData = (uint8_t*)BlockBuffer;
-			int Size = BlockEncodeFnc(&Encoder, EncData, BlockBuffer, RateKbps, AvgComplexity);
+			int Size;
+			const uint8_t *EncData = BlockEncodeFnc(&Encoder, BlockBuffer, &Size, RateKbps, AvgComplexity);
 			TotalSize += Size;
 			ActualAvgComplexity += Encoder.BlockComplexity;
 

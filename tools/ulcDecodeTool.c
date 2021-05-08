@@ -9,16 +9,10 @@
 /**************************************/
 #include "ulcDecoder.h"
 /**************************************/
-#if defined(__AVX__)
-# define BUFFER_ALIGNMENT 32u //! __mm256
-#elif defined(__SSE__)
-# define BUFFER_ALIGNMENT 16u //! __mm128
-#else
-# define BUFFER_ALIGNMENT 4u //! float
-#endif
+#define BUFFER_ALIGNMENT 64u //! __mm256
 /**************************************/
 
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '1'<<24)
+#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '2'<<24)
 
 /**************************************/
 
@@ -34,7 +28,7 @@ static inline float Clip16(float x) {
 //! File header
 struct FileHeader_t {
 	uint32_t Magic;        //! [00h] Magic value/signature
-	uint16_t BlockSize;    //! [04h] Transform block size
+	uint16_t BlockSize   ; //! [04h] Transform block size
 	uint16_t MaxBlockSize; //! [06h] Largest block size (in bytes; 0 = Unknown)
 	uint32_t nBlocks;      //! [08h] Number of blocks
 	uint32_t RateHz;       //! [0Ch] Playback rate
@@ -158,6 +152,7 @@ int main(int argc, const char *argv[]) {
 	struct ULC_DecoderState_t Decoder = {
 		.nChan      = Header.nChan,
 		.BlockSize  = Header.BlockSize,
+		.ModulationWindow = NULL,
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
 		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds
