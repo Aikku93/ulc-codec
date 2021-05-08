@@ -51,12 +51,16 @@ struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t {
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	const float *Data,
 	const float *LastBlockData,
+	      float *TransientWindow,
 	      float *StepBuffer,
-	      float *SmoothingTap,
+	      float *SmoothingTaps,
 	int BlockSize,
 	int nChan
 ) {
 	int n, Chan;
+
+	//! Restore old block's filtered data
+	for(n=0;n<BlockSize/4;n++) StepBuffer[n] = TransientWindow[n];
 
 	//! Perform a bandpass filter to isolate the energy that is
 	//! important to transient detection. Generally, LF energy
@@ -66,157 +70,122 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//!  H(z) = z^1 - z^-1
 	//! NOTE: This filter does not have unity gain, as doing so
 	//! would add some multiplications that reduce performance.
-	//! NOTE: We end up missing the first sample of the old
-	//! block, and the last sample of the new block; this really
-	//! shouldn't affect things, though.
-	//! NOTE: We decimate by a factor of 2 to save a bit of memory
-	//! and because the results should be almost the same anyway.
+	//! NOTE: We end up losing the last sample of the new block,
+	//! but this shouldn't affect things. More importantly, we
+	//! do NOT fix the last sample of the last subblock because
+	//! this screws things up on transients from silence.
+	//! NOTE: We decimate by a factor of 4 to reduce complexity
+	//! and also reduce jitter a little.
 	//! NOTE: BPFILT() accepts z^-1,1,z^1 for flexibility if we
 	//! ever need to change the filter formula.
-	for(n=0;n<BlockSize;n++) StepBuffer[n] = 0.0f;
+	for(n=0;n<BlockSize/4;n++) StepBuffer[n+BlockSize/4] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 #define BPFILT(zM1, z0, z1) ((z1) - (zM1))
-		float *Dst = StepBuffer;
-		const float *SrcOld = LastBlockData + Chan*BlockSize;
+		float *Dst = StepBuffer + BlockSize/4;
+		const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-2;
 		const float *SrcNew = Data          + Chan*BlockSize;
 		{
-			*Dst   += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry about n=1/2
-			*Dst++ += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
+			*Dst += SQR(BPFILT(SrcOld[0], SrcNew[0], SrcNew[1])), SrcOld++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++, Dst++;
 		}
-		for(n=1;n<BlockSize/2-1;n++) {
-			*Dst   += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
-			*Dst++ += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
-		}
-		{
-			*Dst   += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcOld[2])), SrcOld++;
-			*Dst++ += SQR(BPFILT(SrcOld[0], SrcOld[1], SrcNew[0])), SrcOld++;
-			*Dst   += SQR(BPFILT(SrcOld[0], SrcNew[0], SrcNew[1]));
-			*Dst++ += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-		}
-		for(n=1;n<BlockSize/2-1;n++) {
-			*Dst   += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst++ += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+		for(n=1;n<BlockSize/4-1;n++) {
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++, Dst++;
 		}
 		{
-			*Dst   += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst++ += 0.0f; //! H(z) = (z^1 - z^-1) becomes 0 with even symmetry about n=N-1/2
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
+			*Dst *= 4/3.0f, Dst++; //! z^1 unavailable, so use the average
 		}
 #undef BPFILT
 	}
 
-	//! We increase the signal gain so that we are less likely to
-	//! run into underflow isuses with exp-decay. To avoid adding
-	//! an extra multiplication just to increase the gain, we fold
-	//! it into OneMinusDecay for the spreading calculations.
-	//! NOTE: We spread energy forwards, and then backwards. This
-	//! lets us use a fairly accurate estimate for the backwards
-	//! spreading tap.
-	const float RescaleGain = 0x1.0p48f / (2.0f * 2.0f * nChan); //! *0.5 for decimation, *0.5 for BP gain
-	float Tap = *SmoothingTap;
-	float *MaskingError = StepBuffer + BlockSize;
-
-	//! Compute forward-propagated energy (ie. how much energy we
-	//! can tolerate as part of post-echo).
-	//! NOTE: While we're at it, we also apply the square root
-	//! needed to get the RMS energy over all channels.
-	//! NOTE: It's important to keep the smoothing tap accurate,
-	//! so we save it across blocks. Because of lapping, the save
-	//! point is at the start of the new block, corresponding to
-	//! StepBuffer[BlockSize/2] (/2 due to decimation). We could
-	//! also buffer that many samples, but that needs more memory.
+	//! Apply a lowpass filter to the energy signal, and then
+	//! apply DC removal.
+	//! Theory:
+	//!  Transients result in pulses close to DC, so we try to
+	//!  remove harmonic reflections in the higher freqs. We
+	//!  then apply another filter to remove DC content, as this
+	//!  causes biasing of the signal analysis (note that the
+	//!  DC removal is performed on the squared samples, as this
+	//!  appears to substantially improve results).
+	//! NOTE: It's important to keep the smoothing taps accurate,
+	//! so we save it across blocks and buffer the filtered data.
 	{
-		//! Decay curve: -0.2dB/sample (approx. -8.8dB/ms @ 44.1kHz)
-		//! Calculation:
-		//!  10^(-dBPerSample/20 * 2) = E^(Log[10]*(-dBPerSample/20) * 2)
-		//! NOTE: Exponent multiplied by 2 to account for decimation by 2.
-		const float Decay = 0x1.E8F4CAp-1f, OneMinusDecay = 0x1.70B363p-5f * RescaleGain;
-		float *Src = StepBuffer;
-		float *Dst = MaskingError;
-		for(n=0;n<BlockSize/2;n++) {
-			float v = sqrtf(*Src); *Src++ = v;
-			Tap += v * OneMinusDecay;
-			*Dst++ = Tap;
-			Tap *= Decay;
+		float v, *Buf = StepBuffer + BlockSize/4;
+		float LPTap = SmoothingTaps[0], LPDecay = 240/256.0f, OneMinusLPDecay = 1.0f - LPDecay;
+		float DCTap = SmoothingTaps[1], DCDecay = 252/256.0f, OneMinusDCDecay = 1.0f - DCDecay;
+		for(n=0;n<BlockSize/4;n++) {
+			v = sqrtf(*Buf);
+			LPTap += v * OneMinusLPDecay;
+			v = LPTap;
+			LPTap *= LPDecay;
+			DCTap += v * OneMinusDCDecay;
+			v = ABS(v - DCTap);
+			DCTap *= DCDecay;
+			*Buf++ = v;
 		}
-		*SmoothingTap = Tap;
-		for(;n<BlockSize;n++) {
-			float v = sqrtf(*Src); *Src++ = v;
-			Tap += v * OneMinusDecay;
-			*Dst++ = Tap;
-			Tap *= Decay;
-		}
+		SmoothingTaps[0] = LPTap;
+		SmoothingTaps[1] = DCTap;
 	}
 
-	//! Compute back-propagated energy (ie. how much energy we
-	//! can tolerate as part of pre-echo) and differentiate
-	//! with respect to the forwards-propagated energy; this
-	//! difference gives our "masking error".
-	//! NOTE: We re-use the forwards-spreading tap here for
-	//! improved characteristics.
-	{
-		//! Decay curve: -0.7dB/sample (approx. -30.9dB/ms @ 44.1kHz)
-		const float Decay = 0x1.B3C85Dp-1f, OneMinusDecay = 0x1.30DE8Ap-3f * RescaleGain;
-		const float *Src = StepBuffer   + BlockSize; //! Iterated backwards
-		      float *Dst = MaskingError + BlockSize; //! Iterated backwards
-		for(n=0;n<BlockSize;n++) {
-			float v = *--Src;
-			Tap += v * OneMinusDecay;
-			*--Dst -= Tap;
-			Tap *= Decay;
-		}
-	}
+	//! Save new block's filtered data
+	for(n=0;n<BlockSize/4;n++) TransientWindow[n] = StepBuffer[BlockSize/4+n];
 
-	//! Plug the differentiated energy into an entropy accumulator
-	{
-		int AnalysisIntervalMask = BlockSize/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4)
-		struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t
-			*Dst = (void*)StepBuffer, //! void* cast avoids a nasty, long typecast
-		         Tmp = {.Sum = 0.0f, .SumW = 0.0f};
-		for(n=0;n<BlockSize;n++) {
-			float d = *MaskingError++;
+	//! Plug the energy into an entropy accumulator
+	int AnalysisIntervalMask = (BlockSize/2)/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4), BlockSize/2 = BlockSize*2 / 4 (decimation)
+	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t
+		*Dst = (void*)StepBuffer, //! void* cast avoids a nasty, long typecast
+		 Tmp = {.Sum = 0.0f, .SumW = 0.0f};
+	for(n=0;n<BlockSize/2;n++) {
+		float d = *StepBuffer++;
 
-			//! Accumulate to sums.
-			//! Because everything would be summed up in the search loop
-			//! of Block_Transform_GetWindowCtrl(), we sum as much as we
-			//! can here to reuse as many computations as possible.
-			//! NOTE: We shouldn't need very precise logarithms here, so
-			//! just use a cheaper approximation.
-			float w = SQR(d);
-			Tmp.SumW += w, Tmp.Sum += w*ULC_FastLnApprox(ABS(d));
+		//! Accumulate to sums.
+		//! Because everything would be summed up in the search loop
+		//! of Block_Transform_GetWindowCtrl(), we sum as much as we
+		//! can here to reuse as many computations as possible.
+		//! NOTE: We shouldn't need very precise logarithms here, so
+		//! just use a cheaper approximation.
+		float w = SQR(d);
+		Tmp.SumW += w, Tmp.Sum += w*ULC_FastLnApprox(d);
 
-			//! Wrapping around to next segment?
-			if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
-		}
+		//! Wrapping around to next segment?
+		if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
 	}
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
 	const float *LastBlockData,
+	      float *TransientWindow,
 	      float *StepBuffer,
-	      float *SmoothingTap,
+	      float *SmoothingTaps,
 	int BlockSize,
-	int nChan
+	int nChan,
+	float RateHz
 ) {
 	int n;
 
 	//! Perform filtering to obtain pre-echo analysis
 	//! NOTE: Output data is stored as a struct to improve performance (SIMD
 	//! optimizable, in theory). The void* cast avoids a nasty, long typecast.
-	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, StepBuffer, SmoothingTap, BlockSize, nChan);
+	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, TransientWindow, StepBuffer, SmoothingTaps, BlockSize, nChan);
 	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *TransientData = (void*)StepBuffer;
 
-	//! Begin binary search for transient segment until it stops on the R side,
-	//! at which point the ratio for the transition region is stored
+	//! Begin binary search for transient segment until it stops
+	//! on the R side, at which point the largest ratio is stored
 	float Ratio;
-	int Decimation    = 0b0001;
-	int SubBlockSize  = BlockSize;
+	int Decimation   = 0b0001;
+	int SubBlockSize = BlockSize;
 	int AnalysisLen  = ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO;
 	for(TransientData += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
-		//! Find the peak ratio within each segment (L/M/R),
-		//! making sure to store the transition region ratio
+		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
-		int   RatioPos;
-		float RatioR; {
+		int RatioPos; {
 			//! This is used as a placeholder for Log[0]
 			const float MIN_LOG = -100.0f;
 
@@ -243,7 +212,7 @@ static inline int Block_Transform_GetWindowCtrl(
 			//! Get the ratios between the segments
 			float RatioL = L.Sum - LL.Sum;
 			float RatioM = M.Sum - L .Sum;
-			      RatioR = R.Sum - M .Sum;
+			float RatioR = R.Sum - M .Sum;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
@@ -259,7 +228,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && SubBlockSize > 64) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio >= 0x1.62E430p-2f) { //! Log[Sqrt[2]]
+			if(RatioPos != POS_R && Ratio > 0x1.62E430p-1f) { //! Log[2]
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation     = (Decimation<<1) | 0;
@@ -273,19 +242,22 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! No more decimation - break out of the decimation loop
-		Ratio = RatioR;
 		break;
 	}
 
-	//! Determine the overlap scaling for the transition region
-	int OverlapScale = 0;
-	if(Ratio >= 0x1.62E430p-2f) {     //! Ratio >= Log[2^0.5]
-		if(Ratio < 0x1.205967p2f) //! Ratio <  Log[2^6.5]
-			OverlapScale = (int)(0x1.715476p0f*Ratio + 0.5f); //! 1/Log[2]
-		else
-			OverlapScale = 7;
-		while((SubBlockSize >> OverlapScale) < 16) OverlapScale--; //! Minimum 16-sample overlap
+	//! Determine overlap size from the ratio
+	int OverlapScale = 0; {
+		//! OverlapSeconds = E^-Ratio * 50/1000; experimentally derived
+		//! Full, unsimplified expression:
+		//!  OverlapSamples = E^-Ratio * 50/1000 * RateHz
+		//!  OverlapScale   = Round[Log2[SubBlockSize / OverlapSamples]]
+		float Log2SubBlockSize = 31 - __builtin_clz(SubBlockSize);
+		float Log2OverlapSamplesScale = Log2SubBlockSize + 0x1.149A78p2f + -0x1.715476p0f*(logf(RateHz) - Ratio);
+		if(Log2OverlapSamplesScale > 0.0f) {
+			OverlapScale = (Log2OverlapSamplesScale >= 6.5f) ? 7 : (int)(Log2OverlapSamplesScale + 0.5f);
+		}
 	}
+	while((SubBlockSize >> OverlapScale) < 16) OverlapScale--; //! Minimum 16-sample overlap
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(Decimation != 1) + 0x10*Decimation;
