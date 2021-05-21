@@ -247,33 +247,28 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				continue;
 			}
 
-			//! 0h,Zh,Yh,Xh: Noise fill (16 .. 271 coefficients)
+			//! 0h,Zh,Yh,Xh: 16 .. 527 noise samples (Zh.bit[1..3] != 0)
+			//! 0h,Zh,Yh,Xh: 31 .. 542 zeros         (Zh.bit[1..3] == 0)
 			if(v == 0x0) {
 				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (n<<4);
-				n += 16;
+				v  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
+				n  = (v&1) + (n<<1), v >>= 1;
+				n += (v == 0) ? 31 : 16;
 				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
 				CoefRem -= n;
-
-				//! NOTE: The scale is quantized in higher precision. See
-				//! ulcEncoder_Encode.h for details.
-				v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) + 1;
-				float p = (v*v) * Quant * (1 / 8.0f);
-				do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
+				if(v) {
+					float p = (v*v) * Quant;
+					do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
+				} else do *CoefDst++ = 0.0f; while(--n);
 				if(CoefRem == 0) break;
 				continue;
 			}
 
-			//! 8h,1h..Eh:   Zero run ( 1 ..  14 coefficients)
-			//! 8h,Fh,Yh,Xh: Zero run (29 .. 284 coefficients)
+			//! 8h,1h..Fh: Zero run (1 ..  15 coefficients)
 			v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 			if(v != 0x0) {
-				if(v < 0xF) n = v;
-				else {
-					n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-					n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (n<<4);
-					n += 29;
-				}
+				n = v;
 				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
 				CoefRem -= n;
 				do *CoefDst++ = 0.0f; while(--n);
