@@ -111,9 +111,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//!  Transients result in pulses close to DC, so we try to
 	//!  remove harmonic reflections in the higher freqs. We
 	//!  then apply another filter to remove DC content, as this
-	//!  causes biasing of the signal analysis (note that the
-	//!  DC removal is performed on the squared samples, as this
-	//!  appears to substantially improve results).
+	//!  causes biasing of the signal analysis.
 	//! NOTE: It's important to keep the smoothing taps accurate,
 	//! so we save it across blocks and buffer the filtered data.
 	{
@@ -158,6 +156,13 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
 	}
 }
+static inline float Block_Transform_GetWindowCtrl_DecimationRatio(float LogRatio, float LogRateHz, int Log2SubBlockSize) {
+	//! OverlapSeconds = E^(-2*LogRatio) * 100/1000; experimentally derived
+	//! Full, unsimplified expression:
+	//!  OverlapSamples    = E^(-2*LogRatio) * 100/1000 * RateHz
+	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples]
+	return Log2SubBlockSize + 0x1.EB1279p1f + -0x1.715476p0f*(LogRateHz - 2.0f*LogRatio);
+}
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
 	const float *LastBlockData,
@@ -169,6 +174,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	float RateHz
 ) {
 	int n;
+	float LogRateHz = logf(RateHz);
 
 	//! Perform filtering to obtain pre-echo analysis
 	//! NOTE: Output data is stored as a struct to improve performance (SIMD
@@ -178,13 +184,14 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Begin binary search for transient segment until it stops
 	//! on the R side, at which point the largest ratio is stored
-	float Ratio;
+	float DecimationRatio;
 	int Decimation   = 0b0001;
-	int SubBlockSize = BlockSize;
+	int Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
 	int AnalysisLen  = ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO;
 	for(TransientData += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
 		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
+		float Ratio;
 		int RatioPos; {
 			//! This is used as a placeholder for Log[0]
 			const float MIN_LOG = -100.0f;
@@ -225,10 +232,11 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! NOTE: Checking AnalysisLen should be better than checking
 		//! Decimation directly, as then we can change the maximum allowed
 		//! decimation without changing this code.
-		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && SubBlockSize > 64) {
+		DecimationRatio = Block_Transform_GetWindowCtrl_DecimationRatio(Ratio, LogRateHz, Log2SubBlockSize);
+		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && Log2SubBlockSize > 6) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && Ratio > 0x1.62E430p-1f) { //! Log[2]
+			if(RatioPos != POS_R && DecimationRatio > 1.0f) {
 				//! Update the decimation pattern and continue
 				if(RatioPos == POS_L)
 					Decimation     = (Decimation<<1) | 0;
@@ -236,7 +244,7 @@ static inline int Block_Transform_GetWindowCtrl(
 					Decimation     = (Decimation<<1) | 1,
 					TransientData += AnalysisLen;
 				AnalysisLen  /= 2;
-				SubBlockSize /= 2;
+				Log2SubBlockSize--;
 				continue;
 			}
 		}
@@ -246,18 +254,8 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Determine overlap size from the ratio
-	int OverlapScale = 0; {
-		//! OverlapSeconds = E^-Ratio * 50/1000; experimentally derived
-		//! Full, unsimplified expression:
-		//!  OverlapSamples = E^-Ratio * 50/1000 * RateHz
-		//!  OverlapScale   = Round[Log2[SubBlockSize / OverlapSamples]]
-		float Log2SubBlockSize = 31 - __builtin_clz(SubBlockSize);
-		float Log2OverlapSamplesScale = Log2SubBlockSize + 0x1.149A78p2f + -0x1.715476p0f*(logf(RateHz) - Ratio);
-		if(Log2OverlapSamplesScale > 0.0f) {
-			OverlapScale = (Log2OverlapSamplesScale >= 6.5f) ? 7 : (int)(Log2OverlapSamplesScale + 0.5f);
-		}
-	}
-	while((SubBlockSize >> OverlapScale) < 16) OverlapScale--; //! Minimum 16-sample overlap
+	int OverlapScale = (DecimationRatio < 0.5f) ? 0 : (DecimationRatio > 6.5f) ? 7 : (int)(DecimationRatio + 0.5f);
+	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(Decimation != 1) + 0x10*Decimation;
