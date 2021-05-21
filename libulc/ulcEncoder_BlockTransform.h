@@ -374,7 +374,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					float Im = (BufferMDST[n] *= Norm);
 					float Abs2 = SQR(Re) + SQR(Im);
 #if ULC_USE_NOISE_CODING
-					BufferTemp[n]  = Abs2;
+					BufferTemp[n] = sqrtf(Abs2);
 #endif
 #if ULC_USE_PSYCHOACOUSTICS
 					BufferAmp2[n] += Abs2;
@@ -391,6 +391,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! Pi/2 radians apart. By adding Re^2+Im^2, they form a constant
 				//! amplitude throughout the spectrum, which we then subtract to
 				//! avoid biasing issues in noise and complexity analysis.
+				//! This isn't perfect (adding even one more transient event results
+				//! in the original problem once again), but is much better than
+				//! doing nothing at all.
 				//! NOTE: For noise analysis, we use a geometric mean to determine
 				//! the correct noise amplitude. However, the geometric mean tends
 				//! towards 1/E rather than 0.5 for white noise. So we scale by E
@@ -398,20 +401,16 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! to account for this filter's gain. As the computations work
 				//! in the log domain, we take the logarithm here and then add
 				//! Log[E/2] (0x1.3A37A0p-2) to change a multiply into an add.
-				//! NOTE: We apply the filter over the squared samples, because
-				//! this appears to give better results for some reason. The
-				//! scaling then works out to have a gain of Sqrt[2], but this
-				//! appears to sound better than unity gain for some reason.
 				{
 					float v, v2;
 #if ULC_USE_NOISE_CODING
 # define STORE_VALUE(n, Expr) \
-	v2 = (Expr), v = sqrtf(v2), \
+	v = (Expr), v2 = SQR(v), \
 	Complexity += v2, ComplexityW += v, \
 	BufferNoise[n] = ULC_FastLnApprox(v) + 0x1.3A37A0p-2f
 #else
 # define STORE_VALUE(n, Expr) \
-	v2 = (Expr), v = sqrtf(v2), \
+	v = (Expr), v2 = SQR(v), \
 	Complexity += v2, ComplexityW += v
 #endif
 					STORE_VALUE(0, 2.0f * ABS(BufferTemp[0] - BufferTemp[1])); //! H(z) = -z^1 + 2 - z^1 = 2 - 2z^1
@@ -476,10 +475,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				uint32_t *BufferEnergyNp = (uint32_t*)(BufferTemp + BlockSize);
 
 				//! Find the maximum value for normalization
-				//! NOTE: Ideally, we'd take the maximum of each subblock, but
-				//! this should work well enough for our purposes, as all
-				//! coefficients are "normalized" to begin with, and this is
-				//! just a slight nudge to improve integer precision.
 				//! NOTE: Using M/S makes no difference to using L/R; the
 				//! equations cancel out the inner terms, leaving 2L^2+2R^2.
 				float v, Norm = 0.0f;
