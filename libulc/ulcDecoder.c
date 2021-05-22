@@ -247,8 +247,8 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				continue;
 			}
 
-			//! 0h,Zh,Yh,Xh: 16 .. 527 noise samples (Zh.bit[1..3] != 0)
-			//! 0h,Zh,Yh,Xh: 31 .. 542 zeros         (Zh.bit[1..3] == 0)
+			//! 0h,Zh,Yh,Xh: 16 .. 527 noise samples (Xh.bit[1..3] != 0)
+			//! 0h,Zh,Yh,Xh: 31 .. 542 zeros         (Xh.bit[1..3] == 0)
 			if(v == 0x0) {
 				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (n<<4);
