@@ -157,9 +157,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	}
 }
 static inline float Block_Transform_GetWindowCtrl_DecimationRatio(float LogRatio, float LogRateHz, int Log2SubBlockSize) {
-	//! OverlapSeconds = E^(-2*LogRatio) * 100/1000; experimentally derived
+	//! OverlapSeconds = E^(-2*LogRatio) * 70/1000; experimentally derived
 	//! Full, unsimplified expression:
-	//!  OverlapSamples    = E^(-2*LogRatio) * 100/1000 * RateHz
+	//!  OverlapSamples    = E^(-2*LogRatio) * 70/1000 * RateHz
 	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples]
 	return Log2SubBlockSize + 0x1.EB1279p1f + -0x1.715476p0f*(LogRateHz - 2.0f*LogRatio);
 }
