@@ -58,18 +58,27 @@ static inline int Block_Encode_BuildQuantizer(float Sum, float Weight) {
 }
 
 //! Quantize coefficient
+//! Given x pre-scaled by the quantizer, and x' being companded x:
+//!  xq = Floor[x'] + (x'^2 - Floor[x']^2 > (Floor[x']+1)^2 - x'^2)
+//! ie. We round up when (x'+1)^2 has less error; note the signs,
+//! as Floor[x']+1 will always overshoot, and Floor[x'] can only
+//! undershoot, so we avoid Abs[] by respecting this observation.
+//! Rearranging:
+//!  xq = Floor[x'] + (x'^2 - Floor[x']^2 >= (Floor[x']+1)^2 - x'^2)
+//!     = Floor[x'] + (2x'^2 - Floor[x']^2 >= (Floor[x']+1)^2)
+//!     = Floor[x'] + (2x'^2 - Floor[x']^2 >= 1 + 2*Floor[x'] + Floor[x']^2)
+//!     = Floor[x'] + (2x'^2 - 2*Floor[x']^2 - 2*Floor[x'] >= 1)
+//!     = Floor[x'] + (x'^2 - Floor[x']^2 - Floor[x'] >= 0.5)
+//!     = Floor[x'] + (x >= 0.5 + Floor[x'] + Floor[x']^2)
+//!     = Floor[x'] + (x >= 0.5 + Floor[x']*(1+Floor[x']))
 static inline int Block_Encode_Quantize(float v, float q, int AllowZeros) {
-	float av = ABS(v);
-	int vq = (int)(sqrtf(av*q) + 0.5f);
+	float av = ABS(v*q);
+	int vq = (int)sqrtf(av);
+	vq += (av >= 0.5f + vq*(1+vq));
 	if(vq == 0) {
 		if(AllowZeros) return 0.0f;
 		else return (v < 0.0f) ? (-1) : (+1);
 	}
-#if 1 //! Optimal rounding; the above only ever goes /over/ by +1, and never under
-	float dl = ABS(av*q - SQR(vq-1));
-	float d  = ABS(av*q - SQR(vq  ));
-	vq -= (dl < d);
-#endif
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 
