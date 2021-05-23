@@ -43,15 +43,17 @@ Note that the transient subblock index can be easily obtained using a population
 ### Block syntax
 ***
 
-| Nybble sequence          | Explanation                   | Effect                                          |
-| ------------------------ | ----------------------------- | ----------------------------------------------- |
-| ```-7h..-1h,+1h..+7h```  | Normal coefficient            | Insert ```Coef[n++] = Sign[Nybble]*Nybble^2 * Quantizer``` |
-| ```8h,0h,0h..Dh```       | Quantizer change              | Set ```Quantizer = 2^-(5+X)```                  |
-| ```8h,0h,Eh,0h..Ch```    | Quantizer change              | Set ```Quantizer = 2^-(5+14+X)```               |
-| ```8h,0h,Fh,0h```        | Stop                          | Stop reading coefficients; fill rest with 0     |
-| ```8h,0h,Fh,1h..Fh,Xh``` | Stop (noise)                  | Stop reading coefficients; fill rest with noise |
-| ```8h,1h..Fh```          | Zeros run (short)             | Insert zeros                                    |
-| ```0h,Zh,Yh,Xh```        | Zeros run (long) / Noise-fill | Insert zeros/noise                              |
+| Nybble sequence         | Explanation                   | Effect                                          |
+| ----------------------- | ----------------------------- | ----------------------------------------------- |
+| ```-7h..-1h,+1h..+7h``` | Normal coefficient            | Insert ```Coef[n++] = Sign[Nybble]*Nybble^2 * Quantizer``` |
+| ```8h,0h,0h..Dh```      | Quantizer change              | Set ```Quantizer = 2^-(5+X)```                  |
+| ```8h,0h,Eh,0h..Ch```   | Quantizer change              | Set ```Quantizer = 2^-(5+14+X)```               |
+| ```8h,0h,Eh,Dh```       | *Unallocated*                 | N/A                                             |
+| ```8h,0h,Eh,Eh```       | *Unallocated*                 | N/A                                             |
+| ```8h,0h,Eh,Fh```       | Stop                          | Stop reading coefficients; fill rest with 0     |
+| ```8h,0h,Fh,Yh,Xh```    | Stop (noise)                  | Stop reading coefficients; fill rest with noise |
+| ```8h,1h..Fh```         | Zeros run (short)             | Insert zeros                                    |
+| ```0h,Zh,Yh,Xh```       | Zeros run (long) / Noise-fill | Insert zeros/noise                              |
 
 #### ```-7h..-1h, +1h..+7h```: Normal coefficient
 
@@ -77,19 +79,24 @@ This can be considered to result in a floating-point value containing a sign bit
 
 Each channel begins with a nybble specifying the initial quantizer, akin to a silent ```8h,0h``` at the start (extended-precision quantizers are also allowed for this first quantizer band).
 
-#### ```8h,0h,Fh[,0h]```, ```8h,0h,Fh,1h..Fh,Xh```: Stop
+#### ```8h,0h,Eh,Fh```, ```8h,0h,Fh,Yh,Xh```: Stop
 
-```8h,0h,Fh,0h``` signals that the remaining coefficients for this channel are all zeros. This completes this channel's data.
+```8h,0h,Eh,Fh``` signals that the remaining coefficients for this channel are all zeros. This completes this channel's data.
 
 ```8h,0h,Fh,1h..Fh,Xh``` signals that the remaining coefficients should be filled with exponentially-decaying noise.
 
-A channel's block may begin with ```[8h,0h,]Fh[,0h]```; this means that the channel is silent (note that unlike the normal Stop command, the trailing ```0h``` is NOT used).
+A channel's block may begin with ```[8h,0h,]Eh,Fh```; this means that the channel is silent.
+
+A channel's block cannot begin with ```[8h,0h],Fh,Yh,Xh```; no quantizer has been set at this point, rendering the expression meaningless.
 
 ##### Tail-end noise-fill
 
-The first nybble of the command signals the noise amplitude, which is unpacked as ```Amplitude = [first nybble]^2 * Quantizer / 8```. Note that the amplitude is scaled by 1/8; this is due to the greater dynamic range relative to normal coefficients.
+Unpack Amplitude and Decay as follows:
 
-The second nybble specifies the decay rate. This is unpacked as ```Decay = 1 - (([second nybble]+1) / 32)^2```, giving an effective range of (-0.008 .. -2.5)dB/coefficient with more accuracy for gradual roll-offs.
+    Amplitude = ((Y>>1) + 1)^2 * Quantizer
+    Decay     = 1 - (((Y&1) | X<<1) + 1)^2*(1/128)^2
+
+This allows a decay rate of 0.0005..0.56dB/coefficient, with higher accuracy for slower roll-offs.
 
 For each of the remaining coefficients in the block, noise is used in place of encoded coefficients as follows:
 
