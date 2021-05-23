@@ -41,18 +41,20 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 			SumY  +=   yLog;
 		}
 		float Det = N*SumX2 - SQR(SumX);
-		if(Det == 0.0f) { *_NoiseQ = *_NoiseDecay = 0; }
+		if(Det == 0.0f) { *_NoiseQ = *_NoiseDecay = 0; return; }
 		Amplitude = expf((SumX2*SumY  - SumX*SumXY) / Det);
 		Decay     = expf((    N*SumXY - SumX*SumY ) / Det);
+		if(Decay > 1.0f) Decay = 1.0f;
 	}
 
 	//! Quantize amplitude and decay
-	Decay = (Decay > 1.0f) ? 0.0f : sqrtf(1.0f - Decay); //! <- Re-map
 	int NoiseQ     = Block_Encode_Quantize(Amplitude, q, 1);
-	int NoiseDecay = (int)ceilf(Decay*32 - 1); //! <- Round up (rounds down after inverse mapping)
-	if(NoiseQ     > 0xF) NoiseQ     = 0xF;
-	if(NoiseDecay < 0x0) NoiseDecay = 0x0;
-	if(NoiseDecay > 0xF) NoiseDecay = 0xF;
+	int NoiseDecay = Block_Encode_Quantize(1.0f-Decay, SQR(128.0f), 0);
+	if(NoiseDecay > 50) NoiseQ = 0; //! When decay is too steep (half of max decay), disable fill
+	else {
+		if(NoiseQ     >  0x7+1) NoiseQ     =  0x7+1;
+		if(NoiseDecay > 0x1F+1) NoiseDecay = 0x1F+1;
+	}
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
 }
