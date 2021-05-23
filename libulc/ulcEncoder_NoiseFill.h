@@ -32,18 +32,23 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 		float SumX2 = 0.0f;
 		float SumXY = 0.0f;
 		float SumY  = 0.0f;
+		float SumW  = 0.0f;
+		float w = 1.0f;
+		float SpectralDecayRate = expf(-0x1.7069E3p3f / N); //! E^(-100/20*Log[10]/n) (ie. decay by 100dB upon reaching the end)
 		for(n=0;n<N;n++) {
 			float x = (float)n;
 			float yLog = LogCoef[Band+n];
-			SumX  += x;
-			SumX2 += x*x;
-			SumXY += x*yLog;
-			SumY  +=   yLog;
+			SumX  += w*x;
+			SumX2 += w*x*x;
+			SumXY += w*x*yLog;
+			SumY  += w*  yLog;
+			SumW  += w;
+			w *= SpectralDecayRate;
 		}
-		float Det = N*SumX2 - SQR(SumX);
+		float Det = SumW*SumX2 - SQR(SumX);
 		if(Det == 0.0f) { *_NoiseQ = *_NoiseDecay = 0; return; }
 		Amplitude = expf((SumX2*SumY  - SumX*SumXY) / Det);
-		Decay     = expf((    N*SumXY - SumX*SumY ) / Det);
+		Decay     = expf((SumW *SumXY - SumX*SumY ) / Det);
 		if(Decay > 1.0f) Decay = 1.0f;
 	}
 
