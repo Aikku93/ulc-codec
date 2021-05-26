@@ -47,11 +47,10 @@ static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(in
 //! FIXME: This is NOT OPTIMAL. Large amount of error
 //! can result from this method (relative to the real
 //! optimal quantizer).
-static inline int Block_Encode_BuildQuantizer(float Max) {
-	//! 0x1.4AE00Dp2 = Log[6^2]
+static inline int Block_Encode_BuildQuantizer(float Scale) {
 	//! NOTE: `q` will always be greater than 5 due to the bias so
 	//! the quantizer code syntax is biased accordingly.
-	int q = (int)ceilf(0x1.4AE00Dp2f - 0x1.715476p0f*logf(Max)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	int q = (int)ceilf(4.5f - 0x1.715476p0f*logf(Scale)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5; //! Sometimes happens because of overflow?
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -100,7 +99,8 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	int      *PrevQuant,
 	BitStream_t **DstBuffer,
 	int      *Size,
-	int       nOutCoef
+	int       nOutCoef,
+	int       WindowCtrl
 ) {
 	(void)CoefNoise;  //! CoefNoise is only used with ULC_USE_NOISE_CODING
 
@@ -143,8 +143,8 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 				if(zR >= 16) {
 					v = zR - 16; if(v > 0x1FF) v = 0x1FF;
 					n = v  + 16;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q);
-
+					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q, WindowCtrl);
+#if 0 //! This is NOT a good idea
 					//! If the target coefficient is at a lower or equal level
 					//! to the noise level of the last noise fill run, then
 					//! skip it and count it as part of the fill in the next
@@ -153,6 +153,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 						Qn = 0;
 						break;
 					}
+#endif
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0x0,    DstBuffer, Size);
@@ -222,11 +223,9 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 	//! Begin coding
 	int Idx  = 0;
 	int Size = 0; //! Block size (in bits)
-	{
-		int WindowCtrl = State->WindowCtrl;
-		Block_Encode_WriteNybble(WindowCtrl, &DstBuffer, &Size);
-		if(WindowCtrl & 0x8) Block_Encode_WriteNybble(WindowCtrl >> 4, &DstBuffer, &Size);
-	}
+	int WindowCtrl = State->WindowCtrl;
+	Block_Encode_WriteNybble(WindowCtrl, &DstBuffer, &Size);
+	if(WindowCtrl & 0x8) Block_Encode_WriteNybble(WindowCtrl >> 4, &DstBuffer, &Size);
 	for(Chan=0;Chan<nChan;Chan++) {
 		int   NextCodedIdx  = Idx;
 		int   PrevQuant     = -1;
@@ -248,7 +247,8 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 		&PrevQuant, \
 		&DstBuffer, \
 		&Size, \
-		nOutCoef \
+		nOutCoef, \
+		WindowCtrl \
 	)
 		for(;;Idx++) {
 			//! Seek the next coefficient
@@ -312,6 +312,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 					NextCodedIdx,
 					n,
 					(float)(1u << PrevQuant),
+					WindowCtrl,
 					&NoiseQ,
 					&NoiseDecay
 				);

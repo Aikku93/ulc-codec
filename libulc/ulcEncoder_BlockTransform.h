@@ -14,156 +14,7 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! Store the Neper-domain coefficients and sorting (importance) indices of
-//! a block, and update the number of codeable non-zero coefficients
-//! NOTE:
-//!  AnalysisPower is used to alter the preference for the currently-being-analyzed channel
-static inline void Block_Transform_WriteNepersAndIndices(
-	      float *CoefIdx,
-#if ULC_USE_PSYCHOACOUSTICS
-	const float *MaskingNp,
-#endif
-	const float *Coef,
-	      int   *nNzCoef,
-	      int    BlockSize
-) {
-	int Band;
-	for(Band=0;Band<BlockSize;Band++) {
-		//! Coefficient inside codeable range?
-		float Val = ABS(Coef[Band]);
-		if(Val < 0.5f*ULC_COEF_EPS) {
-			CoefIdx[Band] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
-		} else {
-			float ValNp = logf(Val);
-			float MaskedValNp = ValNp;
-#if ULC_USE_PSYCHOACOUSTICS
-			//! Apply psychoacoustic corrections to this band energy
-			MaskedValNp -= MaskingNp[Band];
-#endif
-			//! Store the sort value for this coefficient
-			CoefIdx[Band] = MaskedValNp;
-			(*nNzCoef)++;
-		}
-	}
-}
-
-/**************************************/
-
 //! Transform a block and prepare its coefficients
-static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
-	//! The interleaving patterns here were chosen to try and
-	//! optimize coefficient clustering across block sizes
-	int n; for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
-	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
-		//! 001x: a=N/2, b=N/2
-		case 0b001: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			for(n=0;n<BlockSize/2;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-			}
-		} break;
-
-		//! 010x: a=N/4, b=N/4, c=N/2
-		case 0b010: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/4;
-			float *SrcC = SrcB + BlockSize/4;
-			for(n=0;n<BlockSize/4;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcC++;
-			}
-		} break;
-
-		//! 011x: a=N/2, b=N/4, c=N/4
-		case 0b011: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			float *SrcC = SrcB + BlockSize/4;
-			for(n=0;n<BlockSize/4;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-			}
-		} break;
-
-		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
-		case 0b100: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/8;
-			float *SrcC = SrcB + BlockSize/8;
-			float *SrcD = SrcC + BlockSize/4;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-
-		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
-		case 0b101: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/4;
-			float *SrcC = SrcB + BlockSize/8;
-			float *SrcD = SrcC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-
-		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
-		case 0b110: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			float *SrcC = SrcB + BlockSize/8;
-			float *SrcD = SrcC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-
-		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
-		case 0b111: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			float *SrcC = SrcB + BlockSize/4;
-			float *SrcD = SrcC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-	}
-}
 static inline void Block_Transform_SortIndices_SiftDown(const float *SortValues, int *Order, int Root, int N) {
 	//! NOTE: Most of the sorting time is spent in this function,
 	//! so I've tried to optimize it as best as I could. The
@@ -374,7 +225,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					float Im = (BufferMDST[n] *= Norm);
 					float Abs2 = SQR(Re) + SQR(Im);
 #if ULC_USE_NOISE_CODING
-					BufferTemp[n] = sqrtf(Abs2);
+					BufferTemp[n] = Abs2;
 #endif
 #if ULC_USE_PSYCHOACOUSTICS
 					BufferAmp2[n] += Abs2;
@@ -401,16 +252,20 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! to account for this filter's gain. As the computations work
 				//! in the log domain, we take the logarithm here and then add
 				//! Log[E/2] (0x1.3A37A0p-2) to change a multiply into an add.
+				//! NOTE: We apply the filter over the squared samples, because
+				//! this appears to give consistent results for some reason. The
+				//! scaling then works out to have a gain of Sqrt[2], but this
+				//! appears to sound better than unity gain for some reason.
 				{
 					float v, v2;
 #if ULC_USE_NOISE_CODING
 # define STORE_VALUE(n, Expr) \
-	v = (Expr), v2 = SQR(v), \
+	v2 = (Expr), v = sqrtf(v2), \
 	Complexity += v2, ComplexityW += v, \
 	BufferNoise[n] = ULC_FastLnApprox(v) + 0x1.3A37A0p-2f
 #else
 # define STORE_VALUE(n, Expr) \
-	v = (Expr), v2 = SQR(v), \
+	v2 = (Expr), v = sqrtf(v2), \
 	Complexity += v2, ComplexityW += v
 #endif
 					STORE_VALUE(0, 2.0f * ABS(BufferTemp[0] - BufferTemp[1])); //! H(z) = -z^1 + 2 - z^1 = 2 - 2z^1
@@ -444,97 +299,67 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		BufferMDCT -= BlockSize*nChan; //! Rewind to start of buffer
 		BufferMDST -= BlockSize*nChan;
 
-		//! Perform encoding analysis
-		{
-			//! Finalize and store block complexity
-			if(Complexity) {
-				//! Based off the same principles of normalized entropy:
-				//!  Entropy = (Log[Total[x]] - Total[x*Log[x]]/Total[x]) / Log[N]
-				//! Instead of accumulating log values, we accumulate
-				//! raw values, meaning we need to take the log:
-				//!  Total[x*Log[x]]/Total[x] -> Log[Total[x*x]/Total[x]]
-				//! Simplifying:
-				//!   (Log[Total[x]] - Log[Total[x*x]/Total[x]]) / Log[N]
-				//!  =(Log[Total[x] / (Total[x*x]/Total[x])) / Log[N]
-				//!  =Log[Total[x]^2 / Total[x^2]] / Log[N]
-				float ComplexityScale = 0x1.62E430p-1f*(31 - __builtin_clz(BlockSize)); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
-				Complexity = logf(SQR(ComplexityW) / Complexity) / ComplexityScale;
-				if(Complexity < 0.0f) Complexity = 0.0f; //! In case of round-off error
-				if(Complexity > 1.0f) Complexity = 1.0f;
-			}
-			State->BlockComplexity = Complexity;
+		//! Finalize and store block complexity
+		if(Complexity) {
+			//! Based off the same principles of normalized entropy:
+			//!  Entropy = (Log[Total[x]] - Total[x*Log[x]]/Total[x]) / Log[N]
+			//! Instead of accumulating log values, we accumulate
+			//! raw values, meaning we need to take the log:
+			//!  Total[x*Log[x]]/Total[x] -> Log[Total[x*x]/Total[x]]
+			//! Simplifying:
+			//!   (Log[Total[x]] - Log[Total[x*x]/Total[x]]) / Log[N]
+			//!  =(Log[Total[x] / (Total[x*x]/Total[x])) / Log[N]
+			//!  =Log[Total[x]^2 / Total[x^2]] / Log[N]
+			float ComplexityScale = 0x1.62E430p-1f*(31 - __builtin_clz(BlockSize)); //! 0x1.62E430p-1 = 1/Log2[E] for change-of-base
+			Complexity = logf(SQR(ComplexityW) / Complexity) / ComplexityScale;
+			if(Complexity < 0.0f) Complexity = 0.0f; //! In case of round-off error
+			if(Complexity > 1.0f) Complexity = 1.0f;
+		}
+		State->BlockComplexity = Complexity;
 
-			//! Perform psychoacoustic analysis
 #if ULC_USE_PSYCHOACOUSTICS
-			{
-				//! Combine the energy of all channels' MDCT+MDST coefficients
-				//! into normalized (by maximum) fixed-point integer values.
-				//! For some reason, it seems to work better to combine the
-				//! channels for analysis, rather than use each one separately.
-				uint32_t *BufferEnergy   = (uint32_t*)(BufferTemp);
-				uint32_t *BufferEnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+		//! Perform psychoacoustics analysis
+		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, (uint32_t*)BufferTemp, BlockSize, DecimationPattern);
+#endif
 
-				//! Find the maximum value for normalization
-				//! NOTE: Using M/S makes no difference to using L/R; the
-				//! equations cancel out the inner terms, leaving 2L^2+2R^2.
-				float v, Norm = 0.0f;
-				for(n=0;n<BlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
-
-				//! Find the integer normalization factor and convert to integers
-				//! NOTE: Maximum value for BufferEnergyNp is Log[2 * 2^32], so rescale by
-				//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
-				if(Norm != 0.0f) {
-					const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
-					Norm = 0x1.0p32f / Norm;
-					for(n=0;n<BlockSize;n++) {
-						float p   = BufferAmp2[n] * Norm;
-						float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
-						p   = ceilf(p);
-						pNp = ceilf(pNp*LogScale);
-						uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
-						uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
-						BufferEnergy  [n] = ip;
-						BufferEnergyNp[n] = ipNp;
+		//! Perform importance analysis for all coefficients
+		for(Chan=0;Chan<nChan;Chan++) {
+			//! Analyze each subblock separately
+			const float *BufferMDCTEnd = BufferMDCT + BlockSize;
+			int SubBlockIdx;
+			for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
+				//! Store the sorting (importance) indices of a block's coefficients,
+				//! and update the number of codeable non-zero coefficients
+				int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
+				for(n=0;n<SubBlockSize;n++) {
+					//! Coefficient inside codeable range?
+					float Val = ABS(BufferMDCT[n]);
+					if(Val < 0.5f*ULC_COEF_EPS) {
+						BufferIndex[n] = -0x1.0p126f; //! Unusable coefficient; map to the end of the list
+					} else {
+						float ValNp = logf(Val);
+						float MaskedValNp = ValNp;
+#if ULC_USE_PSYCHOACOUSTICS
+						//! Apply psychoacoustic corrections to this band energy
+						MaskedValNp -= MaskingNp[n];
+#endif
+						//! Store the sort value for this coefficient
+						BufferIndex[n] = MaskedValNp;
+						nNzCoef++;
 					}
-
-					//! Buffer the psychoacoustics analysis into the last channel's buffer
-					//! so that we can save a bit of memory to store these values into and
-					//! avoid re-calculating for each channel, as the analysis isn't cheap
-					Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferEnergy, BufferEnergyNp, BlockSize, DecimationPattern);
 				}
-			}
-#endif
-			//! Analyze each channel
-			for(Chan=0;Chan<nChan;Chan++) {
-				//! Analyze each subblock separately
-				const float *BufferMDCTEnd = BufferMDCT + BlockSize;
-				int SubBlockIdx;
-				for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
-					int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
 
-					//! Store the sorting (importance) indices
-					Block_Transform_WriteNepersAndIndices(
-						BufferIndex,
+				//! Move to the next subblock
+				BufferMDCT  += SubBlockSize;
+				BufferIndex += SubBlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
-						MaskingNp,
-#endif
-						BufferMDCT,
-						&nNzCoef,
-						SubBlockSize
-					);
-
-					//! Move to the next subblock
-					BufferMDCT  += SubBlockSize;
-					BufferIndex += SubBlockSize;
-#if ULC_USE_PSYCHOACOUSTICS
-					MaskingNp   += SubBlockSize;
-#endif
-				}
-#if ULC_USE_PSYCHOACOUSTICS
-				//! Psychoacoustic analysis is re-used across channels - rewind
-				MaskingNp -= BlockSize;
+				MaskingNp   += SubBlockSize;
 #endif
 			}
+#if ULC_USE_PSYCHOACOUSTICS
+			//! Psychoacoustic analysis is re-used across channels - rewind
+			MaskingNp -= BlockSize;
+#endif
 		}
 
 		//! Interleave the transform data for coding

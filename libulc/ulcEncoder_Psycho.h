@@ -36,7 +36,7 @@ static inline void Block_Transform_MaskingState_Init(
 	State->Energy   = Energy[0];
 	State->Nepers   = Energy[0] * (uint64_t)EnergyNp[0] >> State->SumShift;
 }
-static inline float Block_Transform_GetMaskedLevel(
+static inline float Block_Transform_GetMaskingLevel(
 	struct Block_Transform_MaskingState_t *State,
 	const uint32_t *Energy,
 	const uint32_t *EnergyNp,
@@ -75,8 +75,7 @@ static inline float Block_Transform_GetMaskedLevel(
 	State->Energy = EnergySum;
 	State->Nepers = EnergyLog;
 
-	//! Return the entropy of this frequency bin's critical band,
-	//! normalized about its L1 norm.
+	//! Return the normalized entropy of this frequency bin's critical band.
 	//! NOTE: This value will be subtracted from the Neper-domain
 	//! amplitude of the MDCT coefficient. The overall idea of
 	//! the implemented model is to form this equation:
@@ -106,21 +105,49 @@ static inline float Block_Transform_GetMaskedLevel(
 
 /**************************************/
 
-static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, const uint32_t *Energy, const uint32_t *EnergyNp, int BlockSize, const int8_t *DecimationPattern) {
+static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, const float *BufferAmp2, uint32_t *BufferTemp, int BlockSize, const int8_t *DecimationPattern) {
+	int n;
 	struct Block_Transform_MaskingState_t MaskingState;
 
-	//! Masking is performed for each sub-block, independent of each other
+	//! Find the maximum value for normalization
+	//! NOTE: Using M/S makes no difference to using L/R; the
+	//! equations cancel out the inner terms, leaving eg. 2L^2+2R^2.
+	float v, Norm = 0.0f;
+	for(n=0;n<BlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
+	if(Norm == 0.0f) return; //! <- No data, so no point in going further
+	Norm = 0x1.0p32f / Norm;
+
+	//! Find the integer normalization factor and convert data to integers.
+	//! For some reason, it seems to work better to combine the
+	//! channels for analysis, rather than use each one separately.
+	//! NOTE: Maximum value for EnergyNp is Log[2 * 2^32], so rescale by
+	//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
+	//! NOTE: Taking the absolute energy (ie. Sqrt[Amp2]) appears to give
+	//! slightly clearer and more consistent results.
+	const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
+	uint32_t *Energy   = (uint32_t*)(BufferTemp);
+	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+	for(n=0;n<BlockSize;n++) {
+		float p2  = BufferAmp2[n] * Norm;
+		float p   = sqrtf(p2 * 0x1.0p32f); //! Square the amplitude to cancel in square root
+		float pNp = (p2 < 0.5f) ? 0.0f : logf(2.0f*p2); //! Scale by 2 to keep values strictly non-negative
+		p   = ceilf(p);
+		pNp = ceilf(pNp*LogScale);
+		uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
+		uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
+		Energy  [n] = ip;
+		EnergyNp[n] = ipNp;
+	}
+
+	//! Compute masking levels for each [sub-]block
 	const float *MaskingNpEnd = MaskingNp + BlockSize;
 	int SubBlockIdx;
 	for(SubBlockIdx=0;(MaskingNp < MaskingNpEnd);SubBlockIdx++) {
 		int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
 		Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, SubBlockSize);
 
-		//! Perform simultaneous masking for each band
-		int Band;
-		for(Band=0;Band<SubBlockSize;Band++) MaskingNp[Band] = Block_Transform_GetMaskedLevel(&MaskingState, Energy, EnergyNp, Band, SubBlockSize);
-
-		//! Advance buffers
+		//! Get simultaneous masking level for each band and move to next [sub-]block
+		for(n=0;n<SubBlockSize;n++) MaskingNp[n] = Block_Transform_GetMaskingLevel(&MaskingState, Energy, EnergyNp, n, SubBlockSize);
 		MaskingNp += SubBlockSize;
 		Energy    += SubBlockSize;
 		EnergyNp  += SubBlockSize;

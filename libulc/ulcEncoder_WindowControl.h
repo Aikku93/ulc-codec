@@ -262,5 +262,123 @@ static inline int Block_Transform_GetWindowCtrl(
 }
 
 /**************************************/
+
+//! Interleave coefficients for encoding
+static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
+	//! The interleaving patterns here were chosen to try and
+	//! optimize coefficient clustering across block sizes
+	int n; for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
+	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
+		//! 001x: a=N/2, b=N/2
+		case 0b001: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			for(n=0;n<BlockSize/2;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+			}
+		} break;
+
+		//! 010x: a=N/4, b=N/4, c=N/2
+		case 0b010: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/4;
+			float *SrcC = SrcB + BlockSize/4;
+			for(n=0;n<BlockSize/4;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcC++;
+			}
+		} break;
+
+		//! 011x: a=N/2, b=N/4, c=N/4
+		case 0b011: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			float *SrcC = SrcB + BlockSize/4;
+			for(n=0;n<BlockSize/4;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+			}
+		} break;
+
+		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
+		case 0b100: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/8;
+			float *SrcC = SrcB + BlockSize/8;
+			float *SrcD = SrcC + BlockSize/4;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+			}
+		} break;
+
+		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
+		case 0b101: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/4;
+			float *SrcC = SrcB + BlockSize/8;
+			float *SrcD = SrcC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+			}
+		} break;
+
+		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
+		case 0b110: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			float *SrcC = SrcB + BlockSize/8;
+			float *SrcD = SrcC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+				*Buf++ = *SrcD++;
+			}
+		} break;
+
+		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
+		case 0b111: {
+			float *SrcA = Tmp;
+			float *SrcB = SrcA + BlockSize/2;
+			float *SrcC = SrcB + BlockSize/4;
+			float *SrcD = SrcC + BlockSize/8;
+			for(n=0;n<BlockSize/8;n++) {
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcA++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcB++;
+				*Buf++ = *SrcC++;
+				*Buf++ = *SrcD++;
+			}
+		} break;
+	}
+}
+
+/**************************************/
 //! EOF
 /**************************************/
