@@ -70,14 +70,10 @@ static inline int Block_Encode_BuildQuantizer(float Scale) {
 //!     = Floor[x'] + (x'^2 - Floor[x']^2 - Floor[x'] >= 0.5)
 //!     = Floor[x'] + (x >= 0.5 + Floor[x'] + Floor[x']^2)
 //!     = Floor[x'] + (x >= 0.5 + Floor[x']*(1+Floor[x']))
-static inline int Block_Encode_Quantize(float v, float q, int AllowZeros) {
-	float av = ABS(v*q);
+static inline int Block_Encode_Quantize(float v) {
+	float av = ABS(v);
 	int vq = (int)sqrtf(av);
 	vq += (av >= 0.5f + vq*(1+vq));
-	if(vq == 0) {
-		if(AllowZeros) return 0.0f;
-		else return (v < 0.0f) ? (-1) : (+1);
-	}
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 
@@ -117,7 +113,7 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 	//! Write the coefficients
 	do {
 		//! Target coefficient doesn't collapse to 0?
-		int Qn = Block_Encode_Quantize(Coef[CurIdx], q, 0);
+		int Qn = Block_Encode_Quantize(Coef[CurIdx]*q);
 		if(Qn != 0x0) {
 			//! Code the zero runs
 			int n, v, zR = CurIdx - NextCodedIdx;
@@ -144,16 +140,6 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 					v = zR - 16; if(v > 0x1FF) v = 0x1FF;
 					n = v  + 16;
 					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q, WindowCtrl);
-#if 0 //! This is NOT a good idea
-					//! If the target coefficient is at a lower or equal level
-					//! to the noise level of the last noise fill run, then
-					//! skip it and count it as part of the fill in the next
-					//! coefficient we try encoding.
-					if(n == zR && ABS(Qn) <= NoiseQ) {
-						Qn = 0;
-						break;
-					}
-#endif
 				}
 				if(NoiseQ) {
 					Block_Encode_WriteNybble(0x0,    DstBuffer, Size);
