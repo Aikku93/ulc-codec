@@ -122,14 +122,11 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 	//! channels for analysis, rather than use each one separately.
 	//! NOTE: Maximum value for EnergyNp is Log[2 * 2^32], so rescale by
 	//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
-	//! NOTE: Taking the absolute energy (ie. Sqrt[Amp2]) appears to give
-	//! slightly clearer and more consistent results.
 	const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
 	uint32_t *Energy   = (uint32_t*)(BufferTemp);
 	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize);
 	for(n=0;n<BlockSize;n++) {
-		float p2  = BufferAmp2[n] * Norm;
-		float p   = sqrtf(p2 * 0x1.0p32f); //! Square the amplitude to cancel in square root
+		float p   = BufferAmp2[n] * Norm;
 		float pNp = (p2 < 0.5f) ? 0.0f : logf(2.0f*p2); //! Scale by 2 to keep values strictly non-negative
 		p   = ceilf(p);
 		pNp = ceilf(pNp*LogScale);
