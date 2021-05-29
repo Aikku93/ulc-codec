@@ -9,6 +9,7 @@
 /**************************************/
 
 //! Get the quantized noise amplitude for encoding
+//! NOTE: N must be at least ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO.
 static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int N, float q, int WindowCtrl) {
 	//! Analyze for the noise amplitude
 	float Amplitude; {
@@ -39,7 +40,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
 		for(n=0;n<nSubBlocks;n++) {
 			float s  = Sum [n];
-			float sW = SumW[n]; if(sW == 0.0f) continue; //! Bin not affected by fill - ignore it
+			float sW = SumW[n];
 			float a  = s/sW;
 			if(a < Amplitude) Amplitude = a;
 		}
@@ -47,12 +48,13 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = (int)sqrtf(Amplitude*q); //! <- Round down, or noise can stand out and sound wrong
+	int NoiseQ = Block_Encode_Quantize(Amplitude*q * 8.0f);
 	if(NoiseQ > 0x7) NoiseQ = 0x7;
 	return NoiseQ;
 }
 
 //! Compute quantized HF extension parameters for encoding
+//! NOTE: N must be at least ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO.
 static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, float q, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
 	//! Solve for weighted least-squares (in the log domain, for exponential fitting)
 	float Amplitude, Decay; {
@@ -90,7 +92,6 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 		Decay     = 0.0f;
 		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
 		for(n=0;n<nSubBlocks;n++) {
-			if(SumW[n] == 0.0f) continue; //! Bin not affected by fill - ignore it
 			float Det = SumW[n]*SumX2[n] - SQR(SumX[n]);
 			if(Det != 0.0f) {
 				float a = (SumX2[n]*SumY [n] - SumX[n]*SumXY[n]) / Det;
@@ -108,11 +109,12 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = (int)sqrtf(Amplitude*q); //! Round down to avoid jarring transitions
-	int NoiseDecay = Block_Encode_Quantize(1.0f-Decay, SQR(128.0f), 0);
+	int NoiseQ     = Block_Encode_Quantize(Amplitude*q * 8.0f);
+	int NoiseDecay = Block_Encode_Quantize((1.0f-Decay) * SQR(256.0f));
 	if(NoiseDecay > 50) NoiseQ = 0; //! When decay is too steep (half of max decay), disable fill
 	else {
 		if(NoiseQ     >  0x7+1) NoiseQ     =  0x7+1;
+		if(NoiseDecay < 0x00+1) NoiseDecay = 0x00+1;
 		if(NoiseDecay > 0x1F+1) NoiseDecay = 0x1F+1;
 	}
 	*_NoiseQ     = NoiseQ;
