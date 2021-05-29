@@ -260,14 +260,14 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
 				CoefRem -= n;
 				if(v) {
-					float p = (v*v) * Quant;
+					float p = (v*v) * Quant * 1/8.0f;
 					do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
 				} else do *CoefDst++ = 0.0f; while(--n);
 				if(CoefRem == 0) break;
 				continue;
 			}
 
-			//! 8h,1h..Fh: Zero run (1 ..  15 coefficients)
+			//! 8h,1h..Fh: Zero run (1 .. 15 coefficients)
 			v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
 			if(v != 0x0) {
 				n = v;
@@ -293,8 +293,8 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 				n = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
 				n = (v&1) | (n<<1), v >>= 1;
 				n++, v++;
-				float Decay = 1.0f - (n*n)*0x1.0p-14f; //! (1/128)^2
-				float p     = (v*v) * Quant;
+				float Decay = 1.0f - (n*n)*0x1.0p-16f; //! (1/256)^2
+				float p     = (v*v) * Quant * 1/8.0f;
 				do {
 					*CoefDst++ = p * Block_Decode_RandomCoef();
 					p *= Decay;
