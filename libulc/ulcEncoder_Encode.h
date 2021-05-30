@@ -50,7 +50,7 @@ static inline __attribute__((always_inline)) void Block_Encode_WriteQuantizer(in
 static inline int Block_Encode_BuildQuantizer(float Scale) {
 	//! NOTE: `q` will always be greater than 5 due to the bias so
 	//! the quantizer code syntax is biased accordingly.
-	int q = (int)ceilf(4.5f - 0x1.715476p0f*logf(Scale)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	int q = (int)ceilf(4.0f - 0x1.715476p0f*logf(Scale)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5; //! Sometimes happens because of overflow?
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -58,18 +58,18 @@ static inline int Block_Encode_BuildQuantizer(float Scale) {
 
 //! Quantize coefficient
 //! Given x pre-scaled by the quantizer, and x' being companded x:
-//!  xq = Floor[x'] + (x'^2 - Floor[x']^2 >= (Floor[x']+1)^2 - x'^2)
-//! ie. We round up when (x'+1)^2 has less error; note the signs,
+//!  xq = Floor[x'] + (x - Floor[x']^3 >= (Floor[x']+1)^3 - x)
+//! ie. We round up when (x'+1)^3 has less error; note the signs,
 //! as Floor[x']+1 will always overshoot, and Floor[x'] can only
 //! undershoot, so we avoid Abs[] by respecting this observation.
-//! Rearranging:
-//!  xq = Floor[x'] + (x'^2 - Floor[x']^2 >= (Floor[x']+1)^2 - x'^2)
-//!     = Floor[x'] + (2x'^2 - Floor[x']^2 >= (Floor[x']+1)^2)
-//!     = Floor[x'] + (2x'^2 - Floor[x']^2 >= 1 + 2*Floor[x'] + Floor[x']^2)
-//!     = Floor[x'] + (2x'^2 - 2*Floor[x']^2 - 2*Floor[x'] >= 1)
-//!     = Floor[x'] + (x'^2 - Floor[x']^2 - Floor[x'] >= 0.5)
-//!     = Floor[x'] + (x >= 0.5 + Floor[x'] + Floor[x']^2)
-//!     = Floor[x'] + (x >= 0.5 + Floor[x']*(1+Floor[x']))
+//! Letting u be the rounding term and thus xq = Floor[x'] + u,
+//! and letting vq = Floor[x'],
+//!  u = (x - vq^2 >= (vq+1)^2 - x)     // Add x
+//!    = (2x - vq^2 >= (vq+1)^2)        // Expand (vq+1)^2
+//!    = (2x - vq^2 >= 1 + 2*vq + vq^2) // Add vq^2
+//!    = (2x >= 1 + 2*vq + 2vq^2)       // Divide by 2
+//!    = (x >= 0.5 + vq + vq^2)         // Factor vq+vq^2
+//!    = (x >= 0.5 + vq*(1+vq))
 static inline int Block_Encode_Quantize(float v) {
 	float av = ABS(v);
 	int vq = (int)sqrtf(av);
@@ -177,17 +177,10 @@ static inline __attribute__((always_inline)) int Block_Encode_EncodePass_WriteQu
 			}
 
 			//! -7h..-1h, +1h..+7h: Normal coefficient
-#if ULC_USE_NOISE_CODING
-			//! If we consider the coeffient as noise, don't code it here
-			if(Qn) {
-#endif
-				if(Qn < -7) Qn = -7;
-				if(Qn > +7) Qn = +7;
-				Block_Encode_WriteNybble(Qn, DstBuffer, Size);
-				NextCodedIdx++;
-#if ULC_USE_NOISE_CODING
-			}
-#endif
+			if(Qn < -7) Qn = -7;
+			if(Qn > +7) Qn = +7;
+			Block_Encode_WriteNybble(Qn, DstBuffer, Size);
+			NextCodedIdx++;
 		}
 
 		//! Move to the next coefficient
@@ -242,15 +235,11 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			if(Idx >= ChanLastIdx) break;
 
 			//! Level out of range in this quantizer zone?
-			//! NOTE: There is a certain amount of overlap
-			//! between quantizers:
-			//!  7^2 * 2^-1 == x^2 * 2^0
-			//!  x == Sqrt[7^2 * 2^-1]
-			//! Since 7.0 is the maximum value that goes into a
-			//! quantizer, x^2 therefore becomes the usable range, ie.:
-			//!  Range: 7^2 * 2^-1
-			//! This is approximately 27.8dB.
-			//! NOTE: Using 8^2*2^-1 (30.1dB) was tested and proved inferior.
+			//! NOTE: This cutoff implies a certain amount of
+			//! acceptable quantization distortion. I'm sure
+			//! there is a curve that maps this, but for the
+			//! sake of keeping things simple, we just run
+			//! with an arbitrary threshold.
 			const float MaxRange = 24.5f;
 			float BandCoef  = ABS(Coef[Idx]);
 			float BandCoef2 = SQR(Coef[Idx]);
