@@ -110,7 +110,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 
 	//! Quantize amplitude and decay
 	int NoiseQ     = Block_Encode_Quantize(Amplitude*q * 8.0f);
-	int NoiseDecay = Block_Encode_Quantize((1.0f-Decay) * SQR(256.0f));
+	int NoiseDecay = Block_Encode_Quantize((1.0f-Decay) * 0x1.0p16f);
 	if(NoiseDecay > 50) NoiseQ = 0; //! When decay is too steep (half of max decay), disable fill
 	else {
 		if(NoiseQ     >  0x7+1) NoiseQ     =  0x7+1;
