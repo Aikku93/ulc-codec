@@ -26,11 +26,11 @@ static inline void Block_Transform_MaskingState_Init(
 	const uint32_t *EnergyNp,
 	int   BlockSize
 ) {
-	//! The maximum bandwidth of a masking band is 0.25*BlockSize,
-	//! meaning that we can include an extra 2 bits of precision.
-	//! 0.25*BlockSize is never achieved in practice because the
+	//! The maximum bandwidth of a masking band is 0.5*BlockSize,
+	//! meaning that we can include an extra 1 bit of precision.
+	//! 0.5*BlockSize is never achieved in practice because the
 	//! block is only so big, but this gives us an upper limit.
-	State->SumShift = 31-2 - __builtin_clz(BlockSize); //! Log2[BlockSize] - UnusedBits
+	State->SumShift = 31-1 - __builtin_clz(BlockSize); //! Log2[BlockSize] - UnusedBits
 	State->BandBeg  = 0;
 	State->BandEnd  = 0;
 	State->Energy   = Energy[0];
@@ -45,10 +45,12 @@ static inline float Block_Transform_GetMaskingLevel(
 ) {
 	int BandBeg, BandEnd; {
 		//! These curves are similar to the Bark-scale bandwidths,
-		//! with the assumption that the Bark bands are not discrete
-		//! NOTE: Offset at Band+0.5, round up the end band.
-		BandBeg = (int)     (0.90f*Band + 0.90f/2);
-		BandEnd = (int)ceilf(1.15f*Band + 1.15f/2);
+		//! with the assumption that the Bark bands are not discrete.
+		//! However, the effect was then exaggerated and put on a
+		//! curve to try and squeeze more performance.
+		float nBand = Band / (float)BlockSize;
+		BandBeg = (int)(Band * (1.0f - 0.1f*nBand));
+		BandEnd = (int)(Band * (1.0f + 0.4f*nBand));
 		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
 	}
 
@@ -127,7 +129,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize);
 	for(n=0;n<BlockSize;n++) {
 		float p   = BufferAmp2[n] * Norm;
-		float pNp = (p2 < 0.5f) ? 0.0f : logf(2.0f*p2); //! Scale by 2 to keep values strictly non-negative
+		float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
 		p   = ceilf(p);
 		pNp = ceilf(pNp*LogScale);
 		uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
