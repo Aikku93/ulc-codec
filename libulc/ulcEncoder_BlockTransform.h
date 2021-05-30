@@ -224,9 +224,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					float Re = (BufferMDCT[n] *= Norm);
 					float Im = (BufferMDST[n] *= Norm);
 					float Abs2 = SQR(Re) + SQR(Im);
-#if ULC_USE_NOISE_CODING
 					BufferTemp[n] = Abs2;
-#endif
 #if ULC_USE_PSYCHOACOUSTICS
 					BufferAmp2[n] += Abs2;
 #endif
@@ -245,13 +243,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! This isn't perfect (adding even one more transient event results
 				//! in the original problem once again), but is much better than
 				//! doing nothing at all.
-				//! NOTE: For noise analysis, we use a geometric mean to determine
-				//! the correct noise amplitude. However, the geometric mean tends
-				//! towards 1/E rather than 0.5 for white noise. So we scale by E
-				//! to compensate and get unity amplitude, but then scale by 0.5
-				//! to account for this filter's gain. As the computations work
-				//! in the log domain, we take the logarithm here and then add
-				//! Log[E/2] (0x1.3A37A0p-2) to change a multiply into an add.
 				//! NOTE: We apply the filter over the squared samples, because
 				//! this appears to give consistent results for some reason. The
 				//! scaling then works out to have a gain of Sqrt[2], but this
@@ -262,7 +253,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 # define STORE_VALUE(n, Expr) \
 	v2 = (Expr), v = sqrtf(v2), \
 	Complexity += v2, ComplexityW += v, \
-	BufferNoise[n] = ULC_FastLnApprox(v) + 0x1.3A37A0p-2f
+	BufferNoise[n] = ULC_FastLnApprox(v)
 #else
 # define STORE_VALUE(n, Expr) \
 	v2 = (Expr), v = sqrtf(v2), \
