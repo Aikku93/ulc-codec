@@ -5,8 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <stdint.h>
-/**************************************/
 
 //! Decoder state structure
 //! NOTE:
@@ -23,7 +21,7 @@
 //!    }
 //!   The windows must match those used during encoding.
 struct ULC_DecoderState_t {
-	//! Global state
+	//! Global state (do not change after initialization)
 	int nChan;     //! Channels in encoding scheme
 	int BlockSize; //! Transform block size
 	const float *ModulationWindow;
@@ -31,10 +29,10 @@ struct ULC_DecoderState_t {
 	//! Decoding state
 	//! Buffer memory layout:
 	//!  Data:
-	//!   char    _Padding[];
-	//!   float   TransformBuffer[BlockSize]
-	//!   float   TransformTemp  [BlockSize]
-	//!   float   TransformInvLap[nChan * BlockSize/2]
+	//!   char  _Padding[];
+	//!   float TransformBuffer[BlockSize]
+	//!   float TransformTemp  [BlockSize]
+	//!   float TransformInvLap[nChan * BlockSize/2]
 	//! BufferData contains the pointer returned by malloc()
 	int    OverlapSize; //! Cached overlap from last block
 	void  *BufferData;
@@ -63,8 +61,9 @@ void ULC_DecoderState_Destroy(struct ULC_DecoderState_t *State);
 //!    0,1,2,3...BlockSize-1, //! Chan0
 //!    0,1,2,3...BlockSize-1, //! Chan1
 //!   }
+//!  -SrcBuffer will only be accessed via bytes.
 //! Returns the number of bits read.
-int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer);
+int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void *SrcBuffer);
 
 /**************************************/
 //! EOF
