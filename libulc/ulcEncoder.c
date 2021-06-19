@@ -114,7 +114,7 @@ int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, void *DstBuffer, 
 	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
-const uint8_t *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps) {
+const void *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps) {
 	void *Buf = (void*)State->TransformTemp;
 	int MaxCoef = Block_Transform(State, SrcData);
 	int Sz = ULC_EncodeBlock_CBR_Core(State, Buf, RateKbps, MaxCoef);
@@ -125,7 +125,7 @@ const uint8_t *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float
 /**************************************/
 
 //! Encode block (ABR mode)
-const uint8_t *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity) {
+const void *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity) {
 	//! NOTE: As below in VBR mode, I have no idea what the curve should
 	//! be; this was derived experimentally to closely match VBR output.
 	void *Buf = (void*)State->TransformTemp;
@@ -139,7 +139,7 @@ const uint8_t *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float
 /**************************************/
 
 //! Encode block (VBR mode)
-const uint8_t *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Quality) {
+const void *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Quality) {
 	//! NOTE: The constant in front of the logarithm was experimentally
 	//! dervied; I have no idea what relation it bears to actual encoding.
 	void *Buf = (void*)State->TransformTemp;

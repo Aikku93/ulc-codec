@@ -5,8 +5,6 @@
 /**************************************/
 #pragma once
 /**************************************/
-#include <stdint.h>
-/**************************************/
 
 //! 0 == No psychoacoustic optimizations
 //! 1 == Use psychoacoustic model
@@ -23,16 +21,11 @@
 //! Maximum number of subblocks present in a block
 #define ULC_MAX_SUBBLOCKS 4
 
-//! Lowest possible coefficient value
-#define ULC_COEF_EPS (0x1.0p-31f) //! 4+0xE+0xC = Maximum extended-precision quantizer
+//! Maximum allowed block decimation factor
+#define ULC_MAX_BLOCK_DECIMATION_FACTOR 8
 
-//! Used in Neper-scale coefficients
-//! dB calculations would add computational cost for the exact same results,
-//! as logf() is faster than log2f() which is faster than log10f()... somehow.
-//! This value is set to 0.0, as the only times that out-of-range coefficients
-//! are used are during MDCT/MDST (and psychoacoustics) calculations, where
-//! these log-domain values are used as part of a weighted geometric mean
-#define ULC_COEF_NEPER_OUT_OF_RANGE 0.0f
+//! Smallest possible coefficient amplitude
+#define ULC_COEF_EPS (0x1.0p-31f) //! 5+0xE+0xC = Maximum extended-precision quantizer
 
 /**************************************/
 
@@ -50,7 +43,7 @@
 //!      ModulationWindow[BlockSize],
 //!    }
 struct ULC_EncoderState_t {
-	//! Global state
+	//! Global state (do not change after initialization)
 	int RateHz;     //! Playback rate (used for rate control)
 	int nChan;      //! Channels in encoding scheme
 	int BlockSize;  //! Transform block size
@@ -138,9 +131,9 @@ void ULC_EncoderState_Destroy(struct ULC_EncoderState_t *State);
 //!    80 < Quality <= 90 = Average <300kbps
 //! Returns a pointer to the compressed data, and the block size in
 //! bits in Size (if NULL, size is not returned).
-const uint8_t *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps);
-const uint8_t *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity);
-const uint8_t *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Quality);
+const void *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps);
+const void *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity);
+const void *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Quality);
 
 /**************************************/
 //! EOF
