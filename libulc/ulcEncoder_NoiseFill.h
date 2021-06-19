@@ -3,120 +3,153 @@
 //! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
+#pragma once
+/**************************************/
 #include <math.h>
 /**************************************/
 #include "ulcHelper.h"
 /**************************************/
 
+//! In calculating Log[Re^2+Im^2], we used a filter to remove
+//! transient bias, which resulted in an overall gain of Sqrt[2].
+//! Sqrt[Re^2+Im^2] gives amplitudes that are generally scaled
+//! by Sqrt[2] for noise (relative to Re, which is where we're
+//! substituting noise), giving a scale of 2.0. Finally, we will
+//! use a geometric mean for determining noise fill levels, which
+//! converges to 1/E for random noise, meaning we should scale by
+//! E/2.0 (0x1.5BF0A9p0) for deciding on the noise fill amplitude.
+
+/**************************************/
+
+//! Compute noise spectrum (logarithmic output)
+static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, float *Power, int N) {
+	int n;
+	float v;
+
+	//! Find the subblock's normalization factor
+	float LogNorm = 0.0f;
+	for(n=0;n<N;n++) if((v = Power[n]) > LogNorm) LogNorm = v;
+	if(LogNorm == 0.0f) {
+		//! Empty spectrum - fill with -100.0Np data just in case
+		for(n=0;n<N;n++) LogNoise[n] = -100.0f;
+		return;
+	}
+
+	//! Normalize the logarithmic energy and convert to fixed-point
+	//! NOTE: Strictly speaking, we could normalize by 1/LogNorm here.
+	//! However, normalizing to 2^32 should reduce subnormal collapse.
+	LogNorm = 0x1.0p32f / LogNorm;
+	uint32_t *LogPower = (uint32_t*)Power;
+	for(n=0;n<N;n++) {
+		v = Power[n] * LogNorm;
+		v = (v > 1.0f) ? ceilf(logf(v) * 0x1.715476p27f) : 0.0f;
+		LogPower[n] = (v >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)v;
+	}
+	LogNorm = -0.5f*logf(LogNorm); //! Scale by 1/2 to convert Power to Amplitude
+
+	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
+	//! This is achieved by using a geometric mean over each frequency
+	//! band's critical bandwidth. The code is very similar to the one
+	//! used in psychoacoustics (see ulcEncoder_Psycho.h for details).
+	int BandBeg = 0, BandEnd = 0;
+	uint64_t Sum = 0ull;
+	for(n=0;n<N;n++) {
+		//! Re-focus analysis window
+		const int RangeScaleFxp = 2;
+		int BandLen; {
+			int Old, New;
+			const int LoRangeScale = 3; //! Beg = 0.75*Band
+			const int HiRangeScale = 5; //! End = 1.25*Band
+
+			//! Remove samples that went out of focus
+			Old = BandBeg >> RangeScaleFxp, BandBeg += LoRangeScale;
+			New = BandBeg >> RangeScaleFxp;
+			if(Old < New) {
+				Sum -= LogPower[Old];
+			}
+			BandLen = New;
+
+			//! Add samples that came into focus
+			Old = BandEnd >> RangeScaleFxp, BandEnd += HiRangeScale;
+			New = BandEnd >> RangeScaleFxp; if(New > N) New = N;
+			if(Old < New) do {
+				Sum += LogPower[Old];
+			} while(++Old < New);
+			BandLen = New - BandLen;
+		}
+
+		//! Store the geometric mean for this band
+		LogNoise[n] = (Sum / BandLen)*0x1.62E430p-29f + LogNorm; //! 0x1.62E430p-29 = 1/LogScale / 2 (/2 to convert Power to Amplitude)
+	}
+}
+
+/**************************************/
+
 //! Get the quantized noise amplitude for encoding
-//! NOTE: N must be at least ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO.
-static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int N, float q, int WindowCtrl) {
-	//! Analyze for the noise amplitude
+static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int N, float q) {
+	//! Analyze for the noise amplitude (geometric mean over N coefficients)
 	float Amplitude; {
-		//! NOTE: The purpose of putting the values into bins is
-		//! to avoid noise-fill pre-echo by getting the noise
-		//! amplitudes at all subblock positions and then using
-		//! a measure that favours low amplitudes (eg. minimum).
-		//! NOTE: This mapping process is especially suited to
-		//! removing transients in the squared domain. When the
-		//! transients are removed in the linear domain, this
-		//! tends to give very low estimates for noise. Without
-		//! the mapping, and removing bias in the squared domain,
-		//! noise leaks into prior bins, causing pre-echo leakage.
 		int n;
-		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
-
-		//! Perform the actual analysis (geometric mean in each bin)
-		float Sum [ULC_MAX_SUBBLOCKS] = {0.0f};
-		float SumW[ULC_MAX_SUBBLOCKS] = {0.0f};
-		for(n=0;n<N;n++) {
-			int Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
-			Sum [Bin] += LogCoef[Band+n];
-			SumW[Bin] += 1.0f;
-		}
-
-		//! Find the minimum bin amplitude
-		Amplitude = 1.0f; //! <- Arbitrarily large, but shouldn't need to be larger than 1.0
-		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
-		for(n=0;n<nSubBlocks;n++) {
-			float s  = Sum [n];
-			float sW = SumW[n];
-			float a  = s/sW;
-			if(a < Amplitude) Amplitude = a;
-		}
-		Amplitude = expf(Amplitude);
+		Amplitude = 0.0f;
+		for(n=0;n<N;n++) Amplitude += LogCoef[Band+n];
+		Amplitude = expf(Amplitude/N);
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = Block_Encode_Quantize(Amplitude*q * 8.0f);
+	int NoiseQ = (int)(Amplitude*q * 0x1.5BF0A9p0f);
 	if(NoiseQ > 0x7) NoiseQ = 0x7;
 	return NoiseQ;
 }
 
 //! Compute quantized HF extension parameters for encoding
-//! NOTE: N must be at least ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO.
-static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, float q, int WindowCtrl, int *_NoiseQ, int *_NoiseDecay) {
-	//! Solve for weighted least-squares (in the log domain, for exponential fitting)
+static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, float q, int *_NoiseQ, int *_NoiseDecay) {
+	//! Solve for least-squares (in the log domain, for exponential fitting)
 	float Amplitude, Decay; {
-		//! As with normal noise-fill, group everything into bins
+		//! NOTE: The analysis is the same as in normal noise-fill,
+		//! but with a decaying weight parameter. This appears to
+		//! be necessary to avoid overfitting to -inf dB, but is
+		//! still not perfect.
+		//! NOTE: We always have at least 16 coefficients before
+		//! Band, so we use these to regularize the fit.
 		int n;
-		const int8_t *Mapping = ULC_Helper_SubBlockInterleavePattern(WindowCtrl >> 4);
-
-		//! Next, accumulate all the data into their respective bins.
-		//! NOTE: The analysis is the same as in normal noise-fill.
-		//! But this time carrying a weight that decays the higher
-		//! in frequency we go (with the idea being that these
-		//! reconstructed frequencies will matter less and less,
-		//! so long as the start is close enough to the original).
-		float w = 1.0f, SpectralDecayRate = expf(-0x1.7069E3p3f / N); //! E^(-100/20*Log[10]/n) (ie. decay by 100dB upon reaching the end)
-		float SumX [ULC_MAX_SUBBLOCKS] = {0.0f};
-		float SumX2[ULC_MAX_SUBBLOCKS] = {0.0f};
-		float SumXY[ULC_MAX_SUBBLOCKS] = {0.0f};
-		float SumY [ULC_MAX_SUBBLOCKS] = {0.0f};
-		float SumW [ULC_MAX_SUBBLOCKS] = {0.0f};
-		for(n=0;n<N;n++) {
-			int   Bin = Mapping[(Band+n) % ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO];
+		float SumX  = 0.0f;
+		float SumX2 = 0.0f;
+		float SumXY = 0.0f;
+		float SumY  = 0.0f;
+		float SumW  = 0.0f;
+		float w = 1.0f;
+		for(n=-16;n<N;n++) {
 			float x = (float)n;
 			float yLog = LogCoef[Band+n];
-			SumX [Bin] += w*x;
-			SumX2[Bin] += w*x*x;
-			SumXY[Bin] += w*x*yLog;
-			SumY [Bin] += w  *yLog;
-			SumW [Bin] += w;
-			w *= SpectralDecayRate;
+			SumX  += w*x;
+			SumX2 += w*x*x;
+			SumXY += w*x*yLog;
+			SumY  += w  *yLog;
+			SumW  += w;
+			w *= 0.99f;
 		}
 
-		//! Solve for each bin, then take the minimum amplitude
-		//! of each bin, alongside the geometric mean decay
-		Amplitude = 1.0f; //! <- Arbitrarily large, but shouldn't need to be larger than 1.0
-		Decay     = 0.0f;
-		int nSubBlocks = ULC_Helper_SubBlockCount(WindowCtrl >> 4);
-		for(n=0;n<nSubBlocks;n++) {
-			float Det = SumW[n]*SumX2[n] - SQR(SumX[n]);
-			if(Det != 0.0f) {
-				float a = (SumX2[n]*SumY [n] - SumX[n]*SumXY[n]) / Det;
-				float d = (SumW [n]*SumXY[n] - SumX[n]*SumY [n]) / Det;
-				if(a < Amplitude) Amplitude = a;
-				Decay += d;
-			} else {
-				//! Play it safe and disable HF extension
-				*_NoiseQ = *_NoiseDecay = 0;
-				return;
-			}
+		//! Solve for amplitude and decay
+		float Det = SumW*SumX2 - SQR(SumX);
+		if(Det == 0.0f) {
+			//! Play it safe and disable HF extension
+			*_NoiseQ = *_NoiseDecay = 0;
+			return;
 		}
+		Amplitude = (SumX2*SumY  - SumX*SumXY) / Det;
+		Decay     = (SumW *SumXY - SumX*SumY ) / Det;
+
+		//! Convert to linear units
 		Amplitude = expf(Amplitude);
-		Decay     = expf(Decay/nSubBlocks);
+		Decay     = expf(Decay);
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = Block_Encode_Quantize(Amplitude*q * 8.0f);
-	int NoiseDecay = Block_Encode_Quantize((1.0f-Decay) * 0x1.0p16f);
-	if(NoiseDecay > 50) NoiseQ = 0; //! When decay is too steep (half of max decay), disable fill
-	else {
-		if(NoiseQ     >  0x7+1) NoiseQ     =  0x7+1;
-		if(NoiseDecay < 0x00+1) NoiseDecay = 0x00+1;
-		if(NoiseDecay > 0x1F+1) NoiseDecay = 0x1F+1;
-	}
+	int NoiseQ     = (int)(Amplitude*q * 0x1.5BF0A9p0f);
+	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p16f); //! (1-Decay) * 2^16
+	if(NoiseQ     > 1 + 0x7) NoiseQ     = 1 + 0x7;
+	if(NoiseDecay <     0x0) NoiseDecay =     0x0;
+	if(NoiseDecay >    0xFF) NoiseDecay =    0xFF;
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
 }
