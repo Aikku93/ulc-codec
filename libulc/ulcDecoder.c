@@ -84,127 +84,106 @@ static inline uint8_t Block_Decode_ReadNybble(const uint8_t **Src, int *Size) {
 	uint8_t x = *(*Src);
 	*Size += 4;
 	if((*Size)%8u == 0) x >>= 4, (*Src)++;
-	return x; //! NOTE: Unmasked return value
+	return x&0xF;
 }
-static inline float Block_Decode_DecodeQuantizer(const uint8_t **Src, int *Size) {
-	int8_t        qi  = Block_Decode_ReadNybble(Src, Size) & 0xF; if(qi == 0xF) return ESCAPE_SEQUENCE_STOP_NOISEFILL;
-	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size) & 0xF; //! 8h,0h,Eh,0h..Ch: Extended-precision quantizer
-	if(qi == 0xE + 0xF) return ESCAPE_SEQUENCE_STOP;
+static inline int Block_Decode_ReadQuantizer(const uint8_t **Src, int *Size) {
+	int           qi  = Block_Decode_ReadNybble(Src, Size); //! 8h,0h,0h..Dh:      Quantizer change
+	if(qi == 0xF) return ESCAPE_SEQUENCE_STOP_NOISEFILL;    //! 8h,0h,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
+	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size); //! 8h,0h,Eh,0h..Ch:   Quantizer change (extended precision)
+	if(qi == 0xE + 0xF) return ESCAPE_SEQUENCE_STOP;        //! 8h,0h,Eh,Fh:       Zeros fill (to end)
+	return qi;
+}
+static inline float Block_Decode_ExpandQuantizer(int qi) {
 	return 1.0f / ((1u<<5) << qi);
 }
-static void DecodeBlock_BufferDeinterleave(float *Dst, const float *Src, int BlockSize, int Decimation) {
-	int n;
-	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
-		//! 001x: a=N/2, b=N/2
-		case 0b001: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/2;
-			for(n=0;n<BlockSize/2;n++) {
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-			}
-		} break;
+static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const uint8_t **Src, int *Size) {
+	int32_t n, v;
 
-		//! 010x: a=N/4, b=N/4, c=N/2
-		case 0b010: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/4;
-			float *DstC = DstB + BlockSize/4;
-			for(n=0;n<BlockSize/4;n++) {
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-				*DstC++ = *Src++;
-				*DstC++ = *Src++;
-			}
-		} break;
+	//! Check first quantizer for Stop code
+	v = Block_Decode_ReadQuantizer(Src, Size);
+	if(v == ESCAPE_SEQUENCE_STOP) {
+		//! [8h,0h,]Eh,Fh: Stop
+		do *CoefDst++ = 0.0f; while(--N);
+		return;
+	}
 
-		//! 011x: a=N/2, b=N/4, c=N/4
-		case 0b011: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/2;
-			float *DstC = DstB + BlockSize/4;
-			for(n=0;n<BlockSize/4;n++) {
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-				*DstC++ = *Src++;
-			}
-		} break;
+	//! Unpack the [sub]block's coefficients
+	float Quant = Block_Decode_ExpandQuantizer(v);
+	for(;;) {
+		//! -7h..-1h, +1..+7h: Normal
+		v = Block_Decode_ReadNybble(Src, Size);
+		if(v != 0x8 && v != 0x0) {
+			//! Store linearized, dequantized coefficient
+			v = (v^0x8) - 0x8; //! Sign extension
+			v = (v < 0) ? (-v*v) : (+v*v);
+			*CoefDst++ = v * Quant;
+			if(--N == 0) break;
+			continue;
+		}
 
-		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
-		case 0b100: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/8;
-			float *DstC = DstB + BlockSize/8;
-			float *DstD = DstC + BlockSize/4;
-			for(n=0;n<BlockSize/8;n++) {
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-				*DstC++ = *Src++;
-				*DstC++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-			}
-		} break;
+		//! 0h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh.bit[1..3] != 0)
+		//! 0h,Zh,Yh,Xh: 31 .. 542 zeros fill (Xh.bit[1..3] == 0)
+		if(v == 0x0) {
+			n  = Block_Decode_ReadNybble(Src, Size);
+			n  = Block_Decode_ReadNybble(Src, Size) | (n<<4);
+			v  = Block_Decode_ReadNybble(Src, Size);
+			n  = (v&1) + (n<<1), v >>= 1;
+			n += (v == 0) ? 31 : 16;
+			if(n > N) n = N; //! <- Clip on corrupt blocks
+			N -= n;
+			if(v) {
+				float p = v * Quant;
+				do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
+			} else do *CoefDst++ = 0.0f; while(--n);
+			if(N == 0) break;
+			continue;
+		}
 
-		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
-		case 0b101: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/4;
-			float *DstC = DstB + BlockSize/8;
-			float *DstD = DstC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-				*DstC++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-			}
-		} break;
+		//! 8h,1h..Fh: Zeros fill (1 .. 15 coefficients)
+		v = Block_Decode_ReadNybble(Src, Size);
+		if(v != 0x0) {
+			n = v;
+			if(n > N) n = N; //! <- Clip on corrupt blocks
+			N -= n;
+			do *CoefDst++ = 0.0f; while(--n);
+			if(N == 0) break;
+			continue;
+		}
 
-		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
-		case 0b110: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/2;
-			float *DstC = DstB + BlockSize/8;
-			float *DstD = DstC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-				*DstC++ = *Src++;
-				*DstD++ = *Src++;
-				*DstD++ = *Src++;
-			}
-		} break;
+		//! 8h,0h,0h..Dh:    Quantizer change
+		//! 8h,0h,Eh,0h..Ch: Quantizer change (extended precision)
+		v = Block_Decode_ReadQuantizer(Src, Size);
+		if(v >= 0) {
+			Quant = Block_Decode_ExpandQuantizer(v);
+			continue;
+		}
 
-		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
-		case 0b111: {
-			float *DstA = Dst;
-			float *DstB = DstA + BlockSize/2;
-			float *DstC = DstB + BlockSize/4;
-			float *DstD = DstC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstA++ = *Src++;
-				*DstB++ = *Src++;
-				*DstB++ = *Src++;
-				*DstC++ = *Src++;
-				*DstD++ = *Src++;
-			}
-		} break;
+		//! 8h,0h,Fh,Zh,Yh[,Xh]: Noise fill (to end; exp-decay)
+		if(v == ESCAPE_SEQUENCE_STOP_NOISEFILL) {
+			v = Block_Decode_ReadNybble(Src, Size);
+			n = Block_Decode_ReadNybble(Src, Size);
+			if(v&1) n = Block_Decode_ReadNybble(Src, Size) | (n<<4);
+			v = 1 + (v>>1);
+			n = n;
+			float p = v * Quant;
+			float r = 1.0f + (n*n)*-0x1.0p-16f;
+			do {
+				*CoefDst++ = p * Block_Decode_RandomCoef();
+				p *= r;
+			} while(--N);
+			break;
+		}
+
+		//! 8h,0h,Eh,Dh: Unused
+		//! 8h,0h,Eh,Eh: Unused
+		//! 8h,0h,Eh,Fh: Zeros fill (to end)
+		if(v == ESCAPE_SEQUENCE_STOP) {
+			do *CoefDst++ = 0.0f; while(--N);
+			break;
+		}
 	}
 }
-int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint8_t *SrcBuffer) {
+int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void *_SrcBuffer) {
 	//! Spill state to local variables to make things easier to read
 	//! PONDER: Hopefully the compiler realizes that State is const and
 	//!         doesn't just copy the whole thing out to the stack :/
@@ -215,112 +194,36 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 	float *TransformTemp   = State->TransformTemp;
 	float *TransformInvLap = State->TransformInvLap;
 	const float *ModulationWindow = State->ModulationWindow;
+	const uint8_t *SrcBuffer = _SrcBuffer;
 
 	//! Begin decoding
 	int Chan, Size = 0;
 	int LastOverlapSize = 0; //! <- Shuts gcc up
 	int WindowCtrl; {
 		//! Read window control information
-		WindowCtrl = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-		if(WindowCtrl & 0x8) WindowCtrl |= (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) << 4;
+		WindowCtrl = Block_Decode_ReadNybble(&SrcBuffer, &Size);
+		if(WindowCtrl & 0x8) WindowCtrl |= Block_Decode_ReadNybble(&SrcBuffer, &Size) << 4;
 		else                 WindowCtrl |= 1 << 4;
 	}
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Reset overlap scaling for this channel
 		LastOverlapSize = State->OverlapSize;
 
-		//! Start decoding coefficients
-		//! NOTE: If the block is decimated, then output coefficients to the
-		//! temp buffer, so that they interleave to the transform buffer.
-		int32_t v;
-		float *CoefDst = (WindowCtrl & 0x8) ? TransformTemp : TransformBuffer;
-		int    CoefRem = BlockSize;
-		float  Quant   = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);
-		if(Quant <= ESCAPE_SEQUENCE_STOP) {
-			do *CoefDst++ = 0.0f; while(--CoefRem);
-		} else for(;;) {
-			//! -7h..-1h, +1..+7h: Normal
-			v = ((int32_t)Block_Decode_ReadNybble(&SrcBuffer, &Size) << 28) >> 28;
-			if(v != -0x8 && v != 0x0) {
-				//! Store linearized, dequantized coefficient
-				v = (v < 0) ? (-v*v) : (+v*v);
-				*CoefDst++ = v * Quant;
-				if(--CoefRem == 0) break;
-				continue;
-			}
-
-			//! 0h,Zh,Yh,Xh: 16 .. 527 noise samples (Xh.bit[1..3] != 0)
-			//! 0h,Zh,Yh,Xh: 31 .. 542 zeros         (Xh.bit[1..3] == 0)
-			if(v == 0x0) {
-				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-				n  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF) | (n<<4);
-				v  = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-				n  = (v&1) + (n<<1), v >>= 1;
-				n += (v == 0) ? 31 : 16;
-				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
-				CoefRem -= n;
-				if(v) {
-					float p = (v*v) * Quant * 1/8.0f;
-					do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
-				} else do *CoefDst++ = 0.0f; while(--n);
-				if(CoefRem == 0) break;
-				continue;
-			}
-
-			//! 8h,1h..Fh: Zero run (1 .. 15 coefficients)
-			v = (Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF);
-			if(v != 0x0) {
-				n = v;
-				if(n > CoefRem) n = CoefRem; //! <- Clip on corrupt blocks
-				CoefRem -= n;
-				do *CoefDst++ = 0.0f; while(--n);
-				if(CoefRem == 0) break;
-				continue;
-			}
-
-			//! 8h,0h,0h..Eh[,0h..Ch]: Quantizer change
-			float q = Block_Decode_DecodeQuantizer(&SrcBuffer, &Size);;
-			if(q > 0.0f) { Quant = q; continue; }
-
-			//! 8h,0h,Eh,Dh:   [Unallocated]
-			//! 8h,0h,Eh,Eh:   [Unallocated]
-			//! 8h,0h,Eh,Fh:    Stop
-			//! 8h,0h,Fh,Yh,Xh: Noise-fill (exp-decay to end)
-			if(q == ESCAPE_SEQUENCE_STOP) {
-				do *CoefDst++ = 0.0f; while(--CoefRem);
-			} else if(q == ESCAPE_SEQUENCE_STOP_NOISEFILL) {
-				v = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-				n = Block_Decode_ReadNybble(&SrcBuffer, &Size) & 0xF;
-				n = (v&1) | (n<<1), v >>= 1;
-				n++, v++;
-				float Decay = 1.0f - (n*n)*0x1.0p-16f;
-				float p     = (v*v) * Quant * 1/8.0f;
-				do {
-					*CoefDst++ = p * Block_Decode_RandomCoef();
-					p *= Decay;
-				} while(--CoefRem);
-			}
-			break;
-		}
-
-		//! Deinterleave coefficients as needed
-		if(WindowCtrl & 0x8) DecodeBlock_BufferDeinterleave(TransformBuffer, TransformTemp, BlockSize, WindowCtrl >> 4);
-
 		//! Process subblocks
-		int SubBlockIdx, TransientSubBlockIdx = ULC_Helper_TransientSubBlockIndex(WindowCtrl >> 4);
-		const int8_t *DecimationPattern = ULC_Helper_SubBlockDecimationPattern(WindowCtrl >> 4);
-		      float *Dst = DstData + Chan*BlockSize;
-		const float *Src = TransformBuffer, *SrcEnd = TransformBuffer + BlockSize;
-		      float *Lap = TransformInvLap;
-		for(SubBlockIdx=0;(Src < SrcEnd);SubBlockIdx++) {
-			//! Get the subblock size and overlap
-			int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
-			int OverlapSize  = SubBlockSize;
-			if(SubBlockIdx == TransientSubBlockIdx)
-				OverlapSize >>= (WindowCtrl & 0x7);
+		float *Dst = DstData + Chan*BlockSize;
+		float *Src = TransformBuffer;
+		float *Lap = TransformInvLap;
+		ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+		do {
+			int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
+			Block_Decode_DecodeSubBlockCoefs(Src, SubBlockSize, &SrcBuffer, &Size);
 
-			//! Limit overlap to that of the last subblock
-			if(OverlapSize > LastOverlapSize) OverlapSize = LastOverlapSize;
+			//! Get+update overlap size and limit to that of the last subblock
+			int OverlapSize = SubBlockSize;
+			if(DecimationPattern&0x8)
+				OverlapSize >>= (WindowCtrl & 0x7);
+			if(OverlapSize > LastOverlapSize)
+				OverlapSize = LastOverlapSize;
 			LastOverlapSize = SubBlockSize;
 
 			//! A single long block can be read straight into the output buffer
@@ -344,7 +247,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const uint
 			int NewCopy = LapExtra - LapCopy;
 			for(n=0;n<NewCopy;n++) LapBuf[-1-n] = LapBuf[-1-n-LapCopy];
 			for(;n<LapExtra;n++) LapBuf[-1-n] = *DecBuf++;
-		}
+		} while(DecimationPattern >>= 4);
 
 		//! Move to next channel
 		TransformInvLap += BlockSize/2;
