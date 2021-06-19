@@ -1,17 +1,31 @@
 ### Overview
 ***
 
-Each block is coded sequentially, with each channel also coded sequentially. For example:
+Each block is coded sequentially, with each channel also coded sequentially, resulting in the following structure:
 
-```Block0[Chan0,Chan1], Block1[Chan0,Chan1]...```
+    Block {
+     Header
+     Chan0 {
+      SubBlock0
+      SubBlock1
+      SubBlock2
+      ...
+     }
+     Chan1 {
+      SubBlock0
+      SubBlock1
+      SubBlock2
+      ...
+     }
+    }
 
 The encoding tools align each block (that is, including all channels) to byte boundaries, but this is not strictly necessary; any alignment will do.
 
 These blocks code MDCT coefficients that have been pre-normalized. So to decode, one must simply apply an unnormalized IMDCT to return the decoded PCM stream.
 
-Each block always starts with a window control code before any coefficients are coded. This controls the window lengths and shapes, and is explained in the `Block header` section.
+Each block always starts with a window control code before any coefficients are coded (this is considered the header). This controls the window lengths and shapes, and is explained in the `Block header` section.
 
-NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization).
+NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization). The result is that all coefficients are in the range ```|x| <= 1.0```.
 
 ### Block header
 ***
@@ -43,17 +57,17 @@ Note that the transient subblock index can be easily obtained using a population
 ### Block syntax
 ***
 
-| Nybble sequence         | Explanation                   | Effect                                          |
-| ----------------------- | ----------------------------- | ----------------------------------------------- |
-| ```-7h..-1h,+1h..+7h``` | Normal coefficient            | Insert ```Coef[n++] = Sign[Nybble]*Nybble^2 * Quantizer``` |
-| ```8h,0h,0h..Dh```      | Quantizer change              | Set ```Quantizer = 2^-(5+X)```                  |
-| ```8h,0h,Eh,0h..Ch```   | Quantizer change              | Set ```Quantizer = 2^-(5+14+X)```               |
-| ```8h,0h,Eh,Dh```       | *Unallocated*                 | N/A                                             |
-| ```8h,0h,Eh,Eh```       | *Unallocated*                 | N/A                                             |
-| ```8h,0h,Eh,Fh```       | Stop                          | Stop reading coefficients; fill rest with 0     |
-| ```8h,0h,Fh,Yh,Xh```    | Stop (noise)                  | Stop reading coefficients; fill rest with noise |
-| ```8h,1h..Fh```         | Zeros run (short)             | Insert zeros                                    |
-| ```0h,Zh,Yh,Xh```       | Zeros run (long) / Noise-fill | Insert zeros/noise                              |
+| Nybble sequence           | Explanation                   | Effect                                          |
+| ------------------------- | ----------------------------- | ----------------------------------------------- |
+| ```-7h..-1h,+1h..+7h```   | Normal coefficient            | Insert ```Coef[n++] = Nybble*|Nybble| * Quantizer``` |
+| ```8h,0h,0h..Dh```        | Quantizer change              | Set ```Quantizer = 2^-(5+X)```                  |
+| ```8h,0h,Eh,0h..Ch```     | Quantizer change              | Set ```Quantizer = 2^-(5+14+X)```               |
+| ```8h,0h,Eh,Dh```         | *Unallocated*                 | N/A                                             |
+| ```8h,0h,Eh,Eh```         | *Unallocated*                 | N/A                                             |
+| ```8h,0h,Eh,Fh```         | Stop                          | Stop reading coefficients; fill rest with 0     |
+| ```8h,0h,Fh,Zh,Yh[,Xh]``` | Stop (noise)                  | Stop reading coefficients; fill rest with noise |
+| ```8h,1h..Fh```           | Zeros run (short)             | Insert zeros                                    |
+| ```0h,Zh,Yh,Xh```         | Zeros run (long) / Noise-fill | Insert zeros/noise                              |
 
 #### ```-7h..-1h, +1h..+7h```: Normal coefficient
 
@@ -75,30 +89,31 @@ When the nybble is ```Eh```, however, this signals that the quantizer needs to b
 
 ```Quantizer = 2^-(5 + 14 + [fourth nybble])```
 
-This can be considered to result in a floating-point value containing a sign bit, 3 bits of mantissa, and 5 bits of exponent, with the minimum possible coefficient value being ±1.0×2^-31.
+This can be considered to result in a scientific notation containing a sign bit, 3 bits of significand, and 5 bits of exponent, with the minimum possible coefficient value being ±1.0×2^-31.
 
 Each channel begins with a nybble specifying the initial quantizer, akin to a silent ```8h,0h``` at the start (extended-precision quantizers are also allowed for this first quantizer band).
 
-#### ```8h,0h,Eh,Fh```, ```8h,0h,Fh,Yh,Xh```: Stop
+#### ```8h,0h,Eh,Fh```, ```8h,0h,Fh,Zh,Yh[,Xh]```: Stop
 
 ```8h,0h,Eh,Fh``` signals that the remaining coefficients for this channel are all zeros. This completes this channel's data.
 
-```8h,0h,Fh,1h..Fh,Xh``` signals that the remaining coefficients should be filled with exponentially-decaying noise.
+```8h,0h,Fh,Zh,Yh[,Xh]``` signals that the remaining coefficients should be filled with exponentially-decaying noise.
 
 A channel's block may begin with ```[8h,0h,]Eh,Fh```; this means that the channel is silent.
 
-A channel's block cannot begin with ```[8h,0h],Fh,Yh,Xh```; no quantizer has been set at this point, rendering the expression meaningless.
+A channel's block cannot begin with ```[8h,0h],Fh,Zh,Yh[,Xh]```; no quantizer has been set at this point, rendering the expression meaningless.
 
 ##### Tail-end noise-fill
 
 Unpack Amplitude and Decay as follows:
 
-    Amplitude = ((Y>>1) + 1)^2 * Quantizer * 1/8
-    Decay     = 1 - (((Y&1) | X<<1) + 1)^2*(1/256)^2
+    Amplitude = ((Z>>1) + 1) * Quantizer
+    Decay     = Y
+     If Z&1 != 0
+      Decay = Decay<<4 | X
+    Decay     = 1 - 2^-16*Decay^2
 
-This allows a decay rate of 0.0001..0.137dB/coefficient, with higher accuracy for slower roll-offs.
-
-Note that the amplitude is quantized at a lower maximum level. This is used because noise does not need to be as loud as the maximum quantized range, so we trade off that unused amplitude for improved precision.
+Note that X should only be fetched from the bitstream if ```Z&1 != 0```.
 
 For each of the remaining coefficients in the block, noise is used in place of encoded coefficients as follows:
 
@@ -125,16 +140,12 @@ To unpack: ```n = (Z<<5 | Y<<1 | (X&1)) + 31```
 
 Because removing a larger number of coefficients can result in holes in the spectrum, this command allows filling the holes with noise data.
 
-To unpack: ```n = (Z<<5 | Y<<1 | (X&1)) + 16``` and ```Level = (X>>1)^2 * Quantizer * 1/8```. Then store ```n``` coefficients generated by random noise in the range [-1.0,+1.0], multiplied by ```Level```.
+To unpack: ```n = (Z<<5 | Y<<1 | (X&1)) + 16``` and ```Level = (X>>1) * Quantizer```. Then store ```n``` coefficients generated by random noise in the range [-1.0,+1.0], multiplied by ```Level```.
 
 ### Inverse transform process
 ***
 
 Inverse transform takes the above-decoded coefficients and applies the IMDCT to give the output stream.
-
-#### Deinterleaving
-
-Decimated subblocks (ie. when using window switching) have their coefficient interleaved/shuffled to obtain a more compact bitstream. The interleaving pattern groups coefficients of larger subblocks together so that they share the same frequency bands as that of the smallest subblock (for example, if the smallest subblock is N/8 and the largest is N/2, then 4 coefficients of the N/2 subblock are grouped as one), and then ordered by window position (eg. for A=N/2,B=N/4,C=N/8,D=N/8, the following coefficients are coded one after the other: 4 coefficients of A, 2 coefficients of B, 1 coefficient of C, 1 coefficient of D). Deinterleaving must simply undo this ordering to restore all of the subblocks, which may then proceed through IMDCT one after the other.
 
 #### IMDCT
 
