@@ -12,145 +12,104 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! Simultaneous masking-compensated energy estimation
-struct Block_Transform_MaskingState_t {
-	int    SumShift;
-	int    BandBeg;
-	int    BandEnd;
-	uint64_t Energy;
-	uint64_t Nepers;
-};
-static inline void Block_Transform_MaskingState_Init(
-	struct Block_Transform_MaskingState_t *State,
-	const uint32_t *Energy,
-	const uint32_t *EnergyNp,
-	int   BlockSize
-) {
-	//! The maximum bandwidth of a masking band is 0.5*BlockSize,
-	//! meaning that we can include an extra 1 bit of precision.
-	//! 0.5*BlockSize is never achieved in practice because the
-	//! block is only so big, but this gives us an upper limit.
-	State->SumShift = 31-1 - __builtin_clz(BlockSize); //! Log2[BlockSize] - UnusedBits
-	State->BandBeg  = 0;
-	State->BandEnd  = 0;
-	State->Energy   = Energy[0];
-	State->Nepers   = Energy[0] * (uint64_t)EnergyNp[0] >> State->SumShift;
-}
-static inline float Block_Transform_GetMaskingLevel(
-	struct Block_Transform_MaskingState_t *State,
-	const uint32_t *Energy,
-	const uint32_t *EnergyNp,
-	int   Band,
-	int   BlockSize
-) {
-	int BandBeg, BandEnd; {
-		//! These curves are similar to the Bark-scale bandwidths,
-		//! with the assumption that the Bark bands are not discrete.
-		//! However, the effect was then exaggerated and put on a
-		//! curve to try and squeeze more performance.
-		float nBand = Band / (float)BlockSize;
-		BandBeg = (int)(Band * (1.0f - 0.1f*nBand));
-		BandEnd = (int)(Band * (1.0f + 0.4f*nBand));
-		if(BandEnd >= BlockSize) BandEnd = BlockSize-1;
-	}
-
-	//! Update energy for this critical band
-	//! NOTE: The maximum value for Energy*EnergyNp correspond to the values
-	//! Energy == FFFFFFFFh, EnergyNp == FFFFFFFFh. Being pessimistic, we
-	//! can assume that the bandwidth of the sum is the maximum allowable
-	//! block size (8192), thus we must scale down the EnergyLog sum by
-	//! BlockSize, which conveniently can be performed with a LSR.
-	uint64_t EnergySum = State->Energy;
-	uint64_t EnergyLog = State->Nepers;
-	{
-#define ADD_TO_STATE(Band) EnergySum += Energy[Band], EnergyLog += Energy[Band] * (uint64_t)EnergyNp[Band] >> State->SumShift
-#define SUB_TO_STATE(Band) EnergySum -= Energy[Band], EnergyLog -= Energy[Band] * (uint64_t)EnergyNp[Band] >> State->SumShift
-		int Beg = State->BandBeg, End = State->BandEnd;
-		while(BandBeg < Beg) --Beg, ADD_TO_STATE(Beg); //! Expand
-		while(BandEnd > End) ++End, ADD_TO_STATE(End);
-		while(BandBeg > Beg) SUB_TO_STATE(Beg), Beg++; //! Contract
-		while(BandEnd < End) SUB_TO_STATE(End), End--;
-		State->BandBeg = BandBeg, State->BandEnd = BandEnd;
-#undef SUB_TO_STATE
-#undef ADD_TO_STATE
-	}
-	State->Energy = EnergySum;
-	State->Nepers = EnergyLog;
-
-	//! Return the normalized entropy of this frequency bin's critical band.
-	//! NOTE: This value will be subtracted from the Neper-domain
-	//! amplitude of the MDCT coefficient. The overall idea of
-	//! the implemented model is to form this equation:
-	//!  ImportanceLevel = CoefficientAmplitude * BandPower/BackgroundPower
-	//! In the log domain, this becomes:
-	//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[BandPower]-Log[BackgroundPower]
-	//! In this function, we are calculating Log[BackgroundPower],
-	//! and thus we need Log[CoefficientAmplitude] as well as
-	//! Log[BandPower]. From testing, using the MDCT+MDST
-	//! squared amplitude as BandPower results in inferior
-	//! results compared to the squared amplitude of
-	//! CoefficientAmplitude. So we can then state:
-	//!  Log[ImportanceLevel] = Log[CoefficientAmplitude] + Log[CoefficientAmplitude^2]-Log[BackgroundPower]
-	//!                       = Log[CoefficientAmplitude] + 2*Log[CoefficientAmplitude]-Log[BackgroundPower]
-	//!                       = 3*Log[CoefficientAmplitude] - Log[BackgroundPower]
-	//! And finally, since ImportanceLevel is scale-invariant
-	//! for our purposes, we divide by 3 on both sides:
-	//!  Log[ImportanceLevel]/3 = Log[CoefficientAmplitude] - Log[BackgroundPower]/3
-	//! NOTE: EnergySum must scale down, as EnergyLog cannot
-	//! scale up the necessary bits without potential overflow.
-	//! NOTE: F3FCE0F5h == Floor[0.5 + 2^61*(1/LogScale)/3]
-	//! LogScale ((2^32) / Log[2*2^32]) is defined in Block_Transform().
-	EnergySum = (EnergySum >> State->SumShift) + ((EnergySum << (64-State->SumShift)) != 0);
-	if(EnergySum == 0) return 0.0f; //! <- Doesn't matter; no coefficient will use this
-	return (float)(EnergyLog/EnergySum * 0xF3FCE0F5ull) * 0x1.0p-61f;
-}
-
-/**************************************/
-
-static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, const float *BufferAmp2, uint32_t *BufferTemp, int BlockSize, const int8_t *DecimationPattern) {
+static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, const float *BufferAmp2, uint32_t *BufferTemp, int BlockSize, uint32_t WindowCtrl) {
 	int n;
-	struct Block_Transform_MaskingState_t MaskingState;
-
-	//! Find the maximum value for normalization
-	//! NOTE: Using M/S makes no difference to using L/R; the
-	//! equations cancel out the inner terms, leaving eg. 2L^2+2R^2.
-	float v, Norm = 0.0f;
-	for(n=0;n<BlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
-	if(Norm == 0.0f) return; //! <- No data, so no point in going further
-	Norm = 0x1.0p32f / Norm;
-
-	//! Find the integer normalization factor and convert data to integers.
-	//! For some reason, it seems to work better to combine the
-	//! channels for analysis, rather than use each one separately.
-	//! NOTE: Maximum value for EnergyNp is Log[2 * 2^32], so rescale by
-	//! (2^32)/Log[2 * 2^32] (and clip to prevent overflow issues on some CPUs).
-	const float LogScale = 0x1.66235Bp27f; //! (2^32) / Log[2 * 2^32]
-	uint32_t *Energy   = (uint32_t*)(BufferTemp);
-	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize);
-	for(n=0;n<BlockSize;n++) {
-		float p   = BufferAmp2[n] * Norm;
-		float pNp = (p < 0.5f) ? 0.0f : logf(2.0f*p); //! Scale by 2 to keep values strictly non-negative
-		p   = ceilf(p);
-		pNp = ceilf(pNp*LogScale);
-		uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
-		uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
-		Energy  [n] = ip;
-		EnergyNp[n] = ipNp;
-	}
+	float v;
 
 	//! Compute masking levels for each [sub-]block
-	const float *MaskingNpEnd = MaskingNp + BlockSize;
-	int SubBlockIdx;
-	for(SubBlockIdx=0;(MaskingNp < MaskingNpEnd);SubBlockIdx++) {
-		int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
-		Block_Transform_MaskingState_Init(&MaskingState, Energy, EnergyNp, SubBlockSize);
+	uint32_t *Energy   = (uint32_t*)(BufferTemp);
+	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+	ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+	do {
+		int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 
-		//! Get simultaneous masking level for each band and move to next [sub-]block
-		for(n=0;n<SubBlockSize;n++) MaskingNp[n] = Block_Transform_GetMaskingLevel(&MaskingState, Energy, EnergyNp, n, SubBlockSize);
-		MaskingNp += SubBlockSize;
-		Energy    += SubBlockSize;
-		EnergyNp  += SubBlockSize;
-	}
+		//! Find the subblock's normalization factor
+		float LogNorm = 0.0f;
+		for(n=0;n<SubBlockSize;n++) if((v = BufferAmp2[n]) > LogNorm) LogNorm = v;
+		if(LogNorm != 0.0f) {
+			//! Normalize the energy and convert to fixed-point
+			//! NOTE: We re-scale the logarithm by (2^32)/Log[2^32], which
+			//! we term LogScale (0x1.715476p27).
+			//! NOTE: Because we normalized the coefficients here, we must
+			//! undo the normalization upon storing to EnergyNp[]. This adds
+			//! a small amount of extra work, but should improve precision.
+			//! Note the scaling; this is to match the scaling of EnergyNp[].
+			LogNorm = 0x1.0p32f / LogNorm;
+				for(n=0;n<SubBlockSize;n++) {
+					float p   = BufferAmp2[n] * LogNorm;
+					float pNp = (p > 1.0f) ? logf(p) : 0.0f;
+					p   = ceilf(sqrtf(p) * 0x1.0p16f); //! Re-normalize to .32fxp
+					pNp = ceilf(pNp*0x1.715476p27f);
+					uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
+					uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
+					Energy  [n] = ip;
+					EnergyNp[n] = ipNp;
+				}
+			LogNorm = logf(LogNorm)*0x1.555555p-2f; //! Log[LogNorm]/3
+
+			//! Compute expected level of each band's critical bandwidth
+			//! NOTE: We can solve for the maximum bandwidth used in
+			//! practice (given the limited range of the block size) by
+			//! finding the intersection at yMax=SubBlockSize for xMax:
+			//!  yMax = SubBlockSize = xMax*HiRangeScale
+			//!  xMax = SubBlockSize/HiRangeScale
+			//! Then we plug xMax into the bandwidth:
+			//!  yBw = xMax*HiRangeScale - xMax*LoRangeScale
+			//!      = SubBlockSize * (1 - LoRangeScale/HiRangeScale)
+			//! Setting SubBlockSize=1 gives us the normalized bandwidth:
+			//!  MaxBandwidth = 1 - LoRangeScale/HiRangeScale
+			int SumShift = 31-__builtin_clz(SubBlockSize) - 2; //! Log2[SubBlockSize * MaxBandwidth]
+			int BandBeg = 0, BandEnd = 0;
+			uint64_t Sum = 0ull, SumW = 0ull;
+			for(n=0;n<SubBlockSize;n++) {
+				//! Re-focus analysis window
+				const int RangeScaleFxp = 7;
+				{
+					int Old, New;
+					const int LoRangeScale = 121; //! Beg = 0.9453125*Band
+					const int HiRangeScale = 161; //! End = 1.2578125*Band
+
+					//! Remove samples that went out of focus
+					//! NOTE: We skip /at most/ one sample, so don't loop.
+					Old = BandBeg >> RangeScaleFxp, BandBeg += LoRangeScale;
+					New = BandBeg >> RangeScaleFxp;
+					if(Old < New) {
+						SumW -= Energy[Old];
+						Sum  -= Energy[Old] * (uint64_t)EnergyNp[Old] >> SumShift;
+					}
+
+					//! Add samples that came into focus
+					//! NOTE: We usually skip /at least/ one sample, but when we
+					//! reach the end of the buffer (ie. x=xMax), we stop adding
+					//! samples, so we can't go straight into a do-while loop.
+					Old = BandEnd >> RangeScaleFxp, BandEnd += HiRangeScale;
+					New = BandEnd >> RangeScaleFxp; if(New > SubBlockSize) New = SubBlockSize;
+					if(Old < New) do {
+						SumW += Energy[Old];
+						Sum  += Energy[Old] * (uint64_t)EnergyNp[Old] >> SumShift;
+					} while(++Old < New);
+				}
+
+				//! Store the expected value for this band.
+				//! This is essentially a contraharmonic mean in the log domain
+				//! The overall idea is to implement this equation:
+				//!  ImportanceLevel = CoefRe * CoefRe^2 / BandAbs^2
+				//! Since we're working in the log domain, and the values
+				//! are scale-invariant (only used for comparing):
+				//!  LogImportanceLevel = Log[CoefRe^3] - Log[BandAbs^2]
+				//!                     = Log[CoefRe] - Log[BandAbs^2]/3
+				//! NOTE: Ideally, we would shift up as Sum<<SumShift prior
+				//! to dividing, but Sum is already full-width 64bit and
+				//! cannot shift up without a larger integer type.
+				uint32_t w = SumW >> SumShift; w += (w == 0); //! Avoid division by 0
+				MaskingNp[n] = (Sum/w)*-0x1.D93040p-30f + LogNorm; //! 0x1.D93040p-30 = 1/LogScale / 3
+			}
+		}
+
+		//! Move to next subblock
+		MaskingNp  += SubBlockSize;
+		BufferAmp2 += SubBlockSize;
+	} while(DecimationPattern >>= 4);
 }
 
 /**************************************/
