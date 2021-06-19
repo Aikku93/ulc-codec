@@ -7,6 +7,7 @@
 /**************************************/
 #include <math.h>
 /**************************************/
+#include "ulcEncoder.h"
 #include "ulcHelper.h"
 /**************************************/
 
@@ -18,7 +19,7 @@
 //! same time, we also need to /make/ the transient sit within a
 //! transition region to take advantage of this, and so we combine
 //! the overlap scaling and window-switching strategies.
-//! NOTE: StepBuffer must be 2*BlockSize in size.
+//! NOTE: StepBuffer must be at least BlockSize/2 in size.
 //! NOTE: Bit codes for transient region coding, and their window sizes:
 //!  First nybble:
 //!   0xxx: No decimation. xxx = Overlap scaling
@@ -43,8 +44,6 @@
 //!    0011: N/2,N/2*
 //!   0001: No decimation (not coded in the bitstream)
 //!    0001: N/1*
-//!  Transient subblocks are thus conveniently indexed via
-//!  POPCNT (minus 1 to remove the unary count 'stop' bit)
 struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t {
 	float Sum, SumW;
 };
@@ -78,29 +77,33 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! and also reduce jitter a little.
 	//! NOTE: BPFILT() accepts z^-1,1,z^1 for flexibility if we
 	//! ever need to change the filter formula.
+	//! NOTE: The operations have been arranged to minimize
+	//! register usage on platforms where this will matter.
 	for(n=0;n<BlockSize/4;n++) StepBuffer[n+BlockSize/4] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
-#define BPFILT(zM1, z0, z1) ((z1) - (zM1))
+#define BPFILT(zM1, z0, z1) ((zM1) - (z1))
 		float *Dst = StepBuffer + BlockSize/4;
 		const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-2;
 		const float *SrcNew = Data          + Chan*BlockSize;
 		{
-			*Dst += SQR(BPFILT(SrcOld[0], SrcNew[0], SrcNew[1])), SrcOld++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++, Dst++;
+			*Dst += SQR(BPFILT(SrcOld[ 0], SrcNew[0], SrcNew[1]));
+			*Dst += SQR(BPFILT(SrcNew[ 1], SrcNew[2], SrcNew[3]));
+			*Dst += SQR(BPFILT(SrcNew[ 0], SrcNew[1], SrcNew[2]));
+			*Dst += SQR(BPFILT(SrcNew[ 2], SrcNew[3], SrcNew[4]));
+			Dst++, SrcNew += 4;
 		}
 		for(n=1;n<BlockSize/4-1;n++) {
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++, Dst++;
+			*Dst += SQR(BPFILT(SrcNew[-1], SrcNew[0], SrcNew[1]));
+			*Dst += SQR(BPFILT(SrcNew[ 1], SrcNew[2], SrcNew[3]));
+			*Dst += SQR(BPFILT(SrcNew[ 0], SrcNew[1], SrcNew[2]));
+			*Dst += SQR(BPFILT(SrcNew[ 2], SrcNew[3], SrcNew[4]));
+			Dst++, SrcNew += 4;
 		}
 		{
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst += SQR(BPFILT(SrcNew[0], SrcNew[1], SrcNew[2])), SrcNew++;
-			*Dst *= 4/3.0f, Dst++; //! z^1 unavailable, so use the average
+			*Dst += SQR(BPFILT(SrcNew[-1], SrcNew[0], SrcNew[1]));
+			*Dst += SQR(BPFILT(SrcNew[ 1], SrcNew[2], SrcNew[3]));
+			*Dst += SQR(BPFILT(SrcNew[ 0], SrcNew[1], SrcNew[2]));
+			*Dst++ *= 4/3.0f; //! z^1 unavailable, so use the average
 		}
 #undef BPFILT
 	}
@@ -114,19 +117,21 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//!  causes biasing of the signal analysis.
 	//! NOTE: It's important to keep the smoothing taps accurate,
 	//! so we save it across blocks and buffer the filtered data.
+	//! NOTE: We perform the filtering in a companded domain,
+	//! as this emphasizes the transient structure far better.
 	{
 		float v, *Buf = StepBuffer + BlockSize/4;
 		float LPTap = SmoothingTaps[0], LPDecay = 240/256.0f, OneMinusLPDecay = 1.0f - LPDecay;
 		float DCTap = SmoothingTaps[1], DCDecay = 252/256.0f, OneMinusDCDecay = 1.0f - DCDecay;
 		for(n=0;n<BlockSize/4;n++) {
-			v = sqrtf(*Buf);
+			v = sqrtf(sqrtf(*Buf));
 			LPTap += v * OneMinusLPDecay;
 			v = LPTap;
 			LPTap *= LPDecay;
 			DCTap += v * OneMinusDCDecay;
-			v = ABS(v - DCTap);
+			v = v - DCTap;
 			DCTap *= DCDecay;
-			*Buf++ = v;
+			*Buf++ = SQR(v);
 		}
 		SmoothingTaps[0] = LPTap;
 		SmoothingTaps[1] = DCTap;
@@ -136,32 +141,27 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	for(n=0;n<BlockSize/4;n++) TransientWindow[n] = StepBuffer[BlockSize/4+n];
 
 	//! Plug the energy into an entropy accumulator
-	int AnalysisIntervalMask = (BlockSize/2)/(ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO*4) - 1; //! Break up into LL/L/M/R (*4), BlockSize/2 = BlockSize*2 / 4 (decimation)
+	int AnalysisIntervalMask = (BlockSize/2)/(ULC_MAX_BLOCK_DECIMATION_FACTOR*4) - 1; //! Break up into LL/L/M/R (*4), BlockSize/2 = BlockSize*2 / 4 (decimation)
 	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t
 		*Dst = (void*)StepBuffer, //! void* cast avoids a nasty, long typecast
 		 Tmp = {.Sum = 0.0f, .SumW = 0.0f};
 	for(n=0;n<BlockSize/2;n++) {
-		float d = *StepBuffer++;
-
 		//! Accumulate to sums.
 		//! Because everything would be summed up in the search loop
 		//! of Block_Transform_GetWindowCtrl(), we sum as much as we
 		//! can here to reuse as many computations as possible.
-		//! NOTE: We shouldn't need very precise logarithms here, so
-		//! just use a cheaper approximation.
-		float w = SQR(d);
-		Tmp.SumW += w, Tmp.Sum += w*ULC_FastLnApprox(d);
+		float v = *StepBuffer++;
+		if(v >= 0x1.0p-126f) Tmp.SumW += v, Tmp.Sum += v*logf(v);
 
 		//! Wrapping around to next segment?
 		if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
 	}
 }
-static inline float Block_Transform_GetWindowCtrl_DecimationRatio(float LogRatio, float LogRateHz, int Log2SubBlockSize) {
-	//! OverlapSeconds = E^(-2*LogRatio) * 70/1000; experimentally derived
+static inline float Block_Transform_GetWindowCtrl_DecimationRatio(float LogRatio, int Log2SubBlockSize) {
 	//! Full, unsimplified expression:
-	//!  OverlapSamples    = E^(-2*LogRatio) * 70/1000 * RateHz
+	//!  OverlapSamples    = E^(-2*LogRatio) * 6000; experimentally determined
 	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples]
-	return Log2SubBlockSize + 0x1.EB1279p1f + -0x1.715476p0f*(LogRateHz - 2.0f*LogRatio);
+	return Log2SubBlockSize - 0x1.919FB8p3f + 0x1.715476p1f*LogRatio;
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
@@ -170,11 +170,9 @@ static inline int Block_Transform_GetWindowCtrl(
 	      float *StepBuffer,
 	      float *SmoothingTaps,
 	int BlockSize,
-	int nChan,
-	float RateHz
+	int nChan
 ) {
 	int n;
-	float LogRateHz = logf(RateHz);
 
 	//! Perform filtering to obtain pre-echo analysis
 	//! NOTE: Output data is stored as a struct to improve performance (SIMD
@@ -187,7 +185,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	float DecimationRatio;
 	int Decimation   = 0b0001;
 	int Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
-	int AnalysisLen  = ULC_HELPER_SUBBLOCK_INTERLEAVE_MODULO;
+	int AnalysisLen  = ULC_MAX_BLOCK_DECIMATION_FACTOR;
 	for(TransientData += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
 		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
@@ -232,7 +230,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! NOTE: Checking AnalysisLen should be better than checking
 		//! Decimation directly, as then we can change the maximum allowed
 		//! decimation without changing this code.
-		DecimationRatio = Block_Transform_GetWindowCtrl_DecimationRatio(Ratio, LogRateHz, Log2SubBlockSize);
+		DecimationRatio = Block_Transform_GetWindowCtrl_DecimationRatio(Ratio, Log2SubBlockSize);
 		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && Log2SubBlockSize > 6) {
 			//! If the transient is not in the transition region and
 			//! is still significant, decimate the subblock further
@@ -243,7 +241,7 @@ static inline int Block_Transform_GetWindowCtrl(
 				else
 					Decimation     = (Decimation<<1) | 1,
 					TransientData += AnalysisLen;
-				AnalysisLen  /= 2;
+				AnalysisLen /= 2;
 				Log2SubBlockSize--;
 				continue;
 			}
@@ -254,129 +252,12 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Determine overlap size from the ratio
-	int OverlapScale = (DecimationRatio < 0.5f) ? 0 : (DecimationRatio > 6.5f) ? 7 : (int)(DecimationRatio + 0.5f);
+	//! NOTE: Round down the scaling, rather than round off.
+	int OverlapScale = (DecimationRatio < 1.0f) ? 0 : (DecimationRatio >= 7.0f) ? 7 : (int)DecimationRatio;
 	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(Decimation != 1) + 0x10*Decimation;
-}
-
-/**************************************/
-
-//! Interleave coefficients for encoding
-static void Block_Transform_BufferInterleave(float *Buf, float *Tmp, int BlockSize, int Decimation) {
-	//! The interleaving patterns here were chosen to try and
-	//! optimize coefficient clustering across block sizes
-	int n; for(n=0;n<BlockSize;n++) Tmp[n] = Buf[n];
-	switch(Decimation >> 1) { //! Lowermost bit only controls which subblock gets overlap scaling, so ignore it
-		//! 001x: a=N/2, b=N/2
-		case 0b001: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			for(n=0;n<BlockSize/2;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-			}
-		} break;
-
-		//! 010x: a=N/4, b=N/4, c=N/2
-		case 0b010: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/4;
-			float *SrcC = SrcB + BlockSize/4;
-			for(n=0;n<BlockSize/4;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcC++;
-			}
-		} break;
-
-		//! 011x: a=N/2, b=N/4, c=N/4
-		case 0b011: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			float *SrcC = SrcB + BlockSize/4;
-			for(n=0;n<BlockSize/4;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-			}
-		} break;
-
-		//! 100x: a=N/8, b=N/8, c=N/4, d=N/2
-		case 0b100: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/8;
-			float *SrcC = SrcB + BlockSize/8;
-			float *SrcD = SrcC + BlockSize/4;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-
-		//! 101x: a=N/4, b=N/8, c=N/8, d=N/2
-		case 0b101: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/4;
-			float *SrcC = SrcB + BlockSize/8;
-			float *SrcD = SrcC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-
-		//! 110x: a=N/2, b=N/8, c=N/8, d=N/4
-		case 0b110: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			float *SrcC = SrcB + BlockSize/8;
-			float *SrcD = SrcC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-
-		//! 111x: a=N/2, b=N/4, c=N/8, d=N/8
-		case 0b111: {
-			float *SrcA = Tmp;
-			float *SrcB = SrcA + BlockSize/2;
-			float *SrcC = SrcB + BlockSize/4;
-			float *SrcD = SrcC + BlockSize/8;
-			for(n=0;n<BlockSize/8;n++) {
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcA++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcB++;
-				*Buf++ = *SrcC++;
-				*Buf++ = *SrcD++;
-			}
-		} break;
-	}
 }
 
 /**************************************/
