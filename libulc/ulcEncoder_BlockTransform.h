@@ -5,6 +5,7 @@
 /**************************************/
 #pragma once
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 /**************************************/
@@ -13,9 +14,13 @@
 #include "ulcEncoder_WindowControl.h"
 #include "ulcHelper.h"
 /**************************************/
+#if ULC_USE_NOISE_CODING
+#include "ulcEncoder_NoiseFill.h"
+#endif
+/**************************************/
 
 //! Transform a block and prepare its coefficients
-static inline void Block_Transform_SortIndices_SiftDown(const float *SortValues, int *Order, int Root, int N) {
+ULC_FORCED_INLINE void Block_Transform_SortIndices_SiftDown(const float *SortValues, int *Order, int Root, int N) {
 	//! NOTE: Most of the sorting time is spent in this function,
 	//! so I've tried to optimize it as best as I could. The
 	//! code below is what performed best on my Intel i7 CPU,
@@ -90,13 +95,12 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		State->TransformTemp,
 		State->WindowCtrlTaps,
 		BlockSize,
-		nChan,
-		State->RateHz
+		nChan
 	);
 	int NextBlockOverlap; {
-		int NextDecimation   = NextWindowCtrl >> 4;
-		    NextBlockOverlap = BlockSize >> ULC_Helper_SubBlockDecimationPattern(NextDecimation)[0];
-		if(ULC_Helper_TransientSubBlockIndex(NextDecimation) == 0) NextBlockOverlap >>= (NextWindowCtrl & 0x7);
+		int Pattern = ULC_SubBlockDecimationPattern(NextWindowCtrl);
+		NextBlockOverlap = BlockSize >> (Pattern&0x7);
+		if(Pattern&0x8) NextBlockOverlap >>= (NextWindowCtrl&0x7);
 	}
 
 	//! Transform channels and insert keys for each codeable coefficient
@@ -131,24 +135,24 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		}
 
 		//! Transform the input data and get complexity measure (ABR, VBR modes)
-		int ThisTransientSubBlockIdx = ULC_Helper_TransientSubBlockIndex(WindowCtrl >> 4);
-		const int8_t *DecimationPattern = ULC_Helper_SubBlockDecimationPattern(WindowCtrl >> 4);
 		float Complexity = 0.0f, ComplexityW = 0.0f;
 		for(Chan=0;Chan<nChan;Chan++) {
-			//! Process each subblock sequentially
-			const float *BufferMDCTEnd = BufferMDCT + BlockSize;
-			int SubBlockIdx;
-			for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
+			ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+			do {
 				//! Get the size of this subblock and the overlap at the next
-				int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
-				int OverlapSize;
-				if(BufferMDCT+SubBlockSize < BufferMDCTEnd) {
-					OverlapSize = BlockSize >> DecimationPattern[SubBlockIdx+1];
-					if(SubBlockIdx+1 == ThisTransientSubBlockIdx) OverlapSize >>= (WindowCtrl & 0x7);
-				} else OverlapSize = NextBlockOverlap;
+				int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
+				int OverlapSize; {
+					//! If we're still in the same block, poll the next subblock's
+					//! size. Otherwise, use the next block's first [sub]block
+					DecimationPattern >>= 4;
+					if(DecimationPattern) {
+						OverlapSize = BlockSize >> (DecimationPattern&0x7);
+						if(DecimationPattern&0x8) OverlapSize >>= (WindowCtrl&0x7);
+					} else OverlapSize = NextBlockOverlap;
 
-				//! Limit overlap to the maximum allowed by this subblock
-				if(OverlapSize > SubBlockSize) OverlapSize = SubBlockSize;
+					//! Limit overlap to the maximum allowed by this subblock
+					if(OverlapSize > SubBlockSize) OverlapSize = SubBlockSize;
+				}
 
 				//! Cycle data through the lapping buffer
 				float *SmpBuf = BufferTemp; {
@@ -218,55 +222,27 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				);
 
 				//! Normalize spectrum, and accumulate amplitude by
-				//! treating MDCT as Re and MDST as Im (akin to DFT)
+				//! treating MDCT as Re and MDST as Im (akin to DFT).
+				//! Additionally, accumulate to block complexity
 				float Norm = 2.0f / SubBlockSize;
 				for(n=0;n<SubBlockSize;n++) {
 					float Re = (BufferMDCT[n] *= Norm);
 					float Im = (BufferMDST[n] *= Norm);
 					float Abs2 = SQR(Re) + SQR(Im);
+#if ULC_USE_NOISE_CODING
 					BufferTemp[n] = Abs2;
+#endif
 #if ULC_USE_PSYCHOACOUSTICS
 					BufferAmp2[n] += Abs2;
 #endif
+					Complexity  += Abs2;
+					ComplexityW += sqrtf(Abs2);
 				}
-
-				//! Remove transient bias for noise amplitude spectrum
-				//! and add this subblock to the complexity analysis.
-				//! Transfer function: H(z) = -z^-1 + 2 - z^1 (zero-phase highpass)
-				//! NOTE: In theory, this has non-unity-gain of 4.0. In practice,
-				//! however, the gain is 2.0 because of the non-negative inputs.
-				//! NOTE: 'Transient biasing' refers to the fact that transients
-				//! form a sinusoid in the Re and Im parts, but they are exactly
-				//! Pi/2 radians apart. By adding Re^2+Im^2, they form a constant
-				//! amplitude throughout the spectrum, which we then subtract to
-				//! avoid biasing issues in noise and complexity analysis.
-				//! This isn't perfect (adding even one more transient event results
-				//! in the original problem once again), but is much better than
-				//! doing nothing at all.
-				//! NOTE: We apply the filter over the squared samples, because
-				//! this appears to give consistent results for some reason. The
-				//! scaling then works out to have a gain of Sqrt[2], but this
-				//! appears to sound better than unity gain for some reason.
-				{
-					float v, v2;
 #if ULC_USE_NOISE_CODING
-# define STORE_VALUE(n, Expr) \
-	v2 = (Expr), v = sqrtf(v2), \
-	Complexity += v2, ComplexityW += v, \
-	BufferNoise[n] = ULC_FastLnApprox(v)
-#else
-# define STORE_VALUE(n, Expr) \
-	v2 = (Expr), v = sqrtf(v2), \
-	Complexity += v2, ComplexityW += v
+				//! Compute noise spectrum
+				//! NOTE: BufferTemp[] (ie. Power[]) is trashed.
+				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize);
 #endif
-					STORE_VALUE(0, 2.0f * ABS(BufferTemp[0] - BufferTemp[1])); //! H(z) = -z^1 + 2 - z^1 = 2 - 2z^1
-					for(n=1;n<SubBlockSize-1;n++) {
-						STORE_VALUE(n, ABS(-BufferTemp[n-1] + 2.0f*BufferTemp[n] - BufferTemp[n+1]));
-					}
-					STORE_VALUE(n, 2.0f * ABS(BufferTemp[n] - BufferTemp[n-1])); //! H(z) = -z^1 + 2 - z^1 = 2 - 2z^1
-#undef STORE_VALUE
-				}
-
 				//! Move to the next subblock
 				BufferMDCT  += SubBlockSize;
 				BufferMDST  += SubBlockSize;
@@ -276,7 +252,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_NOISE_CODING
 				BufferNoise += SubBlockSize;
 #endif
-			}
+			} while(DecimationPattern);
 
 			//! Cache the sample data for the next block
 			for(n=0;n<BlockSize;n++) BufferSamples[n-BlockSize] = *Data++;
@@ -307,21 +283,19 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			if(Complexity > 1.0f) Complexity = 1.0f;
 		}
 		State->BlockComplexity = Complexity;
-
 #if ULC_USE_PSYCHOACOUSTICS
 		//! Perform psychoacoustics analysis
-		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, (uint32_t*)BufferTemp, BlockSize, DecimationPattern);
+		//! NOTE: Trashes BufferAmp2[] (upper half of BufferTemp used for temporary data).
+		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, (uint32_t*)BufferTemp, BlockSize, WindowCtrl);
 #endif
-
 		//! Perform importance analysis for all coefficients
 		for(Chan=0;Chan<nChan;Chan++) {
 			//! Analyze each subblock separately
-			const float *BufferMDCTEnd = BufferMDCT + BlockSize;
-			int SubBlockIdx;
-			for(SubBlockIdx=0;(BufferMDCT < BufferMDCTEnd);SubBlockIdx++) {
+			ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+			do {
 				//! Store the sorting (importance) indices of a block's coefficients,
-				//! and update the number of codeable non-zero coefficients
-				int SubBlockSize = BlockSize >> DecimationPattern[SubBlockIdx];
+				//! and update the number of codeable non-zero coefficients.
+				int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 				for(n=0;n<SubBlockSize;n++) {
 					//! Coefficient inside codeable range?
 					float Val = ABS(BufferMDCT[n]);
@@ -332,7 +306,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 						float MaskedValNp = ValNp;
 #if ULC_USE_PSYCHOACOUSTICS
 						//! Apply psychoacoustic corrections to this band energy
-						MaskedValNp -= MaskingNp[n];
+						MaskedValNp += MaskingNp[n];
 #endif
 						//! Store the sort value for this coefficient
 						BufferIndex[n] = MaskedValNp;
@@ -346,30 +320,11 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_PSYCHOACOUSTICS
 				MaskingNp   += SubBlockSize;
 #endif
-			}
+			} while(DecimationPattern >>= 4);
 #if ULC_USE_PSYCHOACOUSTICS
 			//! Psychoacoustic analysis is re-used across channels - rewind
 			MaskingNp -= BlockSize;
 #endif
-		}
-
-		//! Interleave the transform data for coding
-		if(WindowCtrl & 0x8) {
-			int Decimation = WindowCtrl >> 4;
-			BufferMDCT  = State->TransformBuffer;
-#if ULC_USE_NOISE_CODING
-			BufferNoise = State->TransformNoise;
-#endif
-			BufferIndex = (float*)State->TransformIndex;
-			for(Chan=0;Chan<nChan;Chan++) {
-#define INTERLEAVE(Buf) Block_Transform_BufferInterleave(Buf, BufferTemp, BlockSize, Decimation); Buf += BlockSize
-				INTERLEAVE(BufferMDCT);
-#if ULC_USE_NOISE_CODING
-				INTERLEAVE(BufferNoise);
-#endif
-				INTERLEAVE(BufferIndex);
-#undef INTERLEAVE
-			}
 		}
 	}
 
