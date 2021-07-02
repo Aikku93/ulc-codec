@@ -10,18 +10,18 @@
 #include "ulcEncoder.h"
 /**************************************/
 #if ULC_USE_NOISE_CODING
-# include "ulcEncoder_NoiseFill.h" //! Noise fill routines make use of Block_Encode_Quantize()
+# include "ulcEncoder_NoiseFill.h"
 #endif
 /**************************************/
 
 //! The target memory is always aligned to 64 bytes, so just
 //! use whatever is most performant on the target architecture
-typedef uint32_t BitStream_t;
+typedef uint32_t BitStream_t; //! <- MUST BE UNSIGNED
 #define BISTREAM_NBITS (8u*sizeof(BitStream_t))
 
 /**************************************/
 
-ULC_FORCED_INLINE void Block_Encode_WriteNybble(uint8_t x, BitStream_t **Dst, int *Size) {
+ULC_FORCED_INLINE void Block_Encode_WriteNybble(BitStream_t x, BitStream_t **Dst, int *Size) {
 	//! Push nybble
 	*(*Dst) >>= 4;
 	*(*Dst)  |= x << (BISTREAM_NBITS - 4);
@@ -92,7 +92,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	//! Write the coefficients
 	do {
 		//! Target coefficient doesn't collapse to 0?
-		int Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*q);
+		int Qn = ULC_ClippedCompandedQuantizeCoefficient(Coef[CurIdx]*q);
 		if(Qn != 0x0) {
 			//! Code the zero runs
 			int n, v, zR = CurIdx - NextCodedIdx;
@@ -156,8 +156,6 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			}
 
 			//! -7h..-1h, +1h..+7h: Normal coefficient
-			if(Qn < -7) Qn = -7;
-			if(Qn > +7) Qn = +7;
 			Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 			NextCodedIdx++;
 		}
