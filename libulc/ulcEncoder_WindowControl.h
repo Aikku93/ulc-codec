@@ -103,10 +103,12 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 			*Dst += SQR(BPFILT(SrcNew[-1], SrcNew[0], SrcNew[1]));
 			*Dst += SQR(BPFILT(SrcNew[ 1], SrcNew[2], SrcNew[3]));
 			*Dst += SQR(BPFILT(SrcNew[ 0], SrcNew[1], SrcNew[2]));
-			*Dst++ *= 4/3.0f; //! z^1 unavailable, so use the average
+			//*Dst += 0.0f; //! z^1 unavailable
+			Dst++, SrcNew += 4;
 		}
 #undef BPFILT
 	}
+	StepBuffer[n+BlockSize/4-1] *= 4/3.0f; //! z^1 @ N=BlockSize/4-1 was unavailable, so use the average
 
 	//! Apply a lowpass filter to the energy signal, and then
 	//! apply DC removal.
@@ -150,18 +152,23 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! Because everything would be summed up in the search loop
 		//! of Block_Transform_GetWindowCtrl(), we sum as much as we
 		//! can here to reuse as many computations as possible.
-		float v = *StepBuffer++;
-		if(v >= 0x1.0p-126f) Tmp.SumW += v, Tmp.Sum += v*logf(v);
+		float v = 0x1.0p-126f + *StepBuffer++; //! Tiny bias to avoid conditionals
+		Tmp.SumW += v, Tmp.Sum += v*logf(v);
 
 		//! Wrapping around to next segment?
+		//! This awkward construct is used to avoid overwriting
+		//! the data we're reading in for the summation.
 		if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
 	}
 }
 static inline float Block_Transform_GetWindowCtrl_DecimationRatio(float LogRatio, int Log2SubBlockSize) {
 	//! Full, unsimplified expression:
-	//!  OverlapSamples    = E^(-2*LogRatio) * 6000; experimentally determined
+	//!  OverlapSamples    = E^(-2*LogRatio) * 20000; experimentally determined
 	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples]
-	return Log2SubBlockSize - 0x1.919FB8p3f + 0x1.715476p1f*LogRatio;
+	//! This is a bit extreme (and can cause some pre-/post- echo when
+	//! the signal characteristics change too much, especially with
+	//! large block sizes), but has very few artifacts.
+	return Log2SubBlockSize - 0x1.C934F1p3f + 0x1.715476p1f*LogRatio;
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
@@ -208,7 +215,7 @@ static inline int Block_Transform_GetWindowCtrl(
 				SUM_DATA(R,  TransientData[+2*AnalysisLen + n]);
 #undef SUM_DATA
 			}
-#define FINALIZE_DATA(x) x.Sum = (x.Sum != 0.0f) ? (x.Sum / x.SumW) : MIN_LOG
+#define FINALIZE_DATA(x) x.Sum = (x.SumW > 0x1.0p-96f) ? (x.Sum / x.SumW) : MIN_LOG //! Leave some room for the logarithm's significand
 			FINALIZE_DATA(LL);
 			FINALIZE_DATA(L);
 			FINALIZE_DATA(M);
