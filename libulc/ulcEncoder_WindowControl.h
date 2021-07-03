@@ -83,7 +83,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	for(Chan=0;Chan<nChan;Chan++) {
 #define BPFILT(zM1, z0, z1) ((zM1) - (z1))
 		float *Dst = StepBuffer + BlockSize/4;
-		const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-2;
+		const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-1;
 		const float *SrcNew = Data          + Chan*BlockSize;
 		{
 			*Dst += SQR(BPFILT(SrcOld[ 0], SrcNew[0], SrcNew[1]));
@@ -108,7 +108,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		}
 #undef BPFILT
 	}
-	StepBuffer[n+BlockSize/4-1] *= 4/3.0f; //! z^1 @ N=BlockSize/4-1 was unavailable, so use the average
+	StepBuffer[BlockSize/2-1] *= 4/3.0f; //! z^1 @ N=BlockSize/4-1 was unavailable, so use the average
 
 	//! Apply a lowpass filter to the energy signal, and then
 	//! apply DC removal.
@@ -190,9 +190,9 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! Begin binary search for transient segment until it stops
 	//! on the R side, at which point the largest ratio is stored
 	float DecimationRatio;
-	int Decimation   = 0b0001;
+	int Decimation  = 0b0001;
+	int AnalysisLen = ULC_MAX_BLOCK_DECIMATION_FACTOR;
 	int Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
-	int AnalysisLen  = ULC_MAX_BLOCK_DECIMATION_FACTOR;
 	for(TransientData += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
 		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
@@ -215,7 +215,7 @@ static inline int Block_Transform_GetWindowCtrl(
 				SUM_DATA(R,  TransientData[+2*AnalysisLen + n]);
 #undef SUM_DATA
 			}
-#define FINALIZE_DATA(x) x.Sum = (x.SumW > 0x1.0p-96f) ? (x.Sum / x.SumW) : MIN_LOG //! Leave some room for the logarithm's significand
+#define FINALIZE_DATA(x) x.Sum = (x.SumW != 0.0f) ? (x.Sum / x.SumW) : MIN_LOG
 			FINALIZE_DATA(LL);
 			FINALIZE_DATA(L);
 			FINALIZE_DATA(M);
