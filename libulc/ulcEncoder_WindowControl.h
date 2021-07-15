@@ -142,33 +142,28 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! Save new block's filtered data
 	for(n=0;n<BlockSize/4;n++) TransientWindow[n] = StepBuffer[BlockSize/4+n];
 
-	//! Plug the energy into an entropy accumulator
+	//! Accumulate energy segments
 	int AnalysisIntervalMask = (BlockSize/2)/(ULC_MAX_BLOCK_DECIMATION_FACTOR*4) - 1; //! Break up into LL/L/M/R (*4), BlockSize/2 = BlockSize*2 / 4 (decimation)
-	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t
-		*Dst = (void*)StepBuffer, //! void* cast avoids a nasty, long typecast
-		 Tmp = {.Sum = 0.0f, .SumW = 0.0f};
+	float *Dst = StepBuffer, Tmp = 0.0f;
 	for(n=0;n<BlockSize/2;n++) {
-		//! Accumulate to sums.
 		//! Because everything would be summed up in the search loop
 		//! of Block_Transform_GetWindowCtrl(), we sum as much as we
 		//! can here to reuse as many computations as possible.
-		float v = 0x1.0p-126f + *StepBuffer++; //! Tiny bias to avoid conditionals
-		Tmp.SumW += v, Tmp.Sum += v*logf(v);
+		float v = *StepBuffer++;
+		Tmp += SQR(v);
 
 		//! Wrapping around to next segment?
 		//! This awkward construct is used to avoid overwriting
 		//! the data we're reading in for the summation.
-		if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp.Sum = Tmp.SumW = 0.0f;
+		if(((n+1) & AnalysisIntervalMask) == 0) *Dst++ = Tmp, Tmp = 0.0f;
 	}
 }
-static inline float Block_Transform_GetWindowCtrl_DecimationRatio(float LogRatio, int Log2SubBlockSize) {
+static inline float Block_Transform_GetWindowCtrl_Log2DecimationRatio(float Ratio2, int Log2SubBlockSize) {
 	//! Full, unsimplified expression:
-	//!  OverlapSamples    = E^(-2*LogRatio) * 20000; experimentally determined
-	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples]
-	//! This is a bit extreme (and can cause some pre-/post- echo when
-	//! the signal characteristics change too much, especially with
-	//! large block sizes), but has very few artifacts.
-	return Log2SubBlockSize - 0x1.C934F1p3f + 0x1.715476p1f*LogRatio;
+	//!  LogRatio2         = Log[Ratio^2] = 2*Log[Ratio]
+	//!  OverlapSamples    = E^(-2*Log[Ratio]) * 10000; experimentally determined
+	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples] = Log2[SubBlockSize] - Log2[10000] + Log2[Ratio^2]
+	return Log2SubBlockSize - 0x1.A934F1p3f + 0x1.715476p0f*logf(Ratio2);
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *Data,
@@ -182,10 +177,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	int n;
 
 	//! Perform filtering to obtain pre-echo analysis
-	//! NOTE: Output data is stored as a struct to improve performance (SIMD
-	//! optimizable, in theory). The void* cast avoids a nasty, long typecast.
 	Block_Transform_GetWindowCtrl_TransientFiltering(Data, LastBlockData, TransientWindow, StepBuffer, SmoothingTaps, BlockSize, nChan);
-	struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t *TransientData = (void*)StepBuffer;
 
 	//! Begin binary search for transient segment until it stops
 	//! on the R side, at which point the largest ratio is stored
@@ -193,65 +185,58 @@ static inline int Block_Transform_GetWindowCtrl(
 	int Decimation  = 0b0001;
 	int AnalysisLen = ULC_MAX_BLOCK_DECIMATION_FACTOR;
 	int Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
-	for(TransientData += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
+	for(StepBuffer += AnalysisLen;;) { //! MDCT transition region begins -BlockSize/2 samples from the new block (ie. L segment, in LL/L/M/R notation)
 		//! Find the peak ratio within each segment (L/M/R)
 		enum { POS_L, POS_M, POS_R};
 		float Ratio;
 		int RatioPos; {
-			//! This is used as a placeholder for Log[0]
-			const float MIN_LOG = -100.0f;
-
 			//! Get the energy of each segment (LL/L/M/R)
-			struct Block_Transform_GetWindowCtrl_TransientFiltering_Sum_t LL, L, M, R;
-			LL.Sum = LL.SumW = 0.0f;
-			L .Sum = L .SumW = 0.0f;
-			M .Sum = M .SumW = 0.0f;
-			R .Sum = R .SumW = 0.0f;
+			//! NOTE: Do not use FLT_MIN as the bias, as we need
+			//! some room for the ratio to grow into upon division.
+			float LL = 0x1.0p-64f;
+			float L  = 0x1.0p-64f;
+			float M  = 0x1.0p-64f;
+			float R  = 0x1.0p-64f;
 			for(n=0;n<AnalysisLen;n++) {
-#define SUM_DATA(Dst, Src) Dst.Sum  += Src.Sum, Dst.SumW += Src.SumW
-				SUM_DATA(LL, TransientData[-1*AnalysisLen + n]);
-				SUM_DATA(L,  TransientData[ 0*AnalysisLen + n]);
-				SUM_DATA(M,  TransientData[+1*AnalysisLen + n]);
-				SUM_DATA(R,  TransientData[+2*AnalysisLen + n]);
-#undef SUM_DATA
+				LL += StepBuffer[-1*AnalysisLen + n];
+				L  += StepBuffer[ 0*AnalysisLen + n];
+				M  += StepBuffer[+1*AnalysisLen + n];
+				R  += StepBuffer[+2*AnalysisLen + n];
 			}
-#define FINALIZE_DATA(x) x.Sum = (x.SumW != 0.0f) ? (x.Sum / x.SumW) : MIN_LOG
-			FINALIZE_DATA(LL);
-			FINALIZE_DATA(L);
-			FINALIZE_DATA(M);
-			FINALIZE_DATA(R);
-#undef FINALIZE_DATA
+
 			//! Get the ratios between the segments
-			float RatioL = L.Sum - LL.Sum;
-			float RatioM = M.Sum - L .Sum;
-			float RatioR = R.Sum - M .Sum;
+			float RatioL = L / LL;
+			float RatioM = M / L;
+			float RatioR = R / M;
 
 			//! Select the largest ratio of L/M/R
 			                   RatioPos = POS_L, Ratio = RatioL;
 			if(RatioM > Ratio) RatioPos = POS_M, Ratio = RatioM;
 			if(RatioR > Ratio) RatioPos = POS_R, Ratio = RatioR;
+
+			//! If we can't decimate, select R (but keep the largest ratio).
+			//! NOTE: Minimum subblock size of 64 samples.
+			//! NOTE: Checking AnalysisLen should be better than checking
+			//! Decimation directly, as then we can change the maximum allowed
+			//! decimation without changing this code.
+			if(!ULC_USE_WINDOW_SWITCHING || AnalysisLen <= 1 || Log2SubBlockSize <= 6) {
+				RatioPos = POS_R;
+			}
 		}
 
-		//! Can we decimate?
-		//! NOTE: Minimum subblock size of 64 samples.
-		//! NOTE: Checking AnalysisLen should be better than checking
-		//! Decimation directly, as then we can change the maximum allowed
-		//! decimation without changing this code.
-		DecimationRatio = Block_Transform_GetWindowCtrl_DecimationRatio(Ratio, Log2SubBlockSize);
-		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && Log2SubBlockSize > 6) {
-			//! If the transient is not in the transition region and
-			//! is still significant, decimate the subblock further
-			if(RatioPos != POS_R && DecimationRatio > 1.0f) {
-				//! Update the decimation pattern and continue
-				if(RatioPos == POS_L)
-					Decimation     = (Decimation<<1) | 0;
-				else
-					Decimation     = (Decimation<<1) | 1,
-					TransientData += AnalysisLen;
-				AnalysisLen /= 2;
-				Log2SubBlockSize--;
-				continue;
-			}
+		//! If the transient is not in the transition region and
+		//! is still significant, decimate the subblock further
+		DecimationRatio = Block_Transform_GetWindowCtrl_Log2DecimationRatio(Ratio, Log2SubBlockSize);
+		if(RatioPos != POS_R && DecimationRatio > 1.0f) {
+			//! Update the decimation pattern and continue
+			if(RatioPos == POS_L)
+				Decimation  = (Decimation<<1) | 0;
+			else
+				Decimation  = (Decimation<<1) | 1,
+				StepBuffer += AnalysisLen;
+			AnalysisLen /= 2;
+			Log2SubBlockSize--;
+			continue;
 		}
 
 		//! No more decimation - break out of the decimation loop
