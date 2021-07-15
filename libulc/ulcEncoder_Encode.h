@@ -91,74 +91,71 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 
 	//! Write the coefficients
 	do {
-		//! Target coefficient doesn't collapse to 0?
-		int Qn = ULC_ClippedCompandedQuantizeCoefficient(Coef[CurIdx]*q);
-		if(Qn != 0x0) {
-			//! Code the zero runs
-			int n, v, zR = CurIdx - NextCodedIdx;
-			while(zR) {
+		//! Code the zero runs
+		int n, v, zR = CurIdx - NextCodedIdx;
+		while(zR) {
 #if ULC_USE_NOISE_CODING
-				//! Determine the quantized coefficient for noise-fill mode
-				//! NOTE: The range of noise samples is coded as a trade-off
-				//! between noise-fill commands and coded coefficients, as
-				//! noise-fill competes with coefficients we /want/ to code
-				//! for the bit bandwidth available. Setting the start range
-				//! too low favours noise-fill over psychoacoustically
-				//! significant coefficients, but setting it too high can
-				//! cause degradation in small block sizes as well as when
-				//! we get many short runs.
-				//! TODO: Is there a better min-number-of-coefficients?
-				//! Too low and this fights too much with the coefficients
-				//! we are actually trying to code (reducing the coding
-				//! rate of them, and increasing the coding rate of noise).
-				//! However, with small BlockSize (or SubBlockSize when
-				//! decimating), smaller runs are useful.
-				int NoiseQ = 0;
-				if(zR >= 16) {
-					v = zR - 16; if(v > 0x1FF) v = 0x1FF;
-					n = v  + 16;
-					NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q);
-				}
-				if(NoiseQ) {
-					//! 0h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh.bit[1..3] != 0)
-					Block_Encode_WriteNybble(0x0,    DstBuffer, Size);
-					Block_Encode_WriteNybble(v>>5,   DstBuffer, Size);
-					Block_Encode_WriteNybble(v>>1,   DstBuffer, Size);
-					Block_Encode_WriteNybble((v&1) | NoiseQ<<1, DstBuffer, Size);
-				} else {
-#endif
-					//! Determine which run type to use and get the number of zeros coded
-					//! NOTE: A short run takes 2 nybbles, and a long run takes 4 nybbles.
-					//! So two short runs of maximum length code up to 30 zeros with the
-					//! same efficiency as a long run, meaning that long runs start with
-					//! 31 zeros.
-					if(zR < 31) {
-						//! 8h,1h..Fh: Zeros fill (1 .. 15 coefficients)
-						v = zR - 0; if(v > 0xF) v = 0xF;
-						n = v  + 0;
-						Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-						Block_Encode_WriteNybble(v,   DstBuffer, Size);
-					} else {
-						//! 0h,Zh,Yh,Xh: 31 .. 542 zeros fill (Xh.bit[1..3] == 0)
-						v = zR - 31; if(v > 0x1FF) v = 0x1FF;
-						n = v  + 31;
-						Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
-						Block_Encode_WriteNybble(v>>5, DstBuffer, Size);
-						Block_Encode_WriteNybble(v>>1, DstBuffer, Size);
-						Block_Encode_WriteNybble(v&1,  DstBuffer, Size);
-					}
-#if ULC_USE_NOISE_CODING
-				}
-#endif
-				//! Skip the zeros
-				NextCodedIdx += n;
-				zR           -= n;
+			//! Determine the quantized coefficient for noise-fill mode
+			//! NOTE: The range of noise samples is coded as a trade-off
+			//! between noise-fill commands and coded coefficients, as
+			//! noise-fill competes with coefficients we /want/ to code
+			//! for the bit bandwidth available. Setting the start range
+			//! too low favours noise-fill over psychoacoustically
+			//! significant coefficients, but setting it too high can
+			//! cause degradation in small block sizes as well as when
+			//! we get many short runs.
+			//! TODO: Is there a better min-number-of-coefficients?
+			//! Too low and this fights too much with the coefficients
+			//! we are actually trying to code (reducing the coding
+			//! rate of them, and increasing the coding rate of noise).
+			//! However, with small BlockSize (or SubBlockSize when
+			//! decimating), smaller runs are useful.
+			int NoiseQ = 0;
+			if(zR >= 16) {
+				v = zR - 16; if(v > 0x1FF) v = 0x1FF;
+				n = v  + 16;
+				NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q);
 			}
-
-			//! -7h..-1h, +1h..+7h: Normal coefficient
-			Block_Encode_WriteNybble(Qn, DstBuffer, Size);
-			NextCodedIdx++;
+			if(NoiseQ) {
+				//! 0h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh.bit[1..3] != 0)
+				Block_Encode_WriteNybble(0x0,    DstBuffer, Size);
+				Block_Encode_WriteNybble(v>>5,   DstBuffer, Size);
+				Block_Encode_WriteNybble(v>>1,   DstBuffer, Size);
+				Block_Encode_WriteNybble((v&1) | NoiseQ<<1, DstBuffer, Size);
+			} else {
+#endif
+				//! Determine which run type to use and get the number of zeros coded
+				//! NOTE: A short run takes 2 nybbles, and a long run takes 4 nybbles.
+				//! So two short runs of maximum length code up to 30 zeros with the
+				//! same efficiency as a long run, meaning that long runs start with
+				//! 31 zeros.
+				if(zR < 31) {
+					//! 8h,1h..Fh: Zeros fill (1 .. 15 coefficients)
+					v = zR - 0; if(v > 0xF) v = 0xF;
+					n = v  + 0;
+					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+					Block_Encode_WriteNybble(v,   DstBuffer, Size);
+				} else {
+					//! 0h,Zh,Yh,Xh: 31 .. 542 zeros fill (Xh.bit[1..3] == 0)
+					v = zR - 31; if(v > 0x1FF) v = 0x1FF;
+					n = v  + 31;
+					Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
+					Block_Encode_WriteNybble(v>>5, DstBuffer, Size);
+					Block_Encode_WriteNybble(v>>1, DstBuffer, Size);
+					Block_Encode_WriteNybble(v&1,  DstBuffer, Size);
+				}
+#if ULC_USE_NOISE_CODING
+			}
+#endif
+			//! Skip the zeros
+			NextCodedIdx += n;
+			zR           -= n;
 		}
+
+		//! -7h..-1h, +1h..+7h: Normal coefficient
+		int Qn = ULC_ClippedCompandedQuantizeCoefficient(Coef[CurIdx]*q);
+		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
+		NextCodedIdx++;
 
 		//! Move to the next coefficient
 		do CurIdx++; while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef);
@@ -169,7 +166,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 //! Encode a [sub]block
 static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int           Idx,
-	int           EndIdx,
+	int           SubBlockSize,
 	const float  *Coef,
 #if ULC_USE_NOISE_CODING
 	const float  *CoefNoise,
@@ -180,43 +177,33 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int          *Size
 ) {
 	//! Encode direct coefficients
+	int   EndIdx        = Idx+SubBlockSize;
 	int   NextCodedIdx  = Idx;
 	int   PrevQuant     = -1;
 	int   QuantStartIdx = -1;
-	float QuantMin      =  1000.0f; //! Start out of range to force a reset
-	float QuantMax      = -1000.0f;
 	float QuantSum      = 0.0f;
 	float QuantWeight   = 0.0f;
 	do {
 		//! Seek the next coefficient
 		while(Idx < EndIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
 
-		//! If we haven't reached the end of the [sub]block, update ranges
+		//! Read coefficient and set the first quantizer's first coefficient index
+		//! NOTE: Set BandCoef=0.0 upon reaching the end. This causes the range
+		//! check to fail in the next step, causing the final quantizer zone to dump
+		//! if we had any data (if we don't, the check "passes" because QuantSum==0).
 		float BandCoef = 0.0f;
 		if(Idx < EndIdx) {
 			BandCoef = ABS(Coef[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
-			if(BandCoef < QuantMin) QuantMin = BandCoef;
-			if(BandCoef > QuantMax) QuantMax = BandCoef;
-		} else {
-			//! We've hit the end of the [sub]block. If we coded
-			//! anything before, set everything out of range to
-			//! force dumping the last quantizer zone.
-			//! If we coded anything earlier, then QuantMax is
-			//! not zero, forcing the range check to fail and
-			//! dumping our data. Otherwise, the check will pass
-			//! and we will stop coding because we're past the end.
-			QuantMin = 0.0f;
 		}
 
 		//! Level out of range in this quantizer zone?
-		//! NOTE: This cutoff implies a certain amount of
-		//! acceptable quantization distortion. I'm sure
-		//! there is a curve that maps this, but for the
-		//! sake of keeping things simple, we just run
-		//! with an arbitrary threshold.
-		const float MaxRange = 24.5f;
-		if(QuantMax > MaxRange*QuantMin) {
+		const float MaxRangeLo = 8.0f;
+		const float MaxRangeHi = 2.0f;
+		if(
+			MaxRangeLo*BandCoef*QuantWeight < QuantSum || //! BandCoef*MaxRangeLo < QuantSum/QuantWeight
+			BandCoef*QuantWeight > MaxRangeHi*QuantSum    //! BandCoef/MaxRangeHi > QuantSum/QuantWeight
+		) {
 			//! Write the quantizer zone we just searched through
 			//! and start a new one from this coefficient
 			NextCodedIdx = Block_Encode_EncodePass_WriteQuantizerZone(
@@ -235,13 +222,12 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 				Size
 			);
 			QuantStartIdx = Idx;
-			QuantMin    = BandCoef;
-			QuantMax    = BandCoef;
 			QuantSum    = 0.0f;
 			QuantWeight = 0.0f;
 		}
 
-		//! Accumulate to the current quantizer zone
+		//! Accumulate to the current quantizer zone.
+		//! This uses a contraharmonic mean as the quantizer step size.
 		QuantSum    += BandCoef * BandCoef;
 		QuantWeight += BandCoef;
 	} while(++Idx <= EndIdx); //! Idx will go over by 1 or 2 here to dump the last quantizer zone, but doesn't matter; not used after this loop
@@ -323,7 +309,7 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 			int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 			Block_Encode_EncodePass_WriteSubBlock(
 				Idx,
-				Idx+SubBlockSize,
+				SubBlockSize,
 				Coef,
 #if ULC_USE_NOISE_CODING
 				CoefNoise,
