@@ -63,11 +63,11 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			uint64_t Sum = 0ull, SumW = 0ull;
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus analysis window
-				const int RangeScaleFxp = 7;
+				const int RangeScaleFxp = 3;
 				{
 					int Old, New;
-					const int LoRangeScale = 121; //! Beg = 0.9453125*Band
-					const int HiRangeScale = 161; //! End = 1.2578125*Band
+					const int LoRangeScale = 6; //! Beg = 0.75*Band
+					const int HiRangeScale = 9; //! End = 1.125*Band
 
 					//! Remove samples that went out of focus
 					//! NOTE: We skip /at most/ one sample, so don't loop.
