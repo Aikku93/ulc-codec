@@ -37,7 +37,7 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	//! Get buffer offsets and allocation size
 	int AllocSize = 0;
 #define CREATE_BUFFER(Name, Sz) int Name##_Offs = AllocSize; AllocSize += Sz
-	CREATE_BUFFER(TransformBuffer, sizeof(float) * (nChan* BlockSize   ));
+	CREATE_BUFFER(TransformBuffer, sizeof(float) * (       BlockSize   ));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * (       BlockSize   ));
 	CREATE_BUFFER(TransformInvLap, sizeof(float) * (nChan*(BlockSize/2)));
 #undef CREATE_BUFFER
@@ -49,7 +49,7 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	//! Initialize state
 	int i;
 	Buf += (-(uintptr_t)Buf) & (BUFFER_ALIGNMENT-1);
-	State->OverlapSize     = 0;
+	State->LastSubBlockSize = 0;
 	State->TransformBuffer = (float*)(Buf + TransformBuffer_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
 	State->TransformInvLap = (float*)(Buf + TransformInvLap_Offs);
@@ -94,7 +94,7 @@ static inline int Block_Decode_ReadQuantizer(const uint8_t **Src, int *Size) {
 	return qi;
 }
 static inline float Block_Decode_ExpandQuantizer(int qi) {
-	return 1.0f / ((1u<<5) << qi);
+	return 0x1.0p-31f * ((1u<<(31-5)) >> qi); //! 1 / (2^5 * 2^qi)
 }
 static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const uint8_t **Src, int *Size) {
 	int32_t n, v;
@@ -198,7 +198,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 
 	//! Begin decoding
 	int Chan, Size = 0;
-	int LastOverlapSize = 0; //! <- Shuts gcc up
+	int LastSubBlockSize = 0; //! <- Shuts gcc up
 	int WindowCtrl; {
 		//! Read window control information
 		WindowCtrl = Block_Decode_ReadNybble(&SrcBuffer, &Size);
@@ -207,7 +207,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 	}
 	for(Chan=0;Chan<nChan;Chan++) {
 		//! Reset overlap scaling for this channel
-		LastOverlapSize = State->OverlapSize;
+		LastSubBlockSize = State->LastSubBlockSize;
 
 		//! Process subblocks
 		float *Dst = DstData + Chan*BlockSize;
@@ -222,9 +222,9 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 			int OverlapSize = SubBlockSize;
 			if(DecimationPattern&0x8)
 				OverlapSize >>= (WindowCtrl & 0x7);
-			if(OverlapSize > LastOverlapSize)
-				OverlapSize = LastOverlapSize;
-			LastOverlapSize = SubBlockSize;
+			if(OverlapSize > LastSubBlockSize)
+				OverlapSize = LastSubBlockSize;
+			LastSubBlockSize = SubBlockSize;
 
 			//! A single long block can be read straight into the output buffer
 			if(SubBlockSize == BlockSize) {
@@ -235,18 +235,29 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 			//! For small blocks, we store the decoded data to a scratch buffer
 			float *DecBuf = TransformTemp + SubBlockSize;
 			Fourier_IMDCT(DecBuf, Src, Lap, TransformTemp, SubBlockSize, OverlapSize, ModulationWindow);
-			Src += SubBlockSize;
 
 			//! Output samples from the lapping buffer, and cycle
 			//! the new samples through it for the next call
-			float *LapBuf = Lap + BlockSize/2;
-			int LapExtra = (BlockSize - SubBlockSize) / 2;
-			int LapCopy = (LapExtra < SubBlockSize) ? LapExtra : SubBlockSize;
-			for(n=0;n<LapCopy;n++)   *Dst++ = LapBuf[-1-n];
-			for(;n<SubBlockSize;n++) *Dst++ = *DecBuf++;
-			int NewCopy = LapExtra - LapCopy;
-			for(n=0;n<NewCopy;n++) LapBuf[-1-n] = LapBuf[-1-n-LapCopy];
-			for(;n<LapExtra;n++) LapBuf[-1-n] = *DecBuf++;
+			int nAvailable = (BlockSize - SubBlockSize) / 2;
+			      float *LapDst = Lap + BlockSize/2;
+			const float *LapSrc = LapDst;
+			if(SubBlockSize <= nAvailable) {
+				//! We have enough data in the lapping buffer
+				//! to output a full subblock directly from it,
+				//! so we do that and then shift any remaining
+				//! data before re-filling the buffer.
+				for(n=0;n<SubBlockSize;n++) *Dst++    = *--LapSrc;
+				for(   ;n<nAvailable  ;n++) *--LapDst = *--LapSrc;
+				for(n=0;n<SubBlockSize;n++) *--LapDst = *DecBuf++;
+			} else {
+				//! We only have enough data for a partial output
+				//! from the lapping buffer, so output what we can
+				//! and output the rest from the decoded buffer
+				//! before re-filling.
+				for(n=0;n<nAvailable;  n++) *Dst++    = *--LapSrc;
+				for(   ;n<SubBlockSize;n++) *Dst++    = *DecBuf++;
+				for(n=0;n<nAvailable;  n++) *--LapDst = *DecBuf++;
+			}
 		} while(DecimationPattern >>= 4);
 
 		//! Move to next channel
@@ -262,8 +273,8 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 		DstData[n + BlockSize] = M-S;
 	}
 
-	//! Store the last overlap, and return the number of bits read
-	State->OverlapSize = LastOverlapSize;
+	//! Store the last [sub]block size, and return the number of bits read
+	State->LastSubBlockSize = LastSubBlockSize;
 	return Size;
 }
 

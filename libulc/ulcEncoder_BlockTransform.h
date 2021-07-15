@@ -184,28 +184,25 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					    with the M segment, and cycle data through the R segment.
 					!*/
 
-					//! Point to the R segment and get its size
-					float *LapBuf = BufferFwdLap + (BlockSize+SubBlockSize)/2;
-					int LapRem = (BlockSize-SubBlockSize)/2;
-
-					//! Do we have the full [sub]block in the lapping buffer?
-					if(LapRem < SubBlockSize) {
+					//! Do we have the full [sub]block in the R side of the lapping buffer?
+					int nAvailable = (BlockSize-SubBlockSize)/2;
+					      float *LapDst = BufferFwdLap + (BlockSize+SubBlockSize)/2;
+					const float *LapSrc = LapDst;
+					if(nAvailable < SubBlockSize) {
 						//! Don't have enough samples in lapping buffer
 						//! for the full block - stream new data in and
 						//! refill the lapping buffer
-						for(n=0;n<LapRem;n++) *SmpDst++ = LapBuf[n];
-						for(n=LapRem;n<SubBlockSize;n++) *SmpDst++ = *BufferSamples++;
-						for(n=0;n<LapRem;n++) LapBuf[n] = *BufferSamples++;
+						for(n=0;n<nAvailable;  n++) *SmpDst++ = *LapSrc++;
+						for(   ;n<SubBlockSize;n++) *SmpDst++ = *BufferSamples++;
+						for(n=0;n<nAvailable;  n++) *LapDst++ = *BufferSamples++;
 					} else {
 						//! We got a full [sub]block, and we might have data
 						//! remaining in the lapping buffer. This data must
 						//! now be shifted down and then the lapping buffer
 						//! refilled with new data
-						float *Dst = LapBuf;
-						float *Src = LapBuf + SubBlockSize;
-						for(n=0;n<SubBlockSize;n++) *SmpDst++ = LapBuf[n];
-						for(n=SubBlockSize;n<LapRem;n++) *Dst++ = *Src++;
-						for(n=0;n<SubBlockSize;n++) *Dst++ = *BufferSamples++;
+						for(n=0;n<SubBlockSize;n++) *SmpDst++ = *LapSrc++;
+						for(   ;n<nAvailable;  n++) *LapDst++ = *LapSrc++;
+						for(n=0;n<SubBlockSize;n++) *LapDst++ = *BufferSamples++;
 					}
 				}
 

@@ -145,13 +145,15 @@ const void *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *S
 	void *Buf = (void*)State->TransformTemp;
 	float TargetComplexity = 15.0f*logf(100.0f / Quality); //! Or: -15.0*Log[Quality/100], but using Log[x] with x>=1.0 should be more accurate
 	int MaxCoef  = Block_Transform(State, SrcData);
-	int nTargetCoef = State->nChan*State->BlockSize; {
+	int nTargetCoef = MaxCoef; {
 		//! TargetComplexity == 0 which would result in a
 		//! divide-by-zero error. So instead we just leave
 		//! nTargetCoef alone at its maximum value.
-		if(TargetComplexity > 0.0f) nTargetCoef = (int)(nTargetCoef * State->BlockComplexity / TargetComplexity);
+		if(TargetComplexity > 0.0f) {
+			float fTarget = (State->nChan*State->BlockSize) * State->BlockComplexity / TargetComplexity;
+			if(fTarget < MaxCoef) nTargetCoef = (int)fTarget;
+		}
 	}
-	if(nTargetCoef > MaxCoef) nTargetCoef = MaxCoef;
 	int Sz = Block_Encode_EncodePass(State, Buf, nTargetCoef);
 	if(Size) *Size = Sz;
 	return Buf;

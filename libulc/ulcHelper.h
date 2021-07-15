@@ -21,7 +21,7 @@ typedef uint_least16_t ULC_SubBlockDecimationPattern_t;
 ULC_FORCED_INLINE ULC_SubBlockDecimationPattern_t ULC_SubBlockDecimationPattern(int WindowCtrl) {
 	static const ULC_SubBlockDecimationPattern_t Pattern[] = {
 		0x0000 | 0x0000, //! 0000: N/1 (Unused)
-		0x0008 | 0x0008, //! 0001: N/1*
+		0x0000 | 0x0008, //! 0001: N/1*
 		0x0011 | 0x0008, //! 0010: N/2*,N/2
 		0x0011 | 0x0080, //! 0011: N/2,N/2*
 		0x0122 | 0x0008, //! 0100: N/4*,N/4,N/2

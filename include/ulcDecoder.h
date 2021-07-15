@@ -34,7 +34,7 @@ struct ULC_DecoderState_t {
 	//!   float TransformTemp  [BlockSize]
 	//!   float TransformInvLap[nChan * BlockSize/2]
 	//! BufferData contains the pointer returned by malloc()
-	int    OverlapSize; //! Cached overlap from last block
+	int    LastSubBlockSize; //! Size of last [sub]block processed
 	void  *BufferData;
 	float *TransformBuffer;
 	float *TransformTemp;
