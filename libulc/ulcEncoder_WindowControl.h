@@ -121,19 +121,19 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! so we save it across blocks and buffer the filtered data.
 	//! NOTE: We perform the filtering in a companded domain,
 	//! as this emphasizes the transient structure far better.
+	//! NOTE: Slightly refactored to remove a multiplication.
 	{
 		float v, *Buf = StepBuffer + BlockSize/4;
 		float LPTap = SmoothingTaps[0], LPDecay = 240/256.0f, OneMinusLPDecay = 1.0f - LPDecay;
 		float DCTap = SmoothingTaps[1], DCDecay = 252/256.0f, OneMinusDCDecay = 1.0f - DCDecay;
+		float DCGain = OneMinusDCDecay / OneMinusLPDecay;
 		for(n=0;n<BlockSize/4;n++) {
 			v = sqrtf(sqrtf(*Buf));
-			LPTap += v * OneMinusLPDecay;
-			v = LPTap;
+			LPTap += v;
+			DCTap += v * DCGain;
+			*Buf++ = SQR(LPTap - DCTap);
 			LPTap *= LPDecay;
-			DCTap += v * OneMinusDCDecay;
-			v = v - DCTap;
 			DCTap *= DCDecay;
-			*Buf++ = SQR(v);
 		}
 		SmoothingTaps[0] = LPTap;
 		SmoothingTaps[1] = DCTap;
@@ -143,7 +143,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	for(n=0;n<BlockSize/4;n++) TransientWindow[n] = StepBuffer[BlockSize/4+n];
 
 	//! Accumulate energy segments
-	int AnalysisIntervalMask = (BlockSize/2)/(ULC_MAX_BLOCK_DECIMATION_FACTOR*4) - 1; //! Break up into LL/L/M/R (*4), BlockSize/2 = BlockSize*2 / 4 (decimation)
+	int AnalysisIntervalMask = BlockSize/(ULC_MAX_BLOCK_DECIMATION_FACTOR*8) - 1; //! Break up into LL/L/M/R (*4), BlockSize*2 / MAX_DECIMATION*N_SEGMENTS
 	float *Dst = StepBuffer, Tmp = 0.0f;
 	for(n=0;n<BlockSize/2;n++) {
 		//! Because everything would be summed up in the search loop
