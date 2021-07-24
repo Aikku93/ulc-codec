@@ -58,7 +58,7 @@ struct ULC_EncoderState_t {
 	//!   float TransformFwdLap[nChan*BlockSize]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
-	//!   float TransientWindow[BlockSize/4]
+	//!   float TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*4]
 	//! BufferData contains the original pointer returned by malloc()
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
@@ -72,7 +72,7 @@ struct ULC_EncoderState_t {
 #endif
 	float *TransformFwdLap;
 	float *TransformTemp;
-	float *TransientWindow;
+	float *TransientBuffer;
 	int   *TransformIndex;
 };
 

@@ -91,7 +91,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
 		Data,
 		State->SampleBuffer,
-		State->TransientWindow,
+		State->TransientBuffer,
 		State->TransformTemp,
 		State->WindowCtrlTaps,
 		BlockSize,
@@ -218,19 +218,23 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					ModulationWindow
 				);
 
-				//! Normalize spectrum, and accumulate amplitude by
-				//! treating MDCT as Re and MDST as Im (akin to DFT).
-				//! Additionally, accumulate to block complexity
+				//! Normalize the spectra, and then accumulate the
+				//! real (MDCT) part for psychoacoustic analysis.
+				//! The absolute (Re^2+Im^2) is accumulated for use
+				//! in the block complexity analysis (VBR, ABR), as
+				//! well as in noise coding.
+				//! NOTE: Normalized MDST is NOT stored back to the
+				//! buffer, as it won't be used anymore after this.
 				float Norm = 2.0f / SubBlockSize;
 				for(n=0;n<SubBlockSize;n++) {
-					float Re = (BufferMDCT[n] *= Norm);
-					float Im = (BufferMDST[n] *= Norm);
-					float Abs2 = SQR(Re) + SQR(Im);
+					float Re2  = (BufferMDCT[n] *= Norm); Re2 *= Re2;
+					float Im2  = (BufferMDST[n] *  Norm); Im2 *= Im2;
+					float Abs2 = Re2 + Im2;
 #if ULC_USE_NOISE_CODING
 					BufferTemp[n] = Abs2;
 #endif
 #if ULC_USE_PSYCHOACOUSTICS
-					BufferAmp2[n] += Abs2;
+					BufferAmp2[n] += Re2;
 #endif
 					Complexity  += Abs2;
 					ComplexityW += sqrtf(Abs2);
