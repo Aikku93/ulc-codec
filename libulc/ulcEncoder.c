@@ -64,16 +64,16 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 #endif
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
-	State->TransientBuffer = (float*)(Buf + TransientBuffer_Offs);
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
+	State->TransientBuffer = (float*)(Buf + TransientBuffer_Offs);
 
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap
 	for(i=0;i<2;i++) State->WindowCtrlTaps[i] = 0.0f;
-	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*4;i++) State->TransientBuffer[i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
+	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*4;i++) State->TransientBuffer[i] = 0.0f;
 
 	//! Success
 	return 1;
@@ -130,7 +130,7 @@ const void *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *S
 	//! be; this was derived experimentally to closely match VBR output.
 	void *Buf = (void*)State->TransformTemp;
 	int MaxCoef = Block_Transform(State, SrcData);
-	float TargetKbps = RateKbps * powf(State->BlockComplexity / AvgComplexity, 1.9f); //! Roughly Log[15]*Sqrt[1/2]
+	float TargetKbps = RateKbps * powf(State->BlockComplexity / AvgComplexity, 1.45f);
 	int Sz = ULC_EncodeBlock_CBR_Core(State, Buf, TargetKbps, MaxCoef);
 	if(Size) *Size = Sz;
 	return Buf;
@@ -143,7 +143,7 @@ const void *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *S
 	//! NOTE: The constant in front of the logarithm was experimentally
 	//! dervied; I have no idea what relation it bears to actual encoding.
 	void *Buf = (void*)State->TransformTemp;
-	float TargetComplexity = 15.0f*logf(100.0f / Quality); //! Or: -15.0*Log[Quality/100], but using Log[x] with x>=1.0 should be more accurate
+	float TargetComplexity = 13.5f*logf(100.0f / Quality); //! Or: -13.5*Log[Quality/100], but using Log[x] with x>=1.0 should be more accurate
 	int MaxCoef  = Block_Transform(State, SrcData);
 	int nTargetCoef = MaxCoef; {
 		//! TargetComplexity == 0 which would result in a

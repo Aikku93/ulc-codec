@@ -72,8 +72,8 @@ struct ULC_EncoderState_t {
 #endif
 	float *TransformFwdLap;
 	float *TransformTemp;
-	float *TransientBuffer;
 	int   *TransformIndex;
+	float *TransientBuffer;
 };
 
 /**************************************/
