@@ -55,11 +55,11 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 	uint64_t Sum = 0ull;
 	for(n=0;n<N;n++) {
 		//! Re-focus analysis window
-		const int RangeScaleFxp = 1;
+		const int RangeScaleFxp = 4;
 		int BandLen; {
 			int Old, New;
-			const int LoRangeScale = 1; //! Beg = 0.5*Band
-			const int HiRangeScale = 3; //! End = 1.5*Band
+			const int LoRangeScale = 12; //! Beg = 0.7500*Band
+			const int HiRangeScale = 17; //! End = 1.0625*Band
 
 			//! Remove samples that went out of focus
 			Old = BandBeg >> RangeScaleFxp, BandBeg += LoRangeScale;
