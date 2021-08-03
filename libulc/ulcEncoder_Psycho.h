@@ -38,20 +38,27 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 		for(n=0;n<SubBlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
 		if(Norm != 0.0f) {
 			//! Normalize the energy and convert to fixed-point
-			//! NOTE: We re-scale the logarithm by (2^32)/Log[2^32], which
-			//! we term LogScale (0x1.715476p27).
+			//! This normalization step forces the sums to be as precise as
+			//! possible without overflowing.
+			//! NOTE: The normalization is based on the widest bandwidth we
+			//! will encounter in the loop (1-LoScale/HiScale), so we must
+			//! use the wider of the 'main' or 'noise' bandwidths.
+			//! NOTE: Ensure that Energy[] is not zero or division by 0 may
+			//! occur if the accumulated sums are all zeros. Also, note that
+			//! the value may overflow due to the limited precision, which
+			//! is made far worse with the square root thrown in, so clip it.
+			//! NOTE: Truncate everything; rounding may overflow. Also, make
+			//! sure that the normalization constant (LogNorm) is rounded DOWN.
 			Norm = 0x1.0p32f / Norm;
-				for(n=0;n<SubBlockSize;n++) {
-					float p   = BufferAmp2[n] * Norm;
-					float pNp = (p > 1.0f) ? logf(p) : 0.0f;
-					p   = ceilf(sqrtf(p) * 0x1.0p16f); //! Re-normalize to .32fxp
-					pNp = ceilf(pNp*0x1.715476p27f);
-					uint32_t ip   = (p   >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)p;
-					uint32_t ipNp = (pNp >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)pNp;
-					Energy  [n] = ip;
-					EnergyNp[n] = ipNp;
-				}
-			Norm = logf(Norm)*0x1.555555p-2f; //! Log[LogNorm]/3
+			float LogNorm = 0x1.03AF63p29f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-29/45)) = (2^32/Log[2^32] / (1-29/45)) / N
+			for(n=0;n<SubBlockSize;n++) {
+				v = BufferAmp2[n] * Norm;
+				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogNorm);
+				v = sqrtf(v) * 0x1.0p16f; //! Re-normalize to .32fxp after square root
+				Energy  [n] = (v <= 1.0f) ? 1 : (v >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)v;
+			}
+			float NormLog    = 0x1.555555p-2f*logf(Norm); //! Log[Norm]/3
+			float InvLogNorm = SubBlockSize * -0x1.507D55p-31f; //! Inverse, scaled by -1/3
 
 			//! Compute expected level of each band's critical bandwidth
 			//! NOTE: We can solve for the maximum bandwidth used in
@@ -64,13 +71,12 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//!      = SubBlockSize * (1 - LoRangeScale/HiRangeScale)
 			//! Setting SubBlockSize=1 gives us the normalized bandwidth:
 			//!  MaxBandwidth = 1 - LoRangeScale/HiRangeScale
-			int Log2MaxBandwidth = 1;
-			int SumShift = 31-__builtin_clz(SubBlockSize) - Log2MaxBandwidth; //! Log2[SubBlockSize * MaxBandwidth]
+			int Log2SubBlockSize = 31 - __builtin_clz(SubBlockSize);
 			int BandBeg = 0, BandEnd = 0;
 			uint64_t Sum = 0ull, SumW = 0ull;
 #if PSYCHO_ULTRASTABLE
 			int NoiseBeg = 0, NoiseEnd = 0;
-			uint64_t NoiseSum = 0ull;
+			uint32_t NoiseSum = 0;
 #endif
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the main analysis window
@@ -86,7 +92,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 					New = BandBeg >> RangeScaleFxp;
 					if(Old < New) {
 						SumW -= Energy[Old];
-						Sum  -= Energy[Old] * (uint64_t)EnergyNp[Old] >> SumShift;
+						Sum  -= Energy[Old] * (uint64_t)EnergyNp[Old];
 					}
 
 					//! Add samples that came into focus
@@ -97,7 +103,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 					New = BandEnd >> RangeScaleFxp; if(New > SubBlockSize) New = SubBlockSize;
 					if(Old < New) do {
 						SumW += Energy[Old];
-						Sum  += Energy[Old] * (uint64_t)EnergyNp[Old] >> SumShift;
+						Sum  += Energy[Old] * (uint64_t)EnergyNp[Old];
 					} while(++Old < New);
 				}
 #if PSYCHO_ULTRASTABLE
@@ -132,15 +138,11 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 				//! are scale-invariant (only used for comparing):
 				//!  LogImportanceLevel = Log[CoefRe^3] - Log[BandAbs^2]
 				//!                     = Log[CoefRe] - Log[BandAbs^2]/3
-				//! NOTE: Ideally, we would shift up as Sum<<SumShift prior
-				//! to dividing, but Sum is already full-width 64bit and
-				//! cannot shift up without a larger integer type.
-				uint32_t w = (SumW >> SumShift) + ((SumW << SumShift) != 0); //! Ceiling division appears to be important sometimes
-				uint64_t x = Sum/w;
+				uint32_t x = Sum / SumW;
 #if PSYCHO_ULTRASTABLE
-				x += NoiseSum >> SumShift >> Log2MaxBandwidth; //! NoiseSum/SubBlockSize. Not sure why it normalizes like this
+				x += NoiseSum >> Log2SubBlockSize; //! NoiseSum/SubBlockSize. Not sure why it normalizes like this
 #endif
-				MaskingNp[n] = x*-0x1.D93040p-30f + Norm; //! 0x1.D93040p-30 = 1/LogScale / 3
+				MaskingNp[n] = x*InvLogNorm + NormLog;
 			}
 		}
 

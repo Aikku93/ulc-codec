@@ -22,37 +22,33 @@
 /**************************************/
 
 //! Compute noise spectrum (logarithmic output)
+//! The code here is very similar to the one used in
+//! psychoacoustics (see ulcEncoder_Psycho.h for details).
 static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, float *Power, int N) {
 	int n;
 	float v;
 
 	//! Find the subblock's normalization factor
-	float LogNorm = 0.0f;
-	for(n=0;n<N;n++) if((v = Power[n]) > LogNorm) LogNorm = v;
-	if(LogNorm == 0.0f) {
-		//! Empty spectrum - fill with -100.0Np data just in case
-		for(n=0;n<N;n++) LogNoise[n] = -100.0f;
-		return;
-	}
+	float Norm = 0.0f;
+	for(n=0;n<N;n++) if((v = Power[n]) > Norm) Norm = v;
+	if(Norm == 0.0f) return;
 
 	//! Normalize the logarithmic energy and convert to fixed-point
-	//! NOTE: Strictly speaking, we could normalize by 1/LogNorm here.
-	//! However, normalizing to 2^32 should reduce subnormal collapse.
-	LogNorm = 0x1.0p32f / LogNorm;
+	Norm = 0x1.0p32f / Norm;
+	float LogNorm = 0x1.39EE31p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/17)) = (2^32/Log[2^32] / (1-12/17)) / N
 	uint32_t *LogPower = (uint32_t*)Power;
 	for(n=0;n<N;n++) {
-		v = Power[n] * LogNorm;
-		v = (v > 1.0f) ? ceilf(logf(v) * 0x1.715476p27f) : 0.0f;
-		LogPower[n] = (v >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)v;
+		v = Power[n] * Norm;
+		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogNorm);
 	}
-	LogNorm = -0.5f*logf(LogNorm); //! Scale by 1/2 to convert Power to Amplitude
+	float NormLog    = -0.5f*logf(Norm); //! Scale by 1/2 to convert Power to Amplitude
+	float InvLogNorm = N * 0x1.A184EDp-31f; //! Inverse, scaled by 1/2
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
-	//! band's critical bandwidth. The code is very similar to the one
-	//! used in psychoacoustics (see ulcEncoder_Psycho.h for details).
+	//! band's critical bandwidth.
 	int BandBeg = 0, BandEnd = 0;
-	uint64_t Sum = 0ull;
+	uint32_t Sum = 0;
 	for(n=0;n<N;n++) {
 		//! Re-focus analysis window
 		const int RangeScaleFxp = 4;
@@ -79,7 +75,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 		}
 
 		//! Store the geometric mean for this band
-		LogNoise[n] = (Sum / BandLen)*0x1.62E430p-29f + LogNorm; //! 0x1.62E430p-29 = 1/LogScale / 2 (/2 to convert Power to Amplitude)
+		LogNoise[n] = (Sum / BandLen)*InvLogNorm + NormLog;
 	}
 }
 
