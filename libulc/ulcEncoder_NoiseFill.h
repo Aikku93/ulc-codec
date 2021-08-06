@@ -35,14 +35,14 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 
 	//! Normalize the logarithmic energy and convert to fixed-point
 	Norm = 0x1.0p32f / Norm;
-	float LogNorm = 0x1.39EE31p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/17)) = (2^32/Log[2^32] / (1-12/17)) / N
+	float LogScale = 0x1.39EE31p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/17)) = (2^32/Log[2^32] / (1-12/17)) / N
 	uint32_t *LogPower = (uint32_t*)Power;
 	for(n=0;n<N;n++) {
 		v = Power[n] * Norm;
-		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogNorm);
+		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 	}
-	float NormLog    = -0.5f*logf(Norm); //! Scale by 1/2 to convert Power to Amplitude
-	float InvLogNorm = N * 0x1.A184EDp-31f; //! Inverse, scaled by 1/2
+	float LogNorm     = -0.5f*logf(Norm); //! Scale by 1/2 to convert Power to Amplitude
+	float InvLogScale = N * 0x1.A184EDp-31f; //! Inverse, scaled by 1/2
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
@@ -75,7 +75,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 		}
 
 		//! Store the geometric mean for this band
-		LogNoise[n] = (Sum / BandLen)*InvLogNorm + NormLog;
+		LogNoise[n] = (Sum / BandLen)*InvLogScale + LogNorm;
 	}
 }
 
@@ -98,30 +98,31 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 }
 
 //! Compute quantized HF extension parameters for encoding
+#pragma GCC push_options
+#pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe... please.
 static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, float q, int *_NoiseQ, int *_NoiseDecay) {
 	//! Solve for least-squares (in the log domain, for exponential fitting)
 	float Amplitude, Decay; {
 		//! NOTE: The analysis is the same as in normal noise-fill,
 		//! but with a decaying weight parameter. This appears to
-		//! be necessary to avoid overfitting to -inf dB, but is
-		//! still not perfect.
-		//! NOTE: We always have at least 16 coefficients before
-		//! Band, so we use these to regularize the fit.
+		//! be necessary to avoid overfitting to -inf dB (with a
+		//! corresponding spike about x=0), but is not perfect.
 		int n;
 		float SumX  = 0.0f;
 		float SumX2 = 0.0f;
 		float SumXY = 0.0f;
 		float SumY  = 0.0f;
 		float SumW  = 0.0f;
-		float w = 1.0f;
-		for(n=-16;n<N;n++) {
+		float w = 15.0f;
+		for(n=0;n<N;n++) {
+			float tw = 1.0f + w;
 			float x = (float)n;
 			float yLog = LogCoef[Band+n];
-			SumX  += w*x;
-			SumX2 += w*x*x;
-			SumXY += w*x*yLog;
-			SumY  += w  *yLog;
-			SumW  += w;
+			SumX  += tw*x;
+			SumX2 += tw*x*x;
+			SumXY += tw*x*yLog;
+			SumY  += tw  *yLog;
+			SumW  += tw;
 			w *= 0.99f;
 		}
 
@@ -149,6 +150,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
 }
+#pragma GCC pop_options
 
 /**************************************/
 //! EOF
