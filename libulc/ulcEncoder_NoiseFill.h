@@ -34,15 +34,15 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 	if(Norm == 0.0f) return;
 
 	//! Normalize the logarithmic energy and convert to fixed-point
-	Norm = 0x1.0p32f / Norm;
-	float LogScale = 0x1.39EE31p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/17)) = (2^32/Log[2^32] / (1-12/17)) / N
+	Norm = 0x1.FFFFFCp31f / Norm;
+	float LogScale = 0x1.39EE30p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/17)) = (2^32/Log[2^32] / (1-12/17)) / N
 	uint32_t *LogPower = (uint32_t*)Power;
 	for(n=0;n<N;n++) {
 		v = Power[n] * Norm;
 		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 	}
 	float LogNorm     = -0.5f*logf(Norm); //! Scale by 1/2 to convert Power to Amplitude
-	float InvLogScale = N * 0x1.A184EDp-31f; //! Inverse, scaled by 1/2
+	float InvLogScale = N * 0x1.A184EEp-31f; //! Inverse, scaled by 1/2
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
