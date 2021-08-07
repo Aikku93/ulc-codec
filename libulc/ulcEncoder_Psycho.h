@@ -44,21 +44,16 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//! will encounter in the loop (1-LoScale/HiScale), so we must
 			//! use the wider of the 'main' or 'noise' bandwidths.
 			//! NOTE: Ensure that Energy[] is not zero or division by 0 may
-			//! occur if the accumulated sums are all zeros. Also, note that
-			//! the value may overflow due to the limited precision, which
-			//! is made far worse with the square root thrown in, so clip it.
-			//! NOTE: Truncate everything; rounding may overflow. Also, make
-			//! sure that the normalization constant (LogNorm) is rounded DOWN.
-			Norm = 0x1.0p32f / Norm;
-			float LogNorm = 0x1.03AF63p29f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-29/45)) = (2^32/Log[2^32] / (1-29/45)) / N
+			//! occur if the accumulated sums are all zeros.
+			Norm = 0x1.FFFFFCp31f / Norm; //! NOTE: 2^32-eps*2. Floating-point thing.
+			float LogScale = 0x1.03AF62p29f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-29/45)) = (2^32/Log[2^32] / (1-29/45)) / N (round down)
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
-				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogNorm);
-				v = sqrtf(v) * 0x1.0p16f; //! Re-normalize to .32fxp after square root
-				Energy  [n] = (v <= 1.0f) ? 1 : (v >= 0x1.0p32f) ? 0xFFFFFFFFu : (uint32_t)v;
+				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
+				Energy  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 			}
-			float NormLog    = 0x1.555555p-2f*logf(Norm); //! Log[Norm]/3
-			float InvLogNorm = SubBlockSize * -0x1.507D55p-31f; //! Inverse, scaled by -1/3
+			float LogNorm     = 0x1.555555p-2f*logf(Norm); //! Log[Norm]/3
+			float InvLogScale = SubBlockSize * -0x1.507D56p-31f; //! Inverse, scaled by -1/3 (round up)
 
 			//! Compute expected level of each band's critical bandwidth
 			//! NOTE: We can solve for the maximum bandwidth used in
@@ -142,7 +137,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 #if PSYCHO_ULTRASTABLE
 				x += NoiseSum >> Log2SubBlockSize; //! NoiseSum/SubBlockSize. Not sure why it normalizes like this
 #endif
-				MaskingNp[n] = x*InvLogNorm + NormLog;
+				MaskingNp[n] = x*InvLogScale + LogNorm;
 			}
 		}
 
