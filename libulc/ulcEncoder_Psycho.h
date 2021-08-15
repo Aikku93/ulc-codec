@@ -45,11 +45,14 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//! use the wider of the 'main' or 'noise' bandwidths.
 			//! NOTE: Ensure that Energy[] is not zero or division by 0 may
 			//! occur if the accumulated sums are all zeros.
+			//! NOTE: Do NOT remove the square root in computing Energy[].
+			//! Although the difference is marginal, it works better.
 			Norm = 0x1.FFFFFCp31f / Norm; //! NOTE: 2^32-eps*2. Floating-point thing.
 			float LogScale = 0x1.03AF62p29f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-29/45)) = (2^32/Log[2^32] / (1-29/45)) / N (round down)
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
 				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
+				v = 0x1.0p16f * sqrtf(v);
 				Energy  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 			}
 			float LogNorm     = 0x1.555555p-2f*logf(Norm); //! Log[Norm]/3
