@@ -154,9 +154,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 static inline float Block_Transform_GetWindowCtrl_Log2DecimationRatio(float Ratio2, int Log2SubBlockSize) {
 	//! Full, unsimplified expression:
 	//!  LogRatio2         = Log[Ratio^2] = 2*Log[Ratio]
-	//!  OverlapSamples    = E^(-2*Log[Ratio]) * 5000; experimentally determined
-	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples] = Log2[SubBlockSize] - Log2[5000] + Log2[Ratio^2]
-	return Log2SubBlockSize - 0x1.8934F1p3f + 0x1.715476p0f*logf(Ratio2);
+	//!  OverlapSamples    = E^(-2*Log[Ratio]) * 10000; experimentally determined
+	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples] = Log2[SubBlockSize] - Log2[10000] + Log2[Ratio^2]
+	return Log2SubBlockSize - 0x1.A934F1p3f + 0x1.715476p0f*logf(Ratio2);
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *ThisBlockData,
@@ -209,7 +209,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! decimation without changing this code.
 		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && Log2SubBlockSize > 6) {
 			float r = Block_Transform_GetWindowCtrl_Log2DecimationRatio(Ratio[PeakPos], Log2SubBlockSize);
-			if(r > 1.0f) {
+			if(r > 0.0f) {
 				//! Update the decimation pattern and continue
 				//! NOTE: When PeakPos==L, we've simply shifted the
 				//! next subblock's center point, hence pivoting about
