@@ -124,7 +124,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		int i, BinSize = BlockSize/(ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
 		float v, Sum;
 		float LPTap = SmoothingTaps[0], LPDecay = 252/256.0f, OneMinusLPDecay = 1.0f - LPDecay;
-		float DCTap = SmoothingTaps[1], DCDecay = 255/256.0f, OneMinusDCDecay = 1.0f - DCDecay;
+		float DCTap = SmoothingTaps[1], DCDecay = 253/256.0f, OneMinusDCDecay = 1.0f - DCDecay;
 		float DCGainCompensation = OneMinusDCDecay / OneMinusLPDecay;
 		      float *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR*2; //! Align to M,R segment
 		const float *Src = TmpBuffer;
@@ -191,11 +191,10 @@ static inline int Block_Transform_GetWindowCtrl(
 			float LL = 0x1.0p-64f;
 			float L  = 0x1.0p-64f;
 			float M  = 0x1.0p-64f;
-			for(n=0;n<AnalysisLen;n++) {
-				LL += TransientBuffer[-3*AnalysisLen + n];
-				L  += TransientBuffer[-2*AnalysisLen + n];
-				M  += TransientBuffer[-1*AnalysisLen + n];
-			}
+			const float *Src = TransientBuffer;
+			n = AnalysisLen; do M  += *--Src; while(--n);
+			n = AnalysisLen; do L  += *--Src; while(--n);
+			n = AnalysisLen; do LL += *--Src; while(--n);
 
 			//! Get the ratios between the segments and select the largest
 			   (Ratio[POS_L] = L / LL);                 PeakPos = POS_L;
