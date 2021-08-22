@@ -10,14 +10,14 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! In calculating Log[Re^2+Im^2], we used a filter to remove
-//! transient bias, which resulted in an overall gain of Sqrt[2].
-//! Sqrt[Re^2+Im^2] gives amplitudes that are generally scaled
-//! by Sqrt[2] for noise (relative to Re, which is where we're
-//! substituting noise), giving a scale of 2.0. Finally, we will
-//! use a geometric mean for determining noise fill levels, which
-//! converges to 1/E for random noise, meaning we should scale by
-//! E/2.0 (0x1.5BF0A9p0) for deciding on the noise fill amplitude.
+//! In calculating 0.5*Log[Re^2+Im^2], we get a gain of Sqrt[2]
+//! (relative to Re or Im individually). We then use a geometric
+//! mean to determine the noise fill level, which converges to
+//! 1/E for random noise. Finally, we apply a normalization of
+//! Sqrt[2] to the noise output (something to do with the RMS
+//! power?), to give a final gain of 2/E for estimating noise
+//! fill amplitudes. We scale by E/2 (0x1.5BF0A9p0) to account
+//! for this gain factor.
 
 /**************************************/
 
@@ -92,7 +92,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = (int)(Amplitude*q * 0x1.5BF0A9p0f);
+	int NoiseQ = (int)(0.5f + Amplitude*q * 0x1.5BF0A9p0f);
 	if(NoiseQ > 0x7) NoiseQ = 0x7;
 	return NoiseQ;
 }
@@ -142,7 +142,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = (int)(Amplitude*q * 0x1.5BF0A9p0f);
+	int NoiseQ     = (int)(0.5f + Amplitude*q * 0x1.5BF0A9p0f);
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p16f); //! (1-Decay) * 2^16
 	if(NoiseQ     > 1 + 0x7) NoiseQ     = 1 + 0x7;
 	if(NoiseDecay <     0x0) NoiseDecay =     0x0;
