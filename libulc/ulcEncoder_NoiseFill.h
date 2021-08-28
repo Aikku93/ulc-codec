@@ -35,14 +35,14 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 
 	//! Normalize the logarithmic energy and convert to fixed-point
 	Norm = 0x1.FFFFFCp31f / Norm;
-	float LogScale = 0x1.39EE30p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/17)) = (2^32/Log[2^32] / (1-12/17)) / N
+	float LogScale = 0x1.EC709Cp30f / N; //! (2^32/Log[2^32]) / (N * (1-29/32)) = (2^32/Log[2^32] / (1-29/32)) / N
 	uint32_t *LogPower = (uint32_t*)Power;
 	for(n=0;n<N;n++) {
 		v = Power[n] * Norm;
 		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 	}
 	float LogNorm     = -0.5f*logf(Norm); //! Scale by 1/2 to convert Power to Amplitude
-	float InvLogScale = N * 0x1.A184EEp-31f; //! Inverse, scaled by 1/2
+	float InvLogScale = N * 0x1.0A2B24p-32f; //! Inverse, scaled by 1/2
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
@@ -51,11 +51,11 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 	uint32_t Sum = 0;
 	for(n=0;n<N;n++) {
 		//! Re-focus analysis window
-		const int RangeScaleFxp = 4;
+		const int RangeScaleFxp = 5;
 		int BandLen; {
 			int Old, New;
-			const int LoRangeScale = 12; //! Beg = 0.7500*Band
-			const int HiRangeScale = 17; //! End = 1.0625*Band
+			const int LoRangeScale = 29; //! Beg = 0.90625*Band
+			const int HiRangeScale = 32; //! End = 1.00000*Band
 
 			//! Remove samples that went out of focus
 			Old = BandBeg >> RangeScaleFxp, BandBeg += LoRangeScale;
