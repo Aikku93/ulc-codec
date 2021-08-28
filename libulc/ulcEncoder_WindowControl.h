@@ -145,6 +145,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR*2] = *Dst;
 			*Dst++ = Sum;
 		} while(--n);
+		Dst[-1] *= BinSize / (float)(BinSize-1); //! Account for losing the last sample
 		SmoothingTaps[0] = LPTap;
 		SmoothingTaps[1] = DCTap;
 #undef DOFILTER
