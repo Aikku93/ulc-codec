@@ -48,7 +48,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//! NOTE: Do NOT remove the square root in computing Energy[].
 			//! Although the difference is marginal, it works better.
 			Norm = 0x1.FFFFFCp31f / Norm; //! NOTE: 2^32-eps*2. Floating-point thing.
-			float LogScale = 0x1.03AF62p29f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-29/45)) = (2^32/Log[2^32] / (1-29/45)) / N (round down)
+			float LogScale = 0x1.FBD422p28f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-28/44)) = (2^32/Log[2^32] / (1-28/44)) / N (round down)
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
 				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
@@ -56,7 +56,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 				Energy  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 			}
 			float LogNorm     = 0x1.555555p-2f*logf(Norm); //! Log[Norm]/3
-			float InvLogScale = SubBlockSize * -0x1.507D56p-31f; //! Inverse, scaled by -1/3 (round up)
+			float InvLogScale = SubBlockSize * -0x1.582318p-31f; //! Inverse, scaled by -1/3 (round up)
 
 			//! Compute expected level of each band's critical bandwidth
 			//! NOTE: We can solve for the maximum bandwidth used in
@@ -80,9 +80,9 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 				//! Re-focus the main analysis window
 				{
 					int Old, New;
-					const int RangeScaleFxp = 5;
-					const int LoRangeScale = 29; //! Beg = 0.90625*Band
-					const int HiRangeScale = 45; //! End = 1.40625*Band
+					const int RangeScaleFxp = 4;
+					const int LoRangeScale = 14; //! Beg = 0.875*Band
+					const int HiRangeScale = 22; //! End = 1.375*Band
 
 					//! Remove samples that went out of focus
 					//! NOTE: We skip /at most/ one sample, so don't loop.
@@ -107,11 +107,14 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 #if PSYCHO_ULTRASTABLE
 				//! Re-focus the noise analysis window
 				//! Same idea as above, except only summing the log values
+				//! NOTE: These values were chosen so that they are exactly
+				//! half the bandwidth of the 'main' analysis window. This
+				//! appears to give the best results.
 				{
 					int Old, New;
 					const int RangeScaleFxp = 4;
 					const int LoRangeScale = 15; //! Beg = 0.9375*Band
-					const int HiRangeScale = 20; //! End = 1.2500*Band
+					const int HiRangeScale = 19; //! End = 1.1875*Band
 
 					//! Remove samples that went out of focus
 					Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
