@@ -55,7 +55,7 @@ struct ULC_EncoderState_t {
 	//!   float SampleBuffer   [nChan*BlockSize]
 	//!   float TransformBuffer[nChan*BlockSize]
 	//!   float TransformNoise [nChan*BlockSize] <- With ULC_USE_NOISE_CODING only
-	//!   float TransformFwdLap[nChan*BlockSize]
+	//!   float TransformFwdLap[nChan*BlockSize/2]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
 	//!   float TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*4]
@@ -63,7 +63,7 @@ struct ULC_EncoderState_t {
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
 	float  BlockComplexity;   //! Coefficient distribution complexity (0 = Highly tonal, 1 = Highly noisy)
-	float  WindowCtrlTaps[2]; //! Sample taps for smoothing control
+	float  TransientFilter[2];
 	void  *BufferData;
 	float *SampleBuffer;
 	float *TransformBuffer;
