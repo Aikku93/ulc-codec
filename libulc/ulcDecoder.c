@@ -132,7 +132,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			if(n > N) n = N; //! <- Clip on corrupt blocks
 			N -= n;
 			if(v) {
-				float p = v * Quant;
+				float p = (v*v) * Quant;
 				do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
 			} else do *CoefDst++ = 0.0f; while(--n);
 			if(N == 0) break;
@@ -158,14 +158,12 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			continue;
 		}
 
-		//! 8h,0h,Fh,Zh,Yh[,Xh]: Noise fill (to end; exp-decay)
+		//! 8h,0h,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
 		if(v == ESCAPE_SEQUENCE_STOP_NOISEFILL) {
-			v = Block_Decode_ReadNybble(Src, Size);
+			v = Block_Decode_ReadNybble(Src, Size) + 1;
 			n = Block_Decode_ReadNybble(Src, Size);
-			if(v&1) n = Block_Decode_ReadNybble(Src, Size) | (n<<4);
-			v = 1 + (v>>1);
-			n = n;
-			float p = v * Quant;
+			n = Block_Decode_ReadNybble(Src, Size) | (n<<4);
+			float p = (v*v) * Quant * 0.25f;
 			float r = 1.0f + (n*n)*-0x1.0p-16f;
 			do {
 				*CoefDst++ = p * Block_Decode_RandomCoef();
