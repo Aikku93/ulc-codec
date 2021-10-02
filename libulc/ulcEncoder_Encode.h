@@ -55,7 +55,11 @@ ULC_FORCED_INLINE void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuff
 static inline int Block_Encode_BuildQuantizer(float Scale) {
 	//! NOTE: `q` will always be greater than 5 due to the bias so
 	//! the quantizer code syntax is biased accordingly.
-	int q = (int)ceilf(4.0f - 0x1.715476p0f*logf(Scale)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	//! Criteria:
+	//!  Peak at 7^2
+	//!  Accept at most 5% overload distortion
+	//! This gives a "bias" of Log2[7^2 * 1.05]
+	int q = (int)(0x1.6BD8AAp2f - 0x1.715476p-1f*logf(Scale)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5; //! Sometimes happens because of overflow?
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -91,6 +95,14 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 
 	//! Write the coefficients
 	do {
+		//! Seek the next viable coefficient
+		int Qn;
+		do {
+			Qn = ULC_CompandedQuantize(Coef[CurIdx]*q);
+			if(Qn && CoefIdx[CurIdx] < nOutCoef) break;
+		} while(++CurIdx < EndIdx);
+		if(CurIdx >= EndIdx) break;
+
 		//! Code the zero runs
 		int n, v, zR = CurIdx - NextCodedIdx;
 		while(zR) {
@@ -153,7 +165,8 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		}
 
 		//! -7h..-1h, +1h..+7h: Normal coefficient
-		int Qn = ULC_ClippedCompandedQuantizeCoefficient(Coef[CurIdx]*q);
+		if(Qn < -7) Qn = -7;
+		if(Qn > +7) Qn = +7;
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
 
@@ -177,39 +190,39 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int          *Size
 ) {
 	//! Encode direct coefficients
-	int   EndIdx        = Idx+SubBlockSize;
-	int   NextCodedIdx  = Idx;
-	int   PrevQuant     = -1;
-	int   QuantStartIdx = -1;
-	float QuantSum      = 0.0f;
-	float QuantWeight   = 0.0f;
+	int EndIdx        = Idx+SubBlockSize;
+	int NextCodedIdx  = Idx;
+	int PrevQuant     = -1;
+	int QuantStartIdx = -1;
+	float QuantSum  = 0.0f;
+	float QuantSumW = 0.0f;
 	do {
 		//! Seek the next coefficient
 		while(Idx < EndIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
 
 		//! Read coefficient and set the first quantizer's first coefficient index
-		//! NOTE: Set BandCoef=0.0 upon reaching the end. This causes the range
+		//! NOTE: Set BandCoef2=0.0 upon reaching the end. This causes the range
 		//! check to fail in the next step, causing the final quantizer zone to dump
 		//! if we had any data (if we don't, the check "passes" because QuantSum==0).
-		float BandCoef = 0.0f;
+		float BandCoef2 = 0.0f;
 		if(Idx < EndIdx) {
-			BandCoef = ABS(Coef[Idx]);
+			BandCoef2 = SQR(Coef[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
 		}
 
 		//! Level out of range in this quantizer zone?
-		const float MaxRangeLo = 8.0f;
-		const float MaxRangeHi = 2.0f;
+		const float MaxRangeLo = SQR(8.0f);
+		const float MaxRangeHi = SQR(2.0f);
 		if(
-			MaxRangeLo*BandCoef*QuantWeight < QuantSum || //! BandCoef*MaxRangeLo < QuantSum/QuantWeight
-			BandCoef*QuantWeight > MaxRangeHi*QuantSum    //! BandCoef/MaxRangeHi > QuantSum/QuantWeight
+			BandCoef2*QuantSumW > MaxRangeHi*QuantSum ||
+			BandCoef2*MaxRangeLo*QuantSumW < QuantSum
 		) {
 			//! Write the quantizer zone we just searched through
 			//! and start a new one from this coefficient
 			NextCodedIdx = Block_Encode_EncodePass_WriteQuantizerZone(
 				QuantStartIdx,
 				Idx,
-				QuantSum/QuantWeight,
+				QuantSum/QuantSumW,
 				Coef,
 #if ULC_USE_NOISE_CODING
 				CoefNoise,
@@ -222,14 +235,13 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 				Size
 			);
 			QuantStartIdx = Idx;
-			QuantSum    = 0.0f;
-			QuantWeight = 0.0f;
+			QuantSum = QuantSumW = 0.0f;
 		}
 
 		//! Accumulate to the current quantizer zone.
 		//! This uses a contraharmonic mean as the quantizer step size.
-		QuantSum    += BandCoef * BandCoef;
-		QuantWeight += BandCoef;
+		QuantSum  += BandCoef2 * BandCoef2;
+		QuantSumW += BandCoef2;
 	} while(++Idx <= EndIdx); //! Idx will go over by 1 or 2 here to dump the last quantizer zone, but doesn't matter; not used after this loop
 
 	//! Decide what to do about the tail coefficients
@@ -256,17 +268,11 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 			);
 		}
 		if(NoiseQ) {
-			//! 8h,0h,Fh,Zh,Yh[,Xh]: Noise fill (to end; exp-decay)
-			NoiseQ--; //! Biased by 1
-			Block_Encode_WriteNybble(0xF, DstBuffer, Size);
-			if(NoiseDecay > 0xF) {
-				Block_Encode_WriteNybble(NoiseQ<<1 | 1, DstBuffer, Size);
-				Block_Encode_WriteNybble(NoiseDecay>>4, DstBuffer, Size);
-				Block_Encode_WriteNybble(NoiseDecay,    DstBuffer, Size);
-			} else {
-				Block_Encode_WriteNybble(NoiseQ<<1 | 0, DstBuffer, Size);
-				Block_Encode_WriteNybble(NoiseDecay,    DstBuffer, Size);
-			}
+			//! 8h,0h,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
+			Block_Encode_WriteNybble(0xF,           DstBuffer, Size);
+			Block_Encode_WriteNybble(NoiseQ-1,      DstBuffer, Size);
+			Block_Encode_WriteNybble(NoiseDecay>>4, DstBuffer, Size);
+			Block_Encode_WriteNybble(NoiseDecay,    DstBuffer, Size);
 		} else {
 #endif
 			//! 8h,0h,Eh,Fh: Stop
