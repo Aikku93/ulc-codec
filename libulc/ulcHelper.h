@@ -65,18 +65,6 @@ ULC_FORCED_INLINE int ULC_CompandedQuantize(float v) {
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 
-//! Quantize coefficient
-//! NOTE: Not mathematically optimal, but appears to sound better.
-ULC_FORCED_INLINE int ULC_ClippedCompandedQuantizeCoefficientUnsigned(float v) {
-	int vq = (int)(0x1.6A09E6p-1f + sqrtf(v)); //! Sqrt[1/2]
-	if(vq >= 7) return 7;
-	return vq + (vq == 0); //! Avoid collapse for coefficients the psy model says we need
-}
-ULC_FORCED_INLINE int ULC_ClippedCompandedQuantizeCoefficient(float v) {
-	int vq = ULC_ClippedCompandedQuantizeCoefficientUnsigned(ABS(v));
-	return (v < 0.0f) ? (-vq) : (+vq);
-}
-
 /**************************************/
 //! EOF
 /**************************************/
