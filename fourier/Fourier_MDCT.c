@@ -37,6 +37,21 @@
 //!     MDCT[N/2+n]   = -s*Old[n] + c*Old[N-1-n];
 //!     MDST[N/2+n]   = -s*Old[n] - c*Old[N-1-n];
 //!   }
+//!   DCT4(MDCT);
+//!   DCT4(MDST);
+//!   for(n=0;n<N/2;n++) Swap(MDST[n], MDST[N-1-n])
+//! If we don't care about MDST, this can be refactored:
+//!   for(n=0;n<(N-Overlap)/2;n++) {
+//!     MDCT[N/2-1-n] = New[n];
+//!     MDCT[N/2+n]   = Old[n];
+//!     Old[n]        = New[N-1-n];
+//!   }
+//!   for(;n<N/2;n++) {
+//!     MDCT[N/2-1-n] =  c*New[n] + s*New[N-1-n];
+//!     MDCT[N/2+n]   = Old[n];
+//!     Old[n]        = -s*New[n] + c*New[N-1-n];
+//!   }
+//!   DCT4(MDCT);
 void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
 	int n;
 	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
@@ -232,6 +247,106 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 		}
 #endif
 	}
+}
+void Fourier_MDCT(float *MDCT, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
+	int n;
+	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
+	const float *WinC = WinS + Overlap;
+	const float *NewLo = New;
+	const float *NewHi = New + N;
+	      float *MDCTMid = MDCT + N/2;
+
+	//! Copy state from old block
+	for(n=0;n<N/2;n++) MDCTMid[n] = Lap[n];
+
+	//! Perform windowed lapping
+	{
+#if defined(__AVX__)
+		__m256 a, b;
+		__m256 t0, t1;
+		__m256 c, s;
+
+		for(n=0;n<(N-Overlap)/2;n+=8) {
+			NewHi -= 8; b = _mm256_load_ps(NewHi);
+			a = _mm256_load_ps(NewLo); NewLo += 8;
+			b = _mm256_shuffle_ps(b, b, 0x1B);
+			b = _mm256_permute2f128_ps(b, b, 0x01);
+			a = _mm256_shuffle_ps(a, a, 0x1B);
+			a = _mm256_permute2f128_ps(a, a, 0x01);
+			_mm256_store_ps(Lap, b); Lap += 8;
+			MDCTMid -= 8; _mm256_store_ps(MDCTMid, a);
+		}
+		for(;n<N/2;n+=8) {
+			NewHi -= 8; b = _mm256_load_ps(NewHi);
+			a = _mm256_load_ps(NewLo); NewLo += 8;
+			b = _mm256_shuffle_ps(b, b, 0x1B);
+			b = _mm256_permute2f128_ps(b, b, 0x01);
+			WinC -= 8; c = _mm256_load_ps(WinC);
+			s = _mm256_load_ps(WinS); WinS += 8;
+			c = _mm256_shuffle_ps(c, c, 0x1B);
+			c = _mm256_permute2f128_ps(c, c, 0x01);
+#if defined(__FMA__)
+			t0 = _mm256_mul_ps(s, b);
+			t1 = _mm256_mul_ps(s, a);
+			t0 = _mm256_fmadd_ps(c, a, t0);
+			t1 = _mm256_fmsub_ps(c, b, t1);
+#else
+			t0 = _mm256_add_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
+			t1 = _mm256_sub_ps(_mm256_mul_ps(c, b), _mm256_mul_ps(s, a));
+#endif
+			t0 = _mm256_shuffle_ps(t0, t0, 0x1B);
+			t0 = _mm256_permute2f128_ps(t0, t0, 0x01);
+			MDCTMid -= 8; _mm256_store_ps(MDCTMid, t0);
+			_mm256_store_ps(Lap, t1); Lap += 8;
+		}
+#elif defined(__SSE__)
+		__m128 a, b;
+		__m128 t0, t1;
+		__m128 c, s;
+
+		for(n=0;n<(N-Overlap)/2;n+=4) {
+			NewHi -= 4; b = _mm_loadr_ps(NewHi);
+			a = _mm_load_ps(NewLo); NewLo += 4;
+			_mm_store_ps(Lap, b); Lap += 4;
+			MDCTMid -= 4; _mm_storer_ps(MDCTMid, a);
+		}
+		for(;n<N/2;n+=4) {
+			NewHi -= 4; b = _mm_loadr_ps(NewHi);
+			a = _mm_load_ps(NewLo); NewLo += 4;
+			s = _mm_load_ps(WinS); WinS += 4;
+			WinC -= 4; c = _mm_loadr_ps(WinC);
+#if defined(__FMA__)
+			t0 = _mm_mul_ps(s, b);
+			t1 = _mm_mul_ps(s, a);
+			t0 = _mm_fmadd_ps(c, a, t0);
+			t1 = _mm_fmsub_ps(c, b, t1);
+#else
+			t0 = _mm_add_ps(_mm_mul_ps(c, a), _mm_mul_ps(s, b));
+			t1 = _mm_sub_ps(_mm_mul_ps(c, b), _mm_mul_ps(s, a));
+#endif
+			MDCTMid -= 4; _mm_storer_ps(MDCTMid, t0);
+			_mm_store_ps(Lap, t1); Lap += 4;
+		}
+#else
+		for(n=0;n<(N-Overlap)/2;n++) {
+			float a = *NewLo++;
+			float b = *--NewHi;
+			*--MDCTMid = a;
+			*Lap++     = b;
+		}
+		for(;n<N/2;n++) {
+			float a = *NewLo++;
+			float b = *--NewHi;
+			float c = *--WinC;
+			float s = *WinS++;
+			*--MDCTMid =  c*a + s*b;
+			*Lap++     = -s*a + c*b;
+		}
+#endif
+	}
+
+	//! Do actual transforms
+	Fourier_DCT4T(MDCT, BufTmp, N);
 }
 
 /**************************************/

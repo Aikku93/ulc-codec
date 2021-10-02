@@ -47,35 +47,47 @@ void Fourier_DCT4T(float *Buf, float *Tmp, int N);
 //! MDCT+MDST/IMDCT (based on DCT-IV; scaled)
 //! Arguments:
 //!  MDCT[N]
-//!  MDST[n]
+//!  MDST[N] (for Fourier_MDCT_MDST() only)
 //!  New[N]
-//!  Lap[N]
+//!  Lap[N]  (for Fourier_MDCT() only: Lap[N/2])
+//!  BufTmp[N]
+//! Implemented transforms (matrix form):
+//!  mtxMDCT = Table[Cos[(n-1/2 - N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
+//!  mtxMDST = Table[Sin[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
+//! NOTE:
+//!  -N must be a power of two, and >= 16
+//!  -Overlap must be a power of two, and >= 16
+//!  -Shifted basis (note the signs in the matrices)
+//!  -Sine window (modulated lapped transform) is
+//!   used with ModulationWindow == NULL. To use
+//!   custom windows, they must match the format of
+//!   Fourier_SinTable[] (that is, sequential arrays
+//!   for different block sizes 16..N, in powers of 2)
+//!  -New can be the same as BufTmp. However, this
+//!   implies trashing of the buffer contents.
+//!  -MDCT uses Fourier_DCT4T() internally
+void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow);
+void Fourier_MDCT     (float *MDCT,              const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow);
+
+//! IMDCT (based on DCT-IV; scaled)
+//! Arguments:
 //!  BufOut[N]
 //!  BufIn[N]
 //!  BufLap[N/2]
 //!  BufTmp[N]
 //! Implemented transforms (matrix form):
-//!  mtxMDCT  = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
-//!  mtxMDST  = Table[Sin[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k, N}, {n,2N}]
-//!  mtxIMDCT = Table[Cos[(n-1/2 + N/2 + N*2)(k-1/2)Pi/N], {k,2N}, {n, N}]
+//!  mtxIMDCT = Table[Cos[(n-1/2 - N/2 + N*2)(k-1/2)Pi/N], {k,2N}, {n, N}]
 //! NOTE:
 //!  -N must be a power of two, and >= 16
-//!  -Overlap must be a multiple of 16
+//!  -Overlap must be a power of two, and >= 16
 //!  -BufOut must not be the same as BufIn
-//!  -Sine window (modulated lapped transform) is
-//!   used with ModulationWindow == NULL. To use
-//!   custom windows, they must match the format of
-//!   Fourier_SinTable[] (that is, sequential arrays
-//!   for different block sizes 16..N, in powers of 2).
-//!  -Shifted basis that results in phase inversion
-//!   relative to 'normal' I/MDCT calculations.
-//!   Negate input (MDCT) and output (IMDCT) if
-//!   'correct' I/MDCT coefficients are needed.
-//!   MDST coefficients are NOT phase inverted.
+//!  -Shifted basis (note the sign in the matrix).
+//!   This re-inverts (ie. removes) the phase shift
+//!   in the MDCT implementation from above.
+//!  -ModulationWindow operates same as Fourier_MDCT()
 //!  -BufIn can be the same as BufTmp. However, this
 //!   implies trashing of the buffer contents.
-//!  -MDCT uses DCT4T(), IMDCT uses DCT4()
-void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow);
+//!  -IMDCT uses Fourier_DCT4() internally
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, const float *ModulationWindow);
 
 /**************************************/
