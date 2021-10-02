@@ -12,16 +12,6 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! Ultra-stable psychoacoustics toggle
-//!  0 = Weigh tones and noise equally (can be unstable in tones)
-//!  1 = Weight out noise (can be muffled)
-//! Default: Weight out the noise when using noise coding
-//! (the idea being to synthesize it and use more bits to
-//! code tone signals instead).
-#define PSYCHO_ULTRASTABLE ULC_USE_NOISE_CODING
-
-/**************************************/
-
 static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, const float *BufferAmp2, uint32_t *BufferTemp, int BlockSize, uint32_t WindowCtrl) {
 	int n;
 	float v;
@@ -41,14 +31,16 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//! This normalization step forces the sums to be as precise as
 			//! possible without overflowing.
 			//! NOTE: The normalization is based on the widest bandwidth we
-			//! will encounter in the loop (1-LoScale/HiScale), so we must
-			//! use the wider of the 'main' or 'noise' bandwidths.
+			//! will encounter in the loop (1-LoScale/HiScale; see below).
 			//! NOTE: Ensure that Energy[] is not zero or division by 0 may
 			//! occur if the accumulated sums are all zeros.
 			//! NOTE: Do NOT remove the square root in computing Energy[].
 			//! Although the difference is marginal, it works better.
-			Norm = 0x1.FFFFFCp31f / Norm; //! NOTE: 2^32-eps*2. Floating-point thing.
-			float LogScale = 0x1.FBD422p28f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-28/44)) = (2^32/Log[2^32] / (1-28/44)) / N (round down)
+			//! NOTE: If the maximum value will cause overflow to +inf,
+			//! just use the largest possible scaling. This really should
+			//! never happen in practice, but it's here just to be sure.
+			Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f; //! NOTE: 2^32-eps*2 to ensure we don't overflow
+			float LogScale = 0x1.FBD422p28f / SubBlockSize; //! (2^32/Log[2^32]) / (N * (1-14/22)) = (2^32/Log[2^32] / (1-14/22)) / N (round down)
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
 				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
@@ -69,13 +61,14 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//!      = SubBlockSize * (1 - LoRangeScale/HiRangeScale)
 			//! Setting SubBlockSize=1 gives us the normalized bandwidth:
 			//!  MaxBandwidth = 1 - LoRangeScale/HiRangeScale
-			int Log2SubBlockSize = 31 - __builtin_clz(SubBlockSize);
+			//! NOTE: Noise is weighted as its amplitude rather than its
+			//! power (ie. apply a square root, or scale by 0.5 as log).
+			//! This is accounted for by adding 1 to NoiseShift.
+			int NoiseShift = 31+1 - __builtin_clz(SubBlockSize);
 			int BandBeg = 0, BandEnd = 0;
 			uint64_t Sum = 0ull, SumW = 0ull;
-#if PSYCHO_ULTRASTABLE
 			int NoiseBeg = 0, NoiseEnd = 0;
 			uint32_t NoiseSum = 0;
-#endif
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the main analysis window
 				{
@@ -104,17 +97,22 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 						Sum  += Energy[Old] * (uint64_t)EnergyNp[Old];
 					} while(++Old < New);
 				}
-#if PSYCHO_ULTRASTABLE
+
 				//! Re-focus the noise analysis window
 				//! Same idea as above, except only summing the log values
 				//! NOTE: These values were chosen so that they are exactly
 				//! half the bandwidth of the 'main' analysis window. This
 				//! appears to give the best results.
+				//! NOTE: The range will NOT be bound by the rules set out
+				//! earlier, as we re-scale our sum when we hit the end.
+				//! Therefore, the maximum bandwidth we can use here is
+				//! /itself/ bound by the the scaling (and thus the range
+				//! of the 'main' analysis window, if we're being strict).
 				{
 					int Old, New;
 					const int RangeScaleFxp = 4;
 					const int LoRangeScale = 15; //! Beg = 0.9375*Band
-					const int HiRangeScale = 19; //! End = 1.1875*Band
+					const int HiRangeScale = 18; //! End = 1.1250*Band
 
 					//! Remove samples that went out of focus
 					Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
@@ -124,13 +122,21 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 					}
 
 					//! Add samples that came into focus
+					int NewBeg = New;
 					Old = NoiseEnd >> RangeScaleFxp, NoiseEnd += HiRangeScale;
-					New = NoiseEnd >> RangeScaleFxp; if(New > SubBlockSize) New = SubBlockSize;
-					if(Old < New) do {
+					New = NoiseEnd >> RangeScaleFxp;
+					if(New > SubBlockSize) {
+						//! When we've gone out of range, re-scale the sum
+						//! NOTE: (NewEnd-NewBeg) / (OldEnd-NewBeg).
+						//! I haven't gone crazy. We use NewBeg in the divisor
+						//! because we've already removed samples from OldBeg,
+						//! so we must use NewBeg as a reference point.
+						NoiseSum = NoiseSum * (uint64_t)(New-NewBeg) / (Old-NewBeg);
+					} else do {
 						NoiseSum += EnergyNp[Old];
 					} while(++Old < New);
 				}
-#endif
+
 				//! Store the expected value for this band.
 				//! This is essentially a contraharmonic mean in the log domain
 				//! The overall idea is to implement this equation:
@@ -140,9 +146,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 				//!  LogImportanceLevel = Log[CoefRe^3] - Log[BandAbs^2]
 				//!                     = Log[CoefRe] - Log[BandAbs^2]/3
 				uint32_t x = Sum / SumW;
-#if PSYCHO_ULTRASTABLE
-				x += NoiseSum >> Log2SubBlockSize; //! NoiseSum/SubBlockSize. Not sure why it normalizes like this
-#endif
+				x += NoiseSum >> NoiseShift; //! NoiseSum/SubBlockSize. Not sure why it normalizes like this
 				MaskingNp[n] = x*InvLogScale + LogNorm;
 			}
 		}
