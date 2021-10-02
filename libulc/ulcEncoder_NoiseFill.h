@@ -10,39 +10,28 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! In calculating 0.5*Log[Re^2+Im^2], we get a gain of Sqrt[2]
-//! (relative to Re or Im individually). We then use a geometric
-//! mean to determine the noise fill level, which converges to
-//! 1/E for random noise. Finally, we apply a normalization of
-//! Sqrt[2] to the noise output (something to do with the RMS
-//! power?), to give a final gain of 2/E for estimating noise
-//! fill amplitudes. We scale by E/2 (0x1.5BF0A9p0) to account
-//! for this gain factor.
-
-/**************************************/
-
 //! Compute noise spectrum (logarithmic output)
 //! The code here is very similar to the one used in
 //! psychoacoustics (see ulcEncoder_Psycho.h for details).
-static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, float *Power, int N) {
+static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N) {
 	int n;
 	float v;
 
 	//! Find the subblock's normalization factor
 	float Norm = 0.0f;
-	for(n=0;n<N;n++) if((v = Power[n]) > Norm) Norm = v;
+	for(n=0;n<N;n++) if((v = Data[n]) > Norm) Norm = v;
 	if(Norm == 0.0f) return;
 
 	//! Normalize the logarithmic energy and convert to fixed-point
-	Norm = 0x1.FFFFFCp31f / Norm;
-	float LogScale = 0x1.EC709Cp30f / N; //! (2^32/Log[2^32]) / (N * (1-29/32)) = (2^32/Log[2^32] / (1-29/32)) / N
-	uint32_t *LogPower = (uint32_t*)Power;
+	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
+	float LogScale = 0x1.EC709Cp30f / (N+1); //! (2^32/Log[2^32]) / ((N+1) * (1-29/32)) = (2^32/Log[2^32] / (1-29/32)) / (N+1)
+	uint32_t *LogPower = (uint32_t*)Temp;
 	for(n=0;n<N;n++) {
-		v = Power[n] * Norm;
+		v = Data[n] * Norm;
 		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 	}
-	float LogNorm     = -0.5f*logf(Norm); //! Scale by 1/2 to convert Power to Amplitude
-	float InvLogScale = N * 0x1.0A2B24p-32f; //! Inverse, scaled by 1/2
+	float LogNorm     = 0x1.62E42Fp-1f - logf(Norm); //! Pre-scale by Log[2] to account for noise mean at 0.5
+	float InvLogScale = N * 0x1.0A2B24p-31f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
@@ -74,8 +63,8 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *LogNoise, fl
 			BandLen = New - BandLen;
 		}
 
-		//! Store the geometric mean for this band
-		LogNoise[n] = (Sum / BandLen)*InvLogScale + LogNorm;
+		//! Store the geometric mean, with double weight on the center coefficient
+		Data[n] = (int32_t)((Sum + LogPower[n]) / (BandLen+1))*InvLogScale + LogNorm;
 	}
 }
 
@@ -92,7 +81,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = (int)(0.5f + Amplitude*q * 0x1.5BF0A9p0f);
+	int NoiseQ = ULC_CompandedQuantizeUnsigned(Amplitude*q);
 	if(NoiseQ > 0x7) NoiseQ = 0x7;
 	return NoiseQ;
 }
@@ -142,10 +131,10 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = (int)(0.5f + Amplitude*q * 0x1.5BF0A9p0f);
+	int NoiseQ     = ULC_CompandedQuantizeUnsigned(Amplitude*q * 4.0f); //! <- Account for dynamic range of NoiseQ vs. coefficients
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p16f); //! (1-Decay) * 2^16
-	if(NoiseQ     > 1 + 0x7) NoiseQ     = 1 + 0x7;
-	if(NoiseDecay <     0x0) NoiseDecay =     0x0;
+	if(NoiseQ     > 1 + 0xF) NoiseQ     = 1 + 0xF;
+	if(NoiseDecay <    0x00) NoiseDecay =    0x00;
 	if(NoiseDecay >    0xFF) NoiseDecay =    0xFF;
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
