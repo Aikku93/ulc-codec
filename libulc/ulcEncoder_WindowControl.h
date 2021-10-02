@@ -48,15 +48,15 @@
 //!  -TransientBuffer[] must be ULC_MAX_BLOCK_DECIMATION_FACTOR*4 in size (LL,L,M,R at maximum decimation)
 //!   and will be updated as (LL=M_Old, L=R_Old, M=M_New, R=R_New)
 //!  -TmpBuffer[] must be BlockSize in size
-//!  -SmoothingTaps[] must be 2 elements in size
+//!  -TransientFilter[] must be 2 elements in size
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	const float *ThisBlockData,
 	const float *LastBlockData,
 	      float *TransientBuffer,
+	      float *TransientFilter,
 	      float *TmpBuffer,
-	      float *SmoothingTaps,
 	      int    BlockSize,
 	      int    nChan
 ) {
@@ -70,9 +70,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//!  H(z) = z^1 - z^-1
 	//! NOTE: This filter does not have unity gain, as doing so
 	//! would add some multiplications that reduce performance.
-	//! NOTE: We end up losing the last sample of the new block,
-	//! but this shouldn't affect things; we instead compensate
-	//! with a 1 sample delay to preserve accuracy.
+	//! This is compensated for later.
+	//! NOTE: We introduce a 1-sample delay here to compensate
+	//! for incomplete data at n=BlockSize-1.
 	//! NOTE: DOFILTER() accepts z^-1,1,z^1 for flexibility if we
 	//! ever need to change the filter formula.
 	for(n=0;n<BlockSize;n++) TmpBuffer[n] = 0.0f;
@@ -91,87 +91,67 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 #undef DOFILTER
 	}
 
-	//! Apply two lowpass filters and take their difference to
-	//! obtain a low-frequency bandpass filter, and accumulate
-	//! energy to the M/R bins while simultaneously restoring
-	//! the LL/L bins from te cache and swapping in new data.
-	//! Theory:
-	//!  Transients result in pulses close to DC, so we try to
-	//!  remove harmonic reflections in the higher freqs. We
-	//!  then apply another filter to remove DC content, as this
-	//!  causes biasing of the signal analysis.
-	//! NOTE: It's important to keep the smoothing taps accurate,
-	//! so we save it across blocks and buffer the filtered data.
-	//! NOTE: We perform the filtering in a companded domain,
-	//! as this emphasizes the transient structure far better.
-	//! NOTE: Slightly refactored to remove a multiplication; a
-	//! gain of 1/(1-LPDecay) is applied to LPTap, and a gain of
-	//! (1/(1-DCDecay))/(1/(1-LPDecay))=(1-LPDecay)/(1-DCDecay)
-	//! to DCTap, which then cancels out the normalization gain
-	//! on DCTap, resulting in an overall gain of 1/(1-LPDecay)
-	//! in the output, plus whatever gain we had as input.
+	//! Pass the signal power through two smoothing filters,
+	//! and then take their difference as the transient signal.
+	//! One filter operates in the Power domain, and the other
+	//! in a companded domain, which appears to capture the
+	//! intent of transients fairly cleanly.
 	{
-#define DOFILTER()                        \
-	v      = sqrtf(sqrtf(*Src++)),    \
-	LPTap *= LPDecay,                 \
-	DCTap *= DCDecay,                 \
-	LPTap += v,                       \
-	DCTap += v * DCGainCompensation,  \
-	v      = SQR(SQR(LPTap - DCTap))
 		//! BlockSize(={LL,L}) + BlockSize(={M,R}) = BlockSize*2 = {LL,L,M,R}
 		//! -> BlockSize*2 / (MAX_DECIMATION*4)
 		//! =  BlockSize / (MAX_DECIMATION*2)
-		int i, BinSize = BlockSize/(ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
-		float v, Sum;
-		float LPTap = SmoothingTaps[0], LPDecay = 252/256.0f, OneMinusLPDecay = 1.0f - LPDecay;
-		float DCTap = SmoothingTaps[1], DCDecay = 253/256.0f, OneMinusDCDecay = 1.0f - DCDecay;
-		float DCGainCompensation = OneMinusDCDecay / OneMinusLPDecay;
+		//! NOTE: The values are renormalized to avoid issues
+		//! with subnormal collapse. The output of the filter
+		//! steps is generally a low-amplitude signal, so it
+		//! stands to reason that it can collapse as such.
+		//! It should be noted that the gain will be squared
+		//! during the summation (eg. 2^32 becomes 2^64) for
+		//! the weighted sum.
+		int i, BinSize = BlockSize / (ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
+		float Gain = 0x1.0p48f / (4 * nChan); //! The filter from earlier has a gain of 2.0, and is then squared, giving 4.0
+		float PowerTap = TransientFilter[0], PowerDecay = 255/256.0f;
+		float FloorTap = TransientFilter[1], FloorDecay = 252/256.0f;
 		      float *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR*2; //! Align to M,R segment
 		const float *Src = TmpBuffer;
-		{
-			//! Update the filter taps, but do NOT fix up the
-			//! values in the previous {M,R} segment, or this
-			//! will cause issues with transients from silence.
-			DOFILTER(); //Dst[+ULC_MAX_BLOCK_DECIMATION_FACTOR*2-1] += v;
-		}
-		n = ULC_MAX_BLOCK_DECIMATION_FACTOR*2; do {
-			//! Filter and accumulate for this bin
-			Sum = 0.0f;
-			i = BinSize - (n == 1); do { //! Last sample unavailable, so skip it in the last bin
-				DOFILTER(); Sum += v;
-			} while(--i);
+		i = ULC_MAX_BLOCK_DECIMATION_FACTOR*2; do {
+			float v, Sum = 0.0f, SumW = 0.0f;
+			n = BinSize; do {
+				//! Extract the transient energy signal
+				v         = *Src++ * Gain;
+				FloorTap += (v - FloorTap)*(1.0f-FloorDecay);
+				v         = sqrtf(sqrtf(v));
+				PowerTap += (v - PowerTap)*(1.0f-PowerDecay);
+				v        = ABS(SQR(SQR(PowerTap)) - FloorTap);
+				Sum      += v*v, SumW += v;
+			} while(--n);
 
 			//! {LL,L} = {M,R}, then set {M,R} with new data
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR*2] = *Dst;
-			*Dst++ = Sum;
-		} while(--n);
-		Dst[-1] *= BinSize / (float)(BinSize-1); //! Account for losing the last sample
-		SmoothingTaps[0] = LPTap;
-		SmoothingTaps[1] = DCTap;
-#undef DOFILTER
+			*Dst++ = Sum ? (Sum/SumW) : 0.0f;
+		} while(--i);
+		TransientFilter[0] = PowerTap;
+		TransientFilter[1] = FloorTap;
 	}
 }
 #pragma GCC pop_options
-static inline float Block_Transform_GetWindowCtrl_Log2DecimationRatio(float Ratio2, int Log2SubBlockSize) {
-	//! Full, unsimplified expression:
-	//!  LogRatio2         = Log[Ratio^2] = 2*Log[Ratio]
-	//!  OverlapSamples    = E^(-2*Log[Ratio]) * 10000; experimentally determined
-	//!  OverlapDecimation = Log2[SubBlockSize / OverlapSamples] = Log2[SubBlockSize] - Log2[10000] + Log2[Ratio^2]
-	return Log2SubBlockSize - 0x1.A934F1p3f + 0x1.715476p0f*logf(Ratio2);
+static inline float Block_Transform_GetWindowCtrl_Log2DecimationRatio(float LogRatio, int Log2SubBlockSize) {
+	//! I have no idea what is going on here; this is from trial and error.
+	//! 0x1.715476p0 = 1/Log[2] for change of base
+	return (Log2SubBlockSize - 12) + 0x1.715476p0f*LogRatio;
 }
 static inline int Block_Transform_GetWindowCtrl(
 	const float *ThisBlockData,
 	const float *LastBlockData,
 	      float *TransientBuffer,
+	      float *TransientFilter,
 	      float *TmpBuffer,
-	      float *SmoothingTaps,
 	      int    BlockSize,
 	      int    nChan
 ) {
 	int n;
 
-	//! Perform filtering to obtain pre-echo analysis
-	Block_Transform_GetWindowCtrl_TransientFiltering(ThisBlockData, LastBlockData, TransientBuffer, TmpBuffer, SmoothingTaps, BlockSize, nChan);
+	//! Perform filtering to obtain transient analysis
+	Block_Transform_GetWindowCtrl_TransientFiltering(ThisBlockData, LastBlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan);
 
 	//! Split the block until the transient signal stabilizes,
 	//! then take the ratio on the L side for overlap scaling.
@@ -185,31 +165,36 @@ static inline int Block_Transform_GetWindowCtrl(
 		int PeakPos;
 		float Ratio[POS_N];  {
 			//! Get the energy of each segment (LL/L/M)
-			//! NOTE: Do not use FLT_MIN as the bias, as we need
-			//! some room for the ratio to grow into upon division.
 			//! NOTE: The R segment doesn't matter, as it becomes the
 			//! L segment in the next block, so we will analyze then.
-			float LL = 0x1.0p-64f;
-			float L  = 0x1.0p-64f;
-			float M  = 0x1.0p-64f;
+			//! NOTE: Use logarithms to avoid overflow on division.
+			float v;
+			float LL = 0.0f, LLw = 0.0f;
+			float L  = 0.0f, Lw  = 0.0f;
+			float M  = 0.0f, Mw  = 0.0f;
 			const float *Src = TransientBuffer;
-			n = AnalysisLen; do M  += *--Src; while(--n);
-			n = AnalysisLen; do L  += *--Src; while(--n);
-			n = AnalysisLen; do LL += *--Src; while(--n);
+			const float MIN_LOG = -100.0f;
+			n = AnalysisLen; do v = *--Src, M  += v*v, Mw  += v; while(--n);
+			n = AnalysisLen; do v = *--Src, L  += v*v, Lw  += v; while(--n);
+			n = AnalysisLen; do v = *--Src, LL += v*v, LLw += v; while(--n);
+			LL = LL ? logf(LL / LLw) : MIN_LOG;
+			L  = L  ? logf(L  / Lw)  : MIN_LOG;
+			M  = M  ? logf(M  / Mw)  : MIN_LOG;
 
 			//! Get the ratios between the segments and select the largest
-			   (Ratio[POS_L] = L / LL);                 PeakPos = POS_L;
-			if((Ratio[POS_M] = M / L) > Ratio[PeakPos]) PeakPos = POS_M;
+			Ratio[POS_L] = L - LL;
+			Ratio[POS_M] = M - L;
+			PeakPos = (Ratio[POS_L] > Ratio[POS_M]) ? POS_L : POS_M;
 		}
 
-		//! If the transient merits decimation, keep going.
+		//! If there is a transient in the M segment (M > L)
+		//! or there is post-echo (L > M), keep splitting.
 		//! NOTE: Minimum subblock size of 64 samples.
 		//! NOTE: Checking AnalysisLen should be better than checking
 		//! Decimation directly, as then we can change the maximum allowed
 		//! decimation without changing this code.
 		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && Log2SubBlockSize > 6) {
-			float r = Block_Transform_GetWindowCtrl_Log2DecimationRatio(Ratio[PeakPos], Log2SubBlockSize);
-			if(r > 0.0f) {
+			if(ABS(Ratio[POS_M] - Ratio[POS_L]) > 0x1.62E430p0f) { //! Log[2]
 				//! Update the decimation pattern and continue
 				//! NOTE: When PeakPos==L, we've simply shifted the
 				//! next subblock's center point, hence pivoting about
@@ -223,12 +208,12 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! No more decimation - Store the L ratio and break out
-		DecimationRatio = Block_Transform_GetWindowCtrl_Log2DecimationRatio(Ratio[POS_L], Log2SubBlockSize);
+		DecimationRatio = Block_Transform_GetWindowCtrl_Log2DecimationRatio(ABS(Ratio[POS_L]), Log2SubBlockSize);
 		break;
 	}
 
 	//! Determine overlap size from the ratio
-	int OverlapScale = (DecimationRatio < 0.5f) ? 0 : (DecimationRatio >= 6.5f) ? 7 : (int)(0.5f + DecimationRatio);
+	int OverlapScale = (DecimationRatio <= 0.0f) ? 0 : (DecimationRatio >= 7.0f) ? 7 : (int)DecimationRatio;
 	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
 	//! Return the combined overlap+window switching parameters
