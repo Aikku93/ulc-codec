@@ -121,7 +121,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				FloorTap += (v - FloorTap)*(1.0f-FloorDecay);
 				v         = sqrtf(sqrtf(v));
 				PowerTap += (v - PowerTap)*(1.0f-PowerDecay);
-				v        = ABS(SQR(SQR(PowerTap)) - FloorTap);
+				v         = ABS(SQR(SQR(PowerTap)) - FloorTap);
 				Sum      += v*v, SumW += v;
 			} while(--n);
 
@@ -194,7 +194,7 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! Decimation directly, as then we can change the maximum allowed
 		//! decimation without changing this code.
 		if(ULC_USE_WINDOW_SWITCHING && AnalysisLen > 1 && Log2SubBlockSize > 6) {
-			if(ABS(Ratio[POS_M] - Ratio[POS_L]) > 0x1.62E430p0f) { //! Log[2]
+			if(ABS(Ratio[POS_M] - Ratio[POS_L]) > 0x1.62E430p0f) { //! Log[2^2]
 				//! Update the decimation pattern and continue
 				//! NOTE: When PeakPos==L, we've simply shifted the
 				//! next subblock's center point, hence pivoting about
