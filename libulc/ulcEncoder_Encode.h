@@ -98,7 +98,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		//! Seek the next viable coefficient
 		int Qn;
 		do {
-			Qn = ULC_CompandedQuantize(Coef[CurIdx]*q);
+			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*q);
 			if(Qn && CoefIdx[CurIdx] < nOutCoef) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
@@ -165,8 +165,6 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		}
 
 		//! -7h..-1h, +1h..+7h: Normal coefficient
-		if(Qn < -7) Qn = -7;
-		if(Qn > +7) Qn = +7;
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
 

@@ -65,6 +65,17 @@ ULC_FORCED_INLINE int ULC_CompandedQuantize(float v) {
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 
+//! Quantize coefficient
+//! NOTE: Not mathematically optimal, but appears to sound better.
+ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficientUnsigned(float v) {
+	int vq = (int)(0x1.6A09E8p-1f + sqrtf(v)); //! Sqrt[1/2], rounded up
+	return (vq < 7) ? vq : 7;
+}
+ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficient(float v) {
+	int vq = ULC_CompandedQuantizeCoefficientUnsigned(ABS(v));
+	return (v < 0.0f) ? (-vq) : (+vq);
+}
+
 /**************************************/
 //! EOF
 /**************************************/
