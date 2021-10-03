@@ -61,10 +61,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//!      = SubBlockSize * (1 - LoRangeScale/HiRangeScale)
 			//! Setting SubBlockSize=1 gives us the normalized bandwidth:
 			//!  MaxBandwidth = 1 - LoRangeScale/HiRangeScale
-			//! NOTE: Noise is weighted as its amplitude rather than its
-			//! power (ie. apply a square root, or scale by 0.5 as log).
-			//! This is accounted for by adding 1 to NoiseShift.
-			int NoiseShift = 31+1 - __builtin_clz(SubBlockSize);
+			int NoiseShift = 31 - __builtin_clz(SubBlockSize);
 			int BandBeg = 0, BandEnd = 0;
 			uint64_t Sum = 0ull, SumW = 0ull;
 			int NoiseBeg = 0, NoiseEnd = 0;
