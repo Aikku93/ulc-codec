@@ -48,7 +48,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*BlockSize/2));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * ((nChan + (nChan < 2)) * BlockSize));
 	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan*BlockSize  ));
-	CREATE_BUFFER(TransientBuffer, sizeof(float) * ULC_MAX_BLOCK_DECIMATION_FACTOR*4);
+	CREATE_BUFFER(TransientBuffer, sizeof(float) * ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
 #undef CREATE_BUFFER
 
 	//! Allocate buffer space
@@ -73,7 +73,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	for(i=0;i<2;                i++) State->TransientFilter[i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;  i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<nChan*BlockSize/2;i++) State->TransformFwdLap[i] = 0.0f;
-	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*4;i++) State->TransientBuffer[i] = 0.0f;
+	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) State->TransientBuffer[i] = -100.0f; //! -100 = Placeholder for Log[0]
 
 	//! Success
 	return 1;

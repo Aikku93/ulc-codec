@@ -19,10 +19,18 @@
 #define ULC_USE_WINDOW_SWITCHING 1
 
 //! Maximum number of subblocks present in a block
-#define ULC_MAX_SUBBLOCKS 4
+#if ULC_USE_WINDOW_SWITCHING
+# define ULC_MAX_SUBBLOCKS 4
+#else
+# define ULC_MAX_SUBBLOCKS 1
+#endif
 
 //! Maximum allowed block decimation factor
-#define ULC_MAX_BLOCK_DECIMATION_FACTOR 8
+#if ULC_USE_WINDOW_SWITCHING
+# define ULC_MAX_BLOCK_DECIMATION_FACTOR 8
+#else
+# define ULC_MAX_BLOCK_DECIMATION_FACTOR 1
+#endif
 
 //! Smallest possible coefficient amplitude
 #define ULC_COEF_EPS (0x1.0p-31f) //! 5+0xE+0xC = Maximum extended-precision quantizer
@@ -58,7 +66,7 @@ struct ULC_EncoderState_t {
 	//!   float TransformFwdLap[nChan*BlockSize/2]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
-	//!   float TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*4]
+	//!   float TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*2]
 	//! BufferData contains the original pointer returned by malloc()
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
