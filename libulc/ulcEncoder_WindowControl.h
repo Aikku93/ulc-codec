@@ -83,10 +83,14 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! centered, but cannot perform jitter correction. It
 	//! really should not be necessary, though, as it won't
 	//! improve the output much, if at all.
+	//! NOTE: The FIR filter used here is noncausal, so we
+	//! apply a 1-sample delay to compensate. Without this
+	//! transients will be missed around block boundaries.
 	for(n=0;n<BlockSize;n++) TmpBuffer[n] = 0.0f;
 	for(Chan=0;Chan<nChan;Chan++) {
 #define DOFILTER(zM1, z0, z1) SQR(-5*(zM1) + 4*(z0) + (z1))
 		int Lag = BlockSize/2; if(ULC_USE_WINDOW_SWITCHING) Lag -= BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
+		Lag += 1; //! Noncausal filter compensation
 		float *Dst = TmpBuffer;
 		const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-Lag;
 		const float *SrcNew = ThisBlockData + Chan*BlockSize;
@@ -169,6 +173,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	const float THRES_CORRECTION = 0x1.62E430p-1f*(11 - Log2BlockSize); //! 0x1.62E430p-1 = 1/Log2[E], for change of base
 	const float ATT_THRES  = THRES_CORRECTION + 0x1.62E430p0f;  //! Log[4]; attack threshold
 	const float DEC_THRES  = THRES_CORRECTION + 0x1.62E430p0f;  //! Log[4]; decay threshold
+	const float LEAK_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[2]; post-echo leakage threshold
 	const float EDGE_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[2]; edge-case threshold (x[n+1]/x[n-1] must be this much higher/lower than x[n]/x[n-1])
 
 	//! Perform filtering to obtain transient analysis
@@ -235,7 +240,7 @@ static inline int Block_Transform_GetWindowCtrl(
 				float L = TransientBuffer[n];
 				float R = TransientBuffer[n+1];
 				float r = R-L;
-				if(r < -DEC_THRES) { HaveDecay = 1; break; }
+				if(r < -LEAK_THRES) { HaveDecay = 1; break; }
 			}
 			if(HaveDecay) break;
 
