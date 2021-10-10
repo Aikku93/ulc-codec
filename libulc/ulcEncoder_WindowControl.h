@@ -161,6 +161,7 @@ static inline int Block_Transform_GetWindowCtrl(
 ) {
 	int n;
 	int Log2BlockSize = 31 - __builtin_clz(BlockSize);
+	float L, R, r;
 
 	//! Control thresholds
 	//! NOTE: The "raw" thresholds (without THRES_CORRECTION) were
@@ -171,10 +172,10 @@ static inline int Block_Transform_GetWindowCtrl(
 	//!  =Log[Threshold] + (1/Log2[E])*Log2[2048/BlockSize]
 	//!  =Log[Threshold] + (1/Log2[E])*(11 - Log2[BlockSize])
 	const float THRES_CORRECTION = 0x1.62E430p-1f*(11 - Log2BlockSize); //! 0x1.62E430p-1 = 1/Log2[E], for change of base
-	const float ATT_THRES  = THRES_CORRECTION + 0x1.62E430p0f;  //! Log[4]; attack threshold
-	const float DEC_THRES  = THRES_CORRECTION + 0x1.62E430p0f;  //! Log[4]; decay threshold
-	const float LEAK_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[2]; post-echo leakage threshold
-	const float EDGE_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[2]; edge-case threshold (x[n+1]/x[n-1] must be this much higher/lower than x[n]/x[n-1])
+	const float ATT_THRES  = THRES_CORRECTION + 0x1.62E430p0f;  //! Log[ 4]; attack threshold
+	const float DEC_THRES  = THRES_CORRECTION + 0x1.62E430p1f;  //! Log[16]; decay threshold
+	const float LEAK_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[ 2]; post-echo leakage threshold
+	const float EDGE_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[ 2]; edge-case threshold (x[n+1]/x[n-1] must be this much higher/lower than x[n]/x[n-1])
 
 	//! Perform filtering to obtain transient analysis
 	//! then seek to this "new" block's transient data
@@ -191,9 +192,9 @@ static inline int Block_Transform_GetWindowCtrl(
 	int MaxIndex = 0; float MaxRatio = -1000.0f;
 	int MinIndex = 0; float MinRatio = +1000.0f;
 	for(n=0;n<ULC_MAX_BLOCK_DECIMATION_FACTOR;n++) {
-		float L = TransientBuffer[n-1];
-		float R = TransientBuffer[n];
-		float r = R-L;
+		L = TransientBuffer[n-1];
+		R = TransientBuffer[n];
+		r = R-L;
 		if(r > MaxRatio) MaxIndex = n, MaxRatio = r;
 		if(r < MinRatio) MinIndex = n, MinRatio = r;
 	}
@@ -204,17 +205,24 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! comparing the next segment against the previous, and
 	//! deciding whether whether to use that ratio instead of
 	//! the 'canonical' ratio of x[n]/x[n-1].
-	if(ULC_USE_WINDOW_SWITCHING && MaxIndex < ULC_MAX_BLOCK_DECIMATION_FACTOR) {
-		float L = TransientBuffer[MaxIndex-1];
-		float R = TransientBuffer[MaxIndex+1];
-		float r = R-L;
-		if(r > MaxRatio+EDGE_THRES) MaxRatio = r;
-	}
-	if(ULC_USE_WINDOW_SWITCHING && MinIndex < ULC_MAX_BLOCK_DECIMATION_FACTOR) {
-		float L = TransientBuffer[MinIndex-1];
-		float R = TransientBuffer[MinIndex+1];
-		float r = R-L;
-		if(r < MinRatio-EDGE_THRES) MinRatio = r;
+	if(ULC_USE_WINDOW_SWITCHING) {
+		//! Attack
+		L = TransientBuffer[MaxIndex-1];
+		R = TransientBuffer[MaxIndex+1];
+		r = R-L;
+		if(r > MaxRatio+EDGE_THRES) {
+			MaxRatio = r;
+			if(MaxIndex < ULC_USE_WINDOW_SWITCHING-1) MaxIndex++;
+		}
+
+		//! Decay
+		L = TransientBuffer[MinIndex-1];
+		R = TransientBuffer[MinIndex+1];
+		r = R-L;
+		if(r < MinRatio-EDGE_THRES) {
+			MinRatio = r;
+			if(MinIndex > 0) MinIndex--;
+		}
 	}
 
 	//! If we don't have a significant attack, use release as transient marker
@@ -222,7 +230,6 @@ static inline int Block_Transform_GetWindowCtrl(
 	float TransientRatio = 0.0f;
 	     if(MaxRatio > +ATT_THRES) TransientIndex = MaxIndex, TransientRatio =  MaxRatio;
 	else if(MinRatio < -DEC_THRES) TransientIndex = MinIndex, TransientRatio = -MinRatio;
-	TransientBuffer += TransientIndex;
 
 	//! Attempt to enlarge the window to the right (if there is no post-echo)
 	int Decimation       = 0b0001; //! Default to SubBlocks={N/1}
@@ -237,9 +244,9 @@ static inline int Block_Transform_GetWindowCtrl(
 			//! so we can start at AnalysisLen/2.
 			int HaveDecay = 0;
 			for(n=AnalysisLen/2;n<AnalysisLen;n++) {
-				float L = TransientBuffer[n];
-				float R = TransientBuffer[n+1];
-				float r = R-L;
+				L = TransientBuffer[TransientIndex+n];
+				R = TransientBuffer[TransientIndex+n+1];
+				r = R-L;
 				if(r < -LEAK_THRES) { HaveDecay = 1; break; }
 			}
 			if(HaveDecay) break;
@@ -248,6 +255,16 @@ static inline int Block_Transform_GetWindowCtrl(
 			Log2SubBlockSize++;
 			AnalysisLen *= 2;
 			Decimation >>= 1;
+		}
+
+		//! When leakage happens on the edge of a block,
+		//! ensure that the next segment triggers a decay
+		//! transient event.
+		L = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1];
+		R = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR];
+		r = R-L;
+		if(r < -LEAK_THRES && r > -DEC_THRES) {
+			TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1] = R - DEC_THRES;
 		}
 	}
 
