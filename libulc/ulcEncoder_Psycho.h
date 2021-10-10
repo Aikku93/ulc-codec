@@ -31,7 +31,10 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//! This normalization step forces the sums to be as precise as
 			//! possible without overflowing.
 			//! NOTE: The normalization is based on the widest bandwidth we
-			//! will encounter in the loop (1-LoScale/HiScale; see below).
+			//! will encounter in the loop; the tone analysis is bound by
+			//! 1-LoScale/HiScale (see below for derivation), and the noise
+			//! analysis is bound by (HiScale-LowScale), so we use whichever
+			//! of these is wider.
 			//! NOTE: Ensure that Energy[] is not zero or division by 0 may
 			//! occur if the accumulated sums are all zeros.
 			//! NOTE: Do NOT remove the square root in computing Energy[].
@@ -61,13 +64,11 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//!      = SubBlockSize * (1 - LoRangeScale/HiRangeScale)
 			//! Setting SubBlockSize=1 gives us the normalized bandwidth:
 			//!  MaxBandwidth = 1 - LoRangeScale/HiRangeScale
-			int NoiseShift = 31 - __builtin_clz(SubBlockSize);
-			int BandBeg = 0, BandEnd = 0;
-			uint64_t Sum = 0ull, SumW = 0ull;
-			int NoiseBeg = 0, NoiseEnd = 0;
-			uint32_t NoiseSum = 0;
+			int ToneBeg  = 0, ToneEnd  = 0; uint64_t ToneSum  = 0, ToneSumW = 0;
+			int NoiseBeg = 0, NoiseEnd = 0; uint32_t NoiseSum = 0;
+			int NoiseNormShift = 31 - __builtin_clz(SubBlockSize); //! 1/SubBlockSize. Not sure why it normalizes like this
 			for(n=0;n<SubBlockSize;n++) {
-				//! Re-focus the main analysis window
+				//! Re-focus the tone analysis window
 				{
 					int Old, New;
 					const int RangeScaleFxp = 4;
@@ -76,22 +77,22 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 
 					//! Remove samples that went out of focus
 					//! NOTE: We skip /at most/ one sample, so don't loop.
-					Old = BandBeg >> RangeScaleFxp, BandBeg += LoRangeScale;
-					New = BandBeg >> RangeScaleFxp;
+					Old = ToneBeg >> RangeScaleFxp, ToneBeg += LoRangeScale;
+					New = ToneBeg >> RangeScaleFxp;
 					if(Old < New) {
-						SumW -= Energy[Old];
-						Sum  -= Energy[Old] * (uint64_t)EnergyNp[Old];
+						ToneSumW -= Energy[Old];
+						ToneSum  -= Energy[Old] * (uint64_t)EnergyNp[Old];
 					}
 
 					//! Add samples that came into focus
 					//! NOTE: We usually skip /at least/ one sample, but when we
 					//! reach the end of the buffer (ie. x=xMax), we stop adding
 					//! samples, so we can't go straight into a do-while loop.
-					Old = BandEnd >> RangeScaleFxp, BandEnd += HiRangeScale;
-					New = BandEnd >> RangeScaleFxp; if(New > SubBlockSize) New = SubBlockSize;
+					Old = ToneEnd >> RangeScaleFxp, ToneEnd += HiRangeScale;
+					New = ToneEnd >> RangeScaleFxp; if(New > SubBlockSize) New = SubBlockSize;
 					if(Old < New) do {
-						SumW += Energy[Old];
-						Sum  += Energy[Old] * (uint64_t)EnergyNp[Old];
+						ToneSumW += Energy[Old];
+						ToneSum  += Energy[Old] * (uint64_t)EnergyNp[Old];
 					} while(++Old < New);
 				}
 
@@ -102,14 +103,12 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 				//! appears to give the best results.
 				//! NOTE: The range will NOT be bound by the rules set out
 				//! earlier, as we re-scale our sum when we hit the end.
-				//! Therefore, the maximum bandwidth we can use here is
-				//! /itself/ bound by the the scaling (and thus the range
-				//! of the 'main' analysis window, if we're being strict).
+				//! The maximum bandwidth is thus HiScale-LoScale.
 				{
 					int Old, New;
 					const int RangeScaleFxp = 4;
 					const int LoRangeScale = 15; //! Beg = 0.9375*Band
-					const int HiRangeScale = 18; //! End = 1.1250*Band
+					const int HiRangeScale = 19; //! End = 1.1875*Band
 
 					//! Remove samples that went out of focus
 					Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
@@ -137,14 +136,15 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 				//! Store the expected value for this band.
 				//! This is essentially a contraharmonic mean in the log domain
 				//! The overall idea is to implement this equation:
-				//!  ImportanceLevel = CoefRe * CoefRe^2 / BandAbs^2
+				//!  ImportanceLevel = CoefAmplitude * CoefPower/CritBandPower
 				//! Since we're working in the log domain, and the values
 				//! are scale-invariant (only used for comparing):
-				//!  LogImportanceLevel = Log[CoefRe^3] - Log[BandAbs^2]
-				//!                     = Log[CoefRe] - Log[BandAbs^2]/3
-				uint32_t x = Sum / SumW;
-				x += NoiseSum >> NoiseShift; //! NoiseSum/SubBlockSize. Not sure why it normalizes like this
-				MaskingNp[n] = x*InvLogScale + LogNorm;
+				//!  LogImportanceLevel = 3*Log[CoefAmplitude] - Log[CritBandPower]
+				//!                     = Log[CoefAmplitude] - Log[CritBandPower]/3
+				//! NOTE: Cast the tone sum to 32bit, on the assumption that
+				//! the compiler won't do this prior to adding the noise sum.
+				uint32_t x = (uint32_t)(ToneSum / ToneSumW) + (NoiseSum >> NoiseNormShift);
+				MaskingNp[n] = (float)x*InvLogScale + LogNorm;
 			}
 		}
 
