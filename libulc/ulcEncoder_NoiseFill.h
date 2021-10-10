@@ -81,8 +81,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = ULC_CompandedQuantizeUnsigned(Amplitude*q*2.0f);
-	if(NoiseQ > 0x7) NoiseQ = 0x7;
+	int NoiseQ = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*2.0f, 0x7);
 	return NoiseQ;
 }
 
@@ -131,11 +130,10 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = ULC_CompandedQuantizeUnsigned(Amplitude*q*8.0f); //! <- Account for dynamic range of NoiseQ vs. coefficients
+	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*8.0f, 1 + 0xF); //! <- Account for dynamic range of NoiseQ vs. coefficients
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p16f); //! (1-Decay) * 2^16
-	if(NoiseQ     > 1 + 0xF) NoiseQ     = 1 + 0xF;
-	if(NoiseDecay <    0x00) NoiseDecay =    0x00;
-	if(NoiseDecay >    0xFF) NoiseDecay =    0xFF;
+	if(NoiseDecay < 0x00) NoiseDecay = 0x00;
+	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
 }

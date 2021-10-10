@@ -98,7 +98,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		//! Seek the next viable coefficient
 		int Qn;
 		do {
-			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*q);
+			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*q, 0x7);
 			if(Qn && CoefIdx[CurIdx] < nOutCoef) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
