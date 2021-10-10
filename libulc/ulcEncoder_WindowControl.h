@@ -236,20 +236,20 @@ static inline int Block_Transform_GetWindowCtrl(
 	int Log2SubBlockSize = Log2BlockSize;
 	if(TransientIndex != -1) {
 		int AnalysisLen = 1;
+		int PostEchoIsHandled = 0;
 		Decimation        = ULC_MAX_BLOCK_DECIMATION_FACTOR + TransientIndex;
 		Log2SubBlockSize -= 31 - __builtin_clz(ULC_MAX_BLOCK_DECIMATION_FACTOR); //! Log2[BlockSize/MAX_DECIMATION_FACTOR]
 		while((Decimation & 1) == 0) {
 			//! Check for decaying segments
 			//! NOTE: We already checked AnalysisLen/2 segments,
 			//! so we can start at AnalysisLen/2.
-			int HaveDecay = 0;
 			for(n=AnalysisLen/2;n<AnalysisLen;n++) {
 				L = TransientBuffer[TransientIndex+n];
 				R = TransientBuffer[TransientIndex+n+1];
 				r = R-L;
-				if(r < -LEAK_THRES) { HaveDecay = 1; break; }
+				if(r < -LEAK_THRES) { PostEchoIsHandled = 1; break; }
 			}
-			if(HaveDecay) break;
+			if(PostEchoIsHandled) break;
 
 			//! No decay transient (yet) - Keep enlarging
 			Log2SubBlockSize++;
@@ -260,11 +260,13 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! When leakage happens on the edge of a block,
 		//! ensure that the next segment triggers a decay
 		//! transient event.
-		L = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1];
-		R = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR];
-		r = R-L;
-		if(r < -LEAK_THRES && r > -DEC_THRES) {
-			TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1] = R - DEC_THRES;
+		if(!PostEchoIsHandled) {
+			L = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1];
+			R = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR];
+			r = R-L;
+			if(r < -LEAK_THRES && r > -DEC_THRES) {
+				TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1] = R - DEC_THRES;
+			}
 		}
 	}
 
