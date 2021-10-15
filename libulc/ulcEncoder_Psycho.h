@@ -18,7 +18,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 
 	//! Compute masking levels for each [sub-]block
 	uint32_t *Energy   = (uint32_t*)(BufferTemp);
-	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize);
+	uint32_t *EnergyNp = (uint32_t*)(BufferTemp + BlockSize); //! NOTE: Aliasing of BufferAmp2[]
 	ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
 	do {
 		int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
@@ -64,9 +64,11 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 			//!      = SubBlockSize * (1 - LoRangeScale/HiRangeScale)
 			//! Setting SubBlockSize=1 gives us the normalized bandwidth:
 			//!  MaxBandwidth = 1 - LoRangeScale/HiRangeScale
-			int ToneBeg  = 0, ToneEnd  = 0; uint64_t ToneSum  = 0, ToneSumW = 0;
-			int NoiseBeg = 0, NoiseEnd = 0; uint32_t NoiseSum = 0;
-			int NoiseNormShift = 31 - __builtin_clz(SubBlockSize); //! 1/SubBlockSize. Not sure why it normalizes like this
+			//! NOTE:
+			//!  Input is from Energy[], EnergyNp[]
+			//!  Output is to ToneMaskNp[] (temporary aliasing of MaskingNp[])
+			int ToneBeg = 0, ToneEnd = 0; uint64_t ToneSum  = 0, ToneSumW = 0;
+			uint32_t *ToneMaskNp = (uint32_t*)MaskingNp;
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the tone analysis window
 				{
@@ -96,6 +98,19 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 					} while(++Old < New);
 				}
 
+				//! Store the expected value for this band.
+				ToneMaskNp[n] = ToneSum / ToneSumW;
+			}
+
+			//! Get the noise masking level for each band (based on the
+			//! output of the tone masking levels) and add this to the
+			//! tone masking level to give the final masking level
+			//! NOTE:
+			//!  Input is from ToneMaskNp[] (temporary aliasing of MaskingNp[])
+			//!  Output is to EnergyNp[]
+			int NoiseBeg = 0, NoiseEnd = 0; uint32_t NoiseSum = 0;
+			int NoiseNormShift = 31 - __builtin_clz(SubBlockSize); //! 1/SubBlockSize. Not sure why it normalizes like this
+			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the noise analysis window
 				//! Same idea as above, except only summing the log values
 				//! NOTE: These values were chosen so that they are exactly
@@ -114,7 +129,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 					Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
 					New = NoiseBeg >> RangeScaleFxp;
 					if(Old < New) {
-						NoiseSum -= EnergyNp[Old];
+						NoiseSum -= ToneMaskNp[Old];
 					}
 
 					//! Add samples that came into focus
@@ -129,23 +144,23 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, co
 						//! so we must use NewBeg as a reference point.
 						NoiseSum = NoiseSum * (uint64_t)(New-NewBeg) / (Old-NewBeg);
 					} else do {
-						NoiseSum += EnergyNp[Old];
+						NoiseSum += ToneMaskNp[Old];
 					} while(++Old < New);
 				}
 
-				//! Store the expected value for this band.
-				//! This is essentially a contraharmonic mean in the log domain
-				//! The overall idea is to implement this equation:
-				//!  ImportanceLevel = CoefAmplitude * CoefPower/CritBandPower
-				//! Since we're working in the log domain, and the values
-				//! are scale-invariant (only used for comparing):
-				//!  LogImportanceLevel = 3*Log[CoefAmplitude] - Log[CritBandPower]
-				//!                     = Log[CoefAmplitude] - Log[CritBandPower]/3
-				//! NOTE: Cast the tone sum to 32bit, on the assumption that
-				//! the compiler won't do this prior to adding the noise sum.
-				uint32_t x = (uint32_t)(ToneSum / ToneSumW) + (NoiseSum >> NoiseNormShift);
-				MaskingNp[n] = (float)x*InvLogScale + LogNorm;
+				//! Store the noise-corrected value for this band.
+				EnergyNp[n] = ToneMaskNp[n] + (NoiseSum >> NoiseNormShift);
 			}
+
+			//! The overall idea is to implement this equation:
+			//!  ImportanceLevel = CoefAmplitude * CoefPower/CritBandPower
+			//! Since we're working in the log domain, and the values
+			//! are scale-invariant (only used for comparing):
+			//!  LogImportanceLevel = 3*Log[CoefAmplitude] - Log[CritBandPower]
+			//!                     = Log[CoefAmplitude] - Log[CritBandPower]/3
+			//! NOTE: This step cannot be combined with the
+			//! loop from above, as the pointers are aliased.
+			for(n=0;n<SubBlockSize;n++) MaskingNp[n] = (float)EnergyNp[n]*InvLogScale + LogNorm;
 		}
 
 		//! Move to next subblock
