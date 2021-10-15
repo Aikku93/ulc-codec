@@ -49,18 +49,17 @@ ULC_FORCED_INLINE void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuff
 /**************************************/
 
 //! Build quantizer from weighted average
-//! FIXME: This is NOT OPTIMAL. Large amount of error
-//! can result from this method (relative to the real
-//! optimal quantizer).
-static inline int Block_Encode_BuildQuantizer(float Scale) {
-	//! NOTE: `q` will always be greater than 5 due to the bias so
-	//! the quantizer code syntax is biased accordingly.
-	//! Criteria:
-	//!  Peak at 7^2
-	//!  Accept at most 5% overload distortion
-	//! This gives a "bias" of Log2[7^2 * 1.05]
-	int q = (int)(0x1.6BD8AAp2f - 0x1.715476p-1f*logf(Scale)); //! 0x1.715476p0 == 1/Ln[2] for change of base
-	if(q < 5) q = 5; //! Sometimes happens because of overflow?
+static inline int Block_Encode_BuildQuantizer(float MaxVal2) {
+	//! NOTE: `MaxVal2` approaches (4/Pi)^2 as BlockSize
+	//! approaches infinity, due to the infinity norm of
+	//! the MDCT matrix. Therefore, we use a bias of 5
+	//! in the syntax to allow for a full range (that is
+	//! to say: 7^2 * 2^-5 = 1.53125, 1.53125 >= 4/Pi).
+	//! We further add a bias of 1.0 in our calculations
+	//! to correctly round off for the best distortion
+	//! trade-off (in terms of underload/overload, not
+	//! PSNR).
+	int q = (int)(6.0f - 0x1.715476p-1f*logf(MaxVal2)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
 }
@@ -194,6 +193,7 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int QuantStartIdx = -1;
 	float QuantSum  = 0.0f;
 	float QuantSumW = 0.0f;
+	float QuantMax  = 0.0f;
 	do {
 		//! Seek the next coefficient
 		while(Idx < EndIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
@@ -220,7 +220,7 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 			NextCodedIdx = Block_Encode_EncodePass_WriteQuantizerZone(
 				QuantStartIdx,
 				Idx,
-				QuantSum/QuantSumW,
+				QuantMax,
 				Coef,
 #if ULC_USE_NOISE_CODING
 				CoefNoise,
@@ -234,12 +234,14 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 			);
 			QuantStartIdx = Idx;
 			QuantSum = QuantSumW = 0.0f;
+			QuantMax = 0.0f;
 		}
 
 		//! Accumulate to the current quantizer zone.
 		//! This uses a contraharmonic mean as the quantizer step size.
 		QuantSum  += BandCoef2 * BandCoef2;
 		QuantSumW += BandCoef2;
+		if(BandCoef2 > QuantMax) QuantMax = BandCoef2;
 	} while(++Idx <= EndIdx); //! Idx will go over by 1 or 2 here to dump the last quantizer zone, but doesn't matter; not used after this loop
 
 	//! Decide what to do about the tail coefficients
