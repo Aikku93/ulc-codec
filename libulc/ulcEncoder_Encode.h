@@ -123,16 +123,16 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			//! decimating), smaller runs are useful.
 			int NoiseQ = 0;
 			if(zR >= 16) {
-				v = zR - 16; if(v > 0x1FF) v = 0x1FF;
+				v = zR - 16; if(v > 0xFF) v = 0xFF;
 				n = v  + 16;
 				NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q);
 			}
 			if(NoiseQ) {
-				//! 0h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh.bit[1..3] != 0)
+				//! 0h,Zh,Yh,Xh: 16 .. 271 noise fill (Xh != 0)
 				Block_Encode_WriteNybble(0x0,    DstBuffer, Size);
-				Block_Encode_WriteNybble(v>>5,   DstBuffer, Size);
-				Block_Encode_WriteNybble(v>>1,   DstBuffer, Size);
-				Block_Encode_WriteNybble((v&1) | NoiseQ<<1, DstBuffer, Size);
+				Block_Encode_WriteNybble(v>>4,   DstBuffer, Size);
+				Block_Encode_WriteNybble(v>>0,   DstBuffer, Size);
+				Block_Encode_WriteNybble(NoiseQ, DstBuffer, Size);
 			} else {
 #endif
 				//! Determine which run type to use and get the number of zeros coded
@@ -147,13 +147,13 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
 					Block_Encode_WriteNybble(v,   DstBuffer, Size);
 				} else {
-					//! 0h,Zh,Yh,Xh: 31 .. 542 zeros fill (Xh.bit[1..3] == 0)
+					//! 0h,Zh,Yh,Xh: 31 .. 286 zeros fill (Xh == 0)
 					v = zR - 31; if(v > 0x1FF) v = 0x1FF;
 					n = v  + 31;
 					Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
-					Block_Encode_WriteNybble(v>>5, DstBuffer, Size);
-					Block_Encode_WriteNybble(v>>1, DstBuffer, Size);
-					Block_Encode_WriteNybble(v&1,  DstBuffer, Size);
+					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
+					Block_Encode_WriteNybble(v>>0, DstBuffer, Size);
+					Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
 				}
 #if ULC_USE_NOISE_CODING
 			}

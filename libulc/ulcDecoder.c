@@ -72,12 +72,12 @@ void ULC_DecoderState_Destroy(struct ULC_DecoderState_t *State) {
 //! Decode block
 #define ESCAPE_SEQUENCE_STOP           (-1)
 #define ESCAPE_SEQUENCE_STOP_NOISEFILL (-2)
-static inline float Block_Decode_RandomCoef(void) {
+static inline uint32_t Block_Decode_UpdateRandomSeed(void) {
 	static uint32_t Seed = 1234567;
 	Seed ^= Seed << 13; //! Xorshift
 	Seed ^= Seed >> 17;
 	Seed ^= Seed <<  5;
-	return (int32_t)Seed * 0x1.0p-31f;
+	return Seed;
 }
 static inline uint8_t Block_Decode_ReadNybble(const uint8_t **Src, int *Size) {
 	//! Fetch and shift nybble
@@ -121,19 +121,21 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			continue;
 		}
 
-		//! 0h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh.bit[1..3] != 0)
-		//! 0h,Zh,Yh,Xh: 31 .. 542 zeros fill (Xh.bit[1..3] == 0)
+		//! 0h,Zh,Yh,Xh: 16 .. 271 noise fill (Xh.bit[1..3] != 0)
+		//! 0h,Zh,Yh,Xh: 31 .. 286 zeros fill (Xh.bit[1..3] == 0)
 		if(v == 0x0) {
 			n  = Block_Decode_ReadNybble(Src, Size);
 			n  = Block_Decode_ReadNybble(Src, Size) | (n<<4);
 			v  = Block_Decode_ReadNybble(Src, Size);
-			n  = (v&1) + (n<<1), v >>= 1;
 			n += (v == 0) ? 31 : 16;
 			if(n > N) n = N; //! <- Clip on corrupt blocks
 			N -= n;
 			if(v) {
-				float p = (v*v) * Quant * (1.0f/2);
-				do *CoefDst++ = p * Block_Decode_RandomCoef(); while(--n);
+				float p = (v*v) * Quant * 0x1.6A09E6p-5f; //! Sqrt[2]/32. Amplitude correction for the PRNG
+				do {
+					if(Block_Decode_UpdateRandomSeed() & 0x80000000) p = -p;
+					*CoefDst++ = p;
+				} while(--n);
 			} else do *CoefDst++ = 0.0f; while(--n);
 			if(N == 0) break;
 			continue;
@@ -163,11 +165,11 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			v = Block_Decode_ReadNybble(Src, Size) + 1;
 			n = Block_Decode_ReadNybble(Src, Size);
 			n = Block_Decode_ReadNybble(Src, Size) | (n<<4);
-			float p = (v*v) * Quant * (1.0f/8);
+			float p = (v*v) * Quant * 0x1.6A09E6p-5;
 			float r = 1.0f + (n*n)*-0x1.0p-16f;
 			do {
-				*CoefDst++ = p * Block_Decode_RandomCoef();
-				p *= r;
+				if(Block_Decode_UpdateRandomSeed() & 0x80000000) p = -p;
+				*CoefDst++ = p, p *= r;
 			} while(--N);
 			break;
 		}
