@@ -59,7 +59,7 @@ Note that the transient subblock index can be easily obtained using a population
 
 | Nybble sequence           | Explanation                   | Effect                                          |
 | ------------------------- | ----------------------------- | ----------------------------------------------- |
-| ```-7h..-1h,+1h..+7h```   | Normal coefficient            | Insert ```Coef[n++] = Nybble*|Nybble| * Quantizer``` |
+| ```-7h..-1h,+1h..+7h```   | Normal coefficient            | Insert ```Coef[n++] = Nybble*Abs[Nybble] * Quantizer``` |
 | ```8h,0h,0h..Dh```        | Quantizer change              | Set ```Quantizer = 2^-(5+X)```                  |
 | ```8h,0h,Eh,0h..Ch```     | Quantizer change              | Set ```Quantizer = 2^-(5+14+X)```               |
 | ```8h,0h,Eh,Dh```         | *Unallocated*                 | N/A                                             |
