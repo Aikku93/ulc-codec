@@ -205,7 +205,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				}
 #if ULC_USE_NOISE_CODING
 				//! Compute noise spectrum
-				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize);
+				//! NOTE: BufferIndex[] used as secondary temporary storage.
+				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, BufferIndex, SubBlockSize);
 #endif
 				//! Move to the next subblock
 				BufferMDCT  += SubBlockSize;
