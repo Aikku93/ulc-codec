@@ -13,7 +13,7 @@
 //! Compute noise spectrum (logarithmic output)
 //! The code here is very similar to the one used in
 //! psychoacoustics (see ulcEncoder_Psycho.h for details).
-static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N) {
+static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp1, void *Temp2, int N) {
 	int n;
 	float v;
 
@@ -22,49 +22,90 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	for(n=0;n<N;n++) if((v = Data[n]) > Norm) Norm = v;
 	if(Norm == 0.0f) return;
 
-	//! Normalize the logarithmic energy and convert to fixed-point
+	//! Normalize the energy and convert to fixed-point
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
-	float LogScale = 0x1.EC709Cp30f / N; //! (2^32/Log[2^32]) / (N * (1-29/32)) = (2^32/Log[2^32] / (1-29/32)) / N
-	uint32_t *LogPower = (uint32_t*)Temp;
+	float LogScale = 0x1.715476p28f / N; //! (2^32/Log[2^32]) / (N * (1-10/20)) = (2^32/Log[2^32] / (1-10/20)) / N
+	uint32_t *Power    = (uint32_t*)Temp1;
+	uint32_t *LogPower = (uint32_t*)Data; //! <- Aliasing of Data[]
+	uint32_t *LogFloor = (uint32_t*)Temp2;
 	for(n=0;n<N;n++) {
 		v = Data[n] * Norm;
 		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
+		Power[n]    = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.62E430p-1f - logf(Norm); //! Pre-scale by Log[2] to account for noise mean at 0.5
-	float InvLogScale = N * 0x1.0A2B24p-31f;
+	float LogNorm     = 0x1.BB9D3Cp1f - logf(Norm); //! Pre-scale by 32.0 for noise quantizer
+	float InvLogScale = N * 0x1.62E430p-29f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
-	//! band's critical bandwidth.
-	int BandBeg = 0, BandEnd = 0;
-	uint32_t Sum = 0;
+	//! band's critical bandwidth, giving us a rough "noise floor"
+	int FloorBeg = 0, FloorEnd = 0; uint32_t FloorSum = 0;
 	for(n=0;n<N;n++) {
 		//! Re-focus analysis window
-		const int RangeScaleFxp = 5;
+		const int RangeScaleFxp = 4;
 		int BandLen; {
+			//! NOTE: This curve is overkill, but is very resistant
+			//! to amplitude spikes/dips across the analysis region,
+			//! making things sound a lot nicer/consistent.
+			//! NOTE: This has a known problem with harmonic sounds
+			//! combined with noise, where the noise amplitude is
+			//! overestimated due to not enough contrast between
+			//! the tonal spikes and the background noise.
 			int Old, New;
-			const int LoRangeScale = 29; //! Beg = 0.90625*Band
-			const int HiRangeScale = 32; //! End = 1.00000*Band
+			const int LoRangeScale = 10; //! Beg = 0.625*Band
+			const int HiRangeScale = 20; //! End = 1.250*Band
 
 			//! Remove samples that went out of focus
-			Old = BandBeg >> RangeScaleFxp, BandBeg += LoRangeScale;
-			New = BandBeg >> RangeScaleFxp;
+			Old = FloorBeg >> RangeScaleFxp, FloorBeg += LoRangeScale;
+			New = FloorBeg >> RangeScaleFxp;
 			if(Old < New) {
-				Sum -= LogPower[Old];
+				FloorSum -= LogPower[Old];
 			}
 			BandLen = New;
 
 			//! Add samples that came into focus
-			Old = BandEnd >> RangeScaleFxp, BandEnd += HiRangeScale;
-			New = BandEnd >> RangeScaleFxp; if(New > N) New = N;
+			Old = FloorEnd >> RangeScaleFxp, FloorEnd += HiRangeScale;
+			New = FloorEnd >> RangeScaleFxp; if(New > N) New = N;
 			if(Old < New) do {
-				Sum += LogPower[Old];
+				FloorSum += LogPower[Old];
 			} while(++Old < New);
 			BandLen = New - BandLen;
 		}
+		LogFloor[n] = FloorSum / BandLen;
+	}
 
-		//! Store the geometric mean
-		Data[n] = (Sum/BandLen)*InvLogScale + LogNorm;
+	//! Finally, take a weighted sum of the above-smoothed "noise floor".
+	//! In essence, this forces tones (which get a large weight at their
+	//! peak, but should have a low "noise floor" due to neighbouring bins
+	//! biasing the geometric mean towards -inf) to spread their low noise
+	//! amplitude out across more bins, but noise is preserved (as the
+	//! weights are somewhat evenly distributed amongst the peak levels).
+	int NoiseBeg = 0, NoiseEnd = 0; uint64_t NoiseSum = 0, NoiseSumW = 0;
+	for(n=0;n<N;n++) {
+		//! Re-focus analysis window
+		const int RangeScaleFxp = 4;
+		{
+			int Old, New;
+			const int LoRangeScale = 12; //! Beg = 0.750*Band
+			const int HiRangeScale = 18; //! End = 1.125*Band
+
+			//! Remove samples that went out of focus
+			Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
+			New = NoiseBeg >> RangeScaleFxp;
+			if(Old < New) {
+				NoiseSumW -= Power[Old];
+				NoiseSum  -= Power[Old] * (uint64_t)LogFloor[Old];
+			}
+
+			//! Add samples that came into focus
+			Old = NoiseEnd >> RangeScaleFxp, NoiseEnd += HiRangeScale;
+			New = NoiseEnd >> RangeScaleFxp; if(New > N) New = N;
+			if(Old < New) do {
+				NoiseSumW += Power[Old];
+				NoiseSum  += Power[Old] * (uint64_t)LogFloor[Old];
+			} while(++Old < New);
+		}
+		Data[n] = (NoiseSum/NoiseSumW)*InvLogScale + LogNorm;
 	}
 }
 
@@ -81,7 +122,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*2.0f, 0x7);
+	int NoiseQ = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 0xF);
 	return NoiseQ;
 }
 
@@ -130,7 +171,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*8.0f, 1 + 0xF); //! <- Account for dynamic range of NoiseQ vs. coefficients
+	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0xF);
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p16f); //! (1-Decay) * 2^16
 	if(NoiseDecay < 0x00) NoiseDecay = 0x00;
 	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
