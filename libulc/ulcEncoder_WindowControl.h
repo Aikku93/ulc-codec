@@ -117,30 +117,31 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//!  H(z) = 1 - (1-a)/(1 - a*z^-1)
 	{
 		//! NOTE: The output of the filters will be multiplied
-		//! together and then squared during summation of the
-		//! contraharmonic mean. So if our gain is 2^31, the
-		//! maximum value of the intermediate sum will be:
-		//!  N*(2^31 * 2^31)^2 = N*2^124
+		//! together during summation. So if our gain is 2^31,
+		//! the maximum value of the sum will be:
+		//!  N*(2^31 * 2^31) = N*2^62
 		//! We don't strictly need to normalize here, but
 		//! it can help, especially with ultra-quiet data.
+		//! NOTE: When the energy is integrated, it works better
+		//! to use the average as the energy measure. When the
+		//! energy is differentiated prior to integration, it
+		//! works better to use a contraharmonic mean.
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
 		float HPTap = TransientFilter[0], HPDecay = 252/256.0f, HPGain = (0x1.0p31f / SQR(4.0f)) / nChan;
 		float BPTap = TransientFilter[1], BPDecay = 252/256.0f, BPGain = (0x1.0p31f / SQR(2.0f)) / nChan;
 		      float *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = TmpBuffer;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
-			float v;
-			float Sum = 0.0f, SumW = 0.0f;
+			float Sum = 0.0f;
 			n = BinSize; do {
 				HPTap += (*Src++ * HPGain - HPTap)*(1.0f-HPDecay);
 				BPTap += (*Src++ * BPGain - BPTap)*(1.0f-BPDecay);
-				v     = HPTap*BPTap;
-				Sum  += v*v, SumW += v;
+				Sum   += HPTap*BPTap;
 			} while(--n);
 
 			//! Swap out the old "new" data, and replace with new "new" data
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
-			*Dst++ = Sum ? logf(Sum/SumW) : (-100.0f); //! -100 = Placeholder for Log[0]
+			*Dst++ = Sum ? logf(Sum) : (-100.0f); //! -100 = Placeholder for Log[0]
 		} while(--i);
 		TransientFilter[0] = HPTap;
 		TransientFilter[1] = BPTap;
@@ -271,7 +272,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Determine overlap size from the ratio
-	float DecimationRatio = (Log2SubBlockSize - 12) + 0x1.715476p0f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
+	float DecimationRatio = (Log2SubBlockSize - 14) + 0x1.715476p1f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
 	int OverlapScale = (DecimationRatio <= 0.0f) ? 0 : (DecimationRatio >= 7.0f) ? 7 : (int)DecimationRatio;
 	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
