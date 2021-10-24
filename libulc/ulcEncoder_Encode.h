@@ -148,7 +148,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 					Block_Encode_WriteNybble(v,   DstBuffer, Size);
 				} else {
 					//! 0h,Zh,Yh,Xh: 31 .. 286 zeros fill (Xh == 0)
-					v = zR - 31; if(v > 0x1FF) v = 0x1FF;
+					v = zR - 31; if(v > 0xFF) v = 0xFF;
 					n = v  + 31;
 					Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
 					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
