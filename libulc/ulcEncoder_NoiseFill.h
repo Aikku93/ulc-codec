@@ -23,17 +23,22 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	if(Norm == 0.0f) return;
 
 	//! Normalize the energy and convert to fixed-point
+	//! NOTE: The weights are derived from the coefficient
+	//! power, not amplitude. This favours the tone noise
+	//! levels (which should be lower) and avoid overdoing
+	//! the noise content in tonal passages.
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
 	float LogScale = 0x1.715476p28f / N; //! (2^32/Log[2^32]) / (N * (1-10/20)) = (2^32/Log[2^32] / (1-10/20)) / N
-	uint32_t *Power    = (uint32_t*)Temp1;
-	uint32_t *LogPower = (uint32_t*)Data; //! <- Aliasing of Data[]
+	uint32_t *Weight   = (uint32_t*)Temp1;
+	uint32_t *LogAmp   = (uint32_t*)Data; //! <- Aliasing of Data[]
 	uint32_t *LogFloor = (uint32_t*)Temp2;
 	for(n=0;n<N;n++) {
 		v = Data[n] * Norm;
-		LogPower[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
-		Power[n]    = (v <= 1.0f) ? 1 : (uint32_t)v;
+		LogAmp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
+		v = SQR(v) * 0x1.0p-32f; //! <- Convert Amplitude to Power
+		Weight[n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.BB9D3Cp1f - logf(Norm); //! Pre-scale by 32.0 for noise quantizer
+	float LogNorm     = 0x1.E7F9C2p1f - logf(Norm); //! Pre-scale by Scale=32.0*Sqrt[2] for noise quantizer (by adding Log[Scale]=0x1.E7F9C2p1)
 	float InvLogScale = N * 0x1.62E430p-29f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
@@ -51,6 +56,9 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 			//! combined with noise, where the noise amplitude is
 			//! overestimated due to not enough contrast between
 			//! the tonal spikes and the background noise.
+			//! I've tried to compensate for this by using the power
+			//! spectrum as the weight (instead of the amplitude),
+			//! but it still shows up sometimes.
 			int Old, New;
 			const int LoRangeScale = 10; //! Beg = 0.625*Band
 			const int HiRangeScale = 20; //! End = 1.250*Band
@@ -59,7 +67,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 			Old = FloorBeg >> RangeScaleFxp, FloorBeg += LoRangeScale;
 			New = FloorBeg >> RangeScaleFxp;
 			if(Old < New) {
-				FloorSum -= LogPower[Old];
+				FloorSum -= LogAmp[Old];
 			}
 			BandLen = New;
 
@@ -67,7 +75,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 			Old = FloorEnd >> RangeScaleFxp, FloorEnd += HiRangeScale;
 			New = FloorEnd >> RangeScaleFxp; if(New > N) New = N;
 			if(Old < New) do {
-				FloorSum += LogPower[Old];
+				FloorSum += LogAmp[Old];
 			} while(++Old < New);
 			BandLen = New - BandLen;
 		}
@@ -86,23 +94,23 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		const int RangeScaleFxp = 4;
 		{
 			int Old, New;
-			const int LoRangeScale = 12; //! Beg = 0.750*Band
-			const int HiRangeScale = 18; //! End = 1.125*Band
+			const int LoRangeScale = 13; //! Beg = 0.8125*Band
+			const int HiRangeScale = 18; //! End = 1.1250*Band
 
 			//! Remove samples that went out of focus
 			Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
 			New = NoiseBeg >> RangeScaleFxp;
 			if(Old < New) {
-				NoiseSumW -= Power[Old];
-				NoiseSum  -= Power[Old] * (uint64_t)LogFloor[Old];
+				NoiseSumW -= Weight[Old];
+				NoiseSum  -= Weight[Old] * (uint64_t)LogFloor[Old];
 			}
 
 			//! Add samples that came into focus
 			Old = NoiseEnd >> RangeScaleFxp, NoiseEnd += HiRangeScale;
 			New = NoiseEnd >> RangeScaleFxp; if(New > N) New = N;
 			if(Old < New) do {
-				NoiseSumW += Power[Old];
-				NoiseSum  += Power[Old] * (uint64_t)LogFloor[Old];
+				NoiseSumW += Weight[Old];
+				NoiseSum  += Weight[Old] * (uint64_t)LogFloor[Old];
 			} while(++Old < New);
 		}
 		Data[n] = (NoiseSum/NoiseSumW)*InvLogScale + LogNorm;
