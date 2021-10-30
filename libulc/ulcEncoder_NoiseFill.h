@@ -38,7 +38,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		v = SQR(v) * 0x1.0p-32f; //! <- Convert Amplitude to Power
 		Weight[n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.E7F9C2p1f - logf(Norm); //! Pre-scale by Scale=32.0*Sqrt[2] for noise quantizer (by adding Log[Scale]=0x1.E7F9C2p1)
+	float LogNorm     = 0x1.BB9D3Cp1f - logf(Norm); //! Pre-scale by Scale=32.0 for noise quantizer (by adding Log[Scale]=0x1.BB9D3Cp1)
 	float InvLogScale = N * 0x1.62E430p-29f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
@@ -113,7 +113,18 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 				NoiseSum  += Weight[Old] * (uint64_t)LogFloor[Old];
 			} while(++Old < New);
 		}
-		Data[n] = (NoiseSum/NoiseSumW)*InvLogScale + LogNorm;
+
+		//! We add a compensation here to account for losses in the
+		//! geometric mean we perform in the final passes to decide
+		//! the noise level code. This adjusts for uniform noise,
+		//! based on the analysis length by adding 1-1/Sqrt[N], and
+		//! then subtracting 0.5 because this sounds better. The
+		//! addition of 1-0.5 is placed in parenthesis with another
+		//! "constant" term (LogNorm) so that the compiler will
+		//! hopefully combine the addition rather than doing it for
+		//! every iteration of this loop.
+		float Unbias = 1.0f / sqrtf((n+2) * 0.5f);
+		Data[n] = (NoiseSum/NoiseSumW)*InvLogScale + (LogNorm + 0.5f) - Unbias;
 	}
 }
 
