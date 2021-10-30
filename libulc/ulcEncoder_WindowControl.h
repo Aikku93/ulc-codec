@@ -132,7 +132,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				HPTap += (UNITY_GAIN - HP)*(1.0f-HPDecay);
 				BPTap += (UNITY_GAIN - BP)*(1.0f-BPDecay);
 				SumHP += HP / (HPTap + SILENCE_BIAS);
-				SumBP += BP / (HPTap + SILENCE_BIAS);
+				SumBP += BP / (BPTap + SILENCE_BIAS);
 			} while(--n);
 
 			//! Swap out the old "new" data, and replace with new "new" data
