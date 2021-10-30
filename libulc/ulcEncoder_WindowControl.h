@@ -110,36 +110,33 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 #undef DOHP
 	}
 
-	//! Pass the signal power through smoothing filters to
-	//! approximate a sliding DFT window, and then multiply
-	//! the energy of the analysis bands.
-	//! Transfer function of the smoothing filter:
-	//!  H(z) = 1 - (1-a)/(1 - a*z^-1)
+	//! Pass the signal through a compressor envelope
+	//! generator, and then divide the signal by this
+	//! envelope (in effect producing an expander),
+	//! which then emphasizes transients.
 	{
-		//! NOTE: The output of the filters will be multiplied
-		//! together during summation. So if our gain is 2^31,
-		//! the maximum value of the sum will be:
-		//!  N*(2^31 * 2^31) = N*2^62
-		//! We don't strictly need to normalize here, but
-		//! it can help, especially with ultra-quiet data.
-		//! NOTE: When the energy is integrated, it works better
-		//! to use the average as the energy measure. When the
-		//! energy is differentiated prior to integration, it
-		//! works better to use a contraharmonic mean.
+		//! NOTE: (UNITY_GAIN/SILENCE_BIAS)^2 must not overflow.
+		const float UNITY_GAIN   = 0x1.0p31f;
+		const float SILENCE_BIAS = 0x1.0p-32f;
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float HPTap = TransientFilter[0], HPDecay = 252/256.0f, HPGain = (0x1.0p31f / SQR(4.0f)) / nChan;
-		float BPTap = TransientFilter[1], BPDecay = 252/256.0f, BPGain = (0x1.0p31f / SQR(2.0f)) / nChan;
+		float HPTap = TransientFilter[0], HPDecay = 254/256.0f, HPGain = (UNITY_GAIN / SQR(4.0f)) / nChan;
+		float BPTap = TransientFilter[1], BPDecay = 254/256.0f, BPGain = (UNITY_GAIN / SQR(2.0f)) / nChan;
 		      float *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = TmpBuffer;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
-			float Sum = 0.0f;
+			float HP, SumHP = 0.0f;
+			float BP, SumBP = 0.0f;
 			n = BinSize; do {
-				HPTap += (*Src++ * HPGain - HPTap)*(1.0f-HPDecay);
-				BPTap += (*Src++ * BPGain - BPTap)*(1.0f-BPDecay);
-				Sum   += HPTap*BPTap;
+				HP     = *Src++ * HPGain;
+				BP     = *Src++ * BPGain;
+				HPTap += (UNITY_GAIN - HP)*(1.0f-HPDecay);
+				BPTap += (UNITY_GAIN - BP)*(1.0f-BPDecay);
+				SumHP += HP / (HPTap + SILENCE_BIAS);
+				SumBP += BP / (HPTap + SILENCE_BIAS);
 			} while(--n);
 
 			//! Swap out the old "new" data, and replace with new "new" data
+			float Sum = SumHP*SumBP;
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
 			*Dst++ = Sum ? logf(Sum) : (-100.0f); //! -100 = Placeholder for Log[0]
 		} while(--i);
@@ -227,8 +224,8 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! If we don't have a significant attack, use release as transient marker
-		     if(MaxRatio > +ATT_THRES) TransientIndex = MaxIndex, TransientRatio =  MaxRatio;
-		else if(MinRatio < -DEC_THRES) TransientIndex = MinIndex, TransientRatio = -MinRatio;
+		     if(MaxRatio > +ATT_THRES) TransientIndex = MaxIndex, TransientRatio =  MaxRatio - ATT_THRES;
+		else if(MinRatio < -DEC_THRES) TransientIndex = MinIndex, TransientRatio = -MinRatio - DEC_THRES;
 		else                           TransientIndex = -1,       TransientRatio =  0.0f;
 	}
 
@@ -266,13 +263,13 @@ static inline int Block_Transform_GetWindowCtrl(
 			R = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR];
 			r = R-L;
 			if(r < -LEAK_THRES) {
-				TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR] = R + (LEAK_THRES - DEC_THRES);
+				TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1] = L + (DEC_THRES - LEAK_THRES);
 			}
 		}
 	}
 
 	//! Determine overlap size from the ratio
-	float DecimationRatio = (Log2SubBlockSize - 14) + 0x1.715476p1f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
+	float DecimationRatio = (Log2SubBlockSize - 12) + 0x1.715476p1f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
 	int OverlapScale = (DecimationRatio <= 0.0f) ? 0 : (DecimationRatio >= 7.0f) ? 7 : (int)DecimationRatio;
 	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
