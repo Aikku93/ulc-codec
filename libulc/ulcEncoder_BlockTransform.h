@@ -155,32 +155,61 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 
 				//! Cycle data through the lapping buffer
 				float *SmpBuf = BufferTemp; {
+					/*!   |            . | .____________|
+					      |            . |/.            |
+					      |            . | .            |
+					      |            . | .            |
+					      |____________./| .            |
+					      |            . | .            |
+					      <-    L    -><-M-><-    R    ->
+					      <-BlockSize/2->|<-BlockSize/2->
+					      <-         BlockSize         ->
+
+					    L_Size = (BlockSize - SubBlockSize)/2
+					    M_Size = SubBlockSize
+					    R_Size = (BlockSize - SubBlockSize)/2
+					    L_Offs = 0
+					    M_Offs = (BlockSize - SubBlockSize)/2
+					    R_Offs = (BlockSize + SubBlockSize)/2
+
+					    The L segment contains all 0s.
+					    The M segment contains our lapping data.
+					    The R segment contains data that we must transform.
+
+					    Therefore:
+					    When using Fourier_MDCT_MDST(), we must align BufferFwdLap
+					    with the M segment, and cycle data through the R segment.
+					!*/
+
 					//! Do we have the full [sub]block in the R side of the lapping buffer?
 					int nAvailable = (BlockSize-SubBlockSize)/2;
 					      float *SmpDst = SmpBuf;
-					      float *LapDst = BufferFwdLap + (BlockSize-SubBlockSize)/2;
+					      float *LapDst = BufferFwdLap + (BlockSize+SubBlockSize)/2;
 					const float *LapSrc = LapDst;
 					if(nAvailable < SubBlockSize) {
 						//! Don't have enough samples in lapping buffer
 						//! for the full block - stream new data in and
 						//! refill the lapping buffer
-						for(n=0;n<nAvailable;  n++) *SmpDst++ = *--LapSrc;
+						for(n=0;n<nAvailable;  n++) *SmpDst++ = *LapSrc++;
 						for(   ;n<SubBlockSize;n++) *SmpDst++ = *BufferSamples++;
-						for(n=0;n<nAvailable;  n++) *--LapDst = *BufferSamples++;
+						for(n=0;n<nAvailable;  n++) *LapDst++ = *BufferSamples++;
 					} else {
 						//! We got a full [sub]block, and we might have data
 						//! remaining in the lapping buffer. This data must
 						//! now be shifted down and then the lapping buffer
 						//! refilled with new data
-						for(n=0;n<SubBlockSize;n++) *SmpDst++ = *--LapSrc;
-						for(   ;n<nAvailable;  n++) *--LapDst = *--LapSrc;
-						for(n=0;n<SubBlockSize;n++) *--LapDst = *BufferSamples++;
+						for(n=0;n<SubBlockSize;n++) *SmpDst++ = *LapSrc++;
+						for(   ;n<nAvailable;  n++) *LapDst++ = *LapSrc++;
+						for(n=0;n<SubBlockSize;n++) *LapDst++ = *BufferSamples++;
 					}
 				}
 
-				//! Perform the actual MDCT
-				Fourier_MDCT(
+				//! Perform the actual MDCT+MDST
+				//! NOTE: BufferIndex[] used for MDST output
+				float *BufferMDST = BufferIndex;
+				Fourier_MDCT_MDST(
 					BufferMDCT,
+					BufferMDST,
 					SmpBuf,
 					BufferFwdLap + (BlockSize-SubBlockSize)/2,
 					BufferTemp,
@@ -190,18 +219,29 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				);
 
 				//! Normalize the spectra, and then accumulate the
-				//! MDCT coefficients for psychoacoustic analysis.
+				//! coefficients for psychoacoustic analysis.
+				//! MDCT is treated as the Real part of a DFT,
+				//! while MDST is treated as the Imaginary part.
 				float Norm = 2.0f / SubBlockSize;
 				for(n=0;n<SubBlockSize;n++) {
-					float v = (BufferMDCT[n] *= Norm);
+					//! NOTE: MDST is only used here, so don't bother
+					//! storing back the normalized data once we're done.
+					float Re = (BufferMDCT[n] *= Norm), Re2 = SQR(Re);
+					float Im = (BufferMDST[n] *  Norm), Im2 = SQR(Im);
+					float Abs2 = Re2 + Im2;
 #if ULC_USE_NOISE_CODING
-					BufferNoise[n] = ABS(v);
+					BufferNoise[n] = Abs2;
 #endif
 #if ULC_USE_PSYCHOACOUSTICS
-					BufferAmp2[n] += SQR(v);
+					BufferAmp2[n] += Abs2;
 #endif
-					Complexity  += SQR(v);
-					ComplexityW += ABS(v);
+					//! NOTE: Using MDCT coefficients for complexity analysis
+					//! works out much better than combined MDCT+MDST as the
+					//! behaviour is far less eratic (and also gives accurate
+					//! statistics about the encoding performance, since we
+					//! don't actually code MDST coefficients).
+					Complexity  += Re2;
+					ComplexityW += ABS(Re);
 				}
 #if ULC_USE_NOISE_CODING
 				//! Compute noise spectrum
@@ -222,7 +262,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(n=0;n<BlockSize;n++) BufferSamples[n-BlockSize] = *Data++;
 
 			//! Move to the next channel
-			BufferFwdLap += BlockSize/2;
+			BufferFwdLap += BlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
 			BufferAmp2   -= BlockSize; //! <- Accumulated across all channels - rewind
 #endif
