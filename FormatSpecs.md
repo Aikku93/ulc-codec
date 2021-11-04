@@ -115,7 +115,7 @@ For each of the remaining coefficients in the block, noise is used in place of e
     Coef[n++] = Amplitude * [randomly generated +/-1]
     Amplitude = Amplitude * Decay
 
-The quantizer is scaled by 1/32 because a coefficient is considered "lost" (or "masked") if its level falls 8X below the quantizer threshold (the threshold being a Lehmer mean with p=2). Since the noise level codes one more bit than a coefficient (owed to not having to code a sign bit), its dynamic range is extended by 2^2 (as  the levels are companded prior to encoding), and thus 8*2^2 = 32.
+The quantizer is scaled by 1/16, as this was found to give consistently good results with very minimal overload/saturation and underload/collapse.
 
 #### ```8h,1h..Fh```: Zeros run (short)
 
