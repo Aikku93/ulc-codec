@@ -28,7 +28,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	//! levels (which should be lower) and avoid overdoing
 	//! the noise content in tonal passages.
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
-	float LogScale = 0x1.715476p28f / N; //! (2^32/Log[2^32]) / (N * (1-10/20)) = (2^32/Log[2^32] / (1-10/20)) / N
+	float LogScale = 0x1.83CBE3p28f / N; //! (2^32/Log[2^32]) / (N * (1-22/42)) = (2^32/Log[2^32] / (1-22/42)) / N
 	uint32_t *Weight   = (uint32_t*)Temp1;
 	uint32_t *LogAmp   = (uint32_t*)Data; //! <- Aliasing of Data[]
 	uint32_t *LogFloor = (uint32_t*)Temp2;
@@ -37,8 +37,8 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		LogAmp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 		Weight[n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.8F40B6p1f - 0.5f*logf(Norm); //! Pre-scale by Scale=32.0/Sqrt[2] for noise quantizer (by adding Log[Scale]=0x1.8F40B6p1)
-	float InvLogScale = N * 0x1.62E430p-30f;
+	float LogNorm     = 0x1.3687AAp1f - 0.5f*logf(Norm); //! Pre-scale by Scale=16.0/Sqrt[2] for noise quantizer (by adding Log[Scale]=0x1.3687AAp1)
+	float InvLogScale = N * 0x1.51FDE5p-30f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
 	//! This is achieved by using a geometric mean over each frequency
@@ -46,7 +46,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	int FloorBeg = 0, FloorEnd = 0; uint32_t FloorSum = 0;
 	for(n=0;n<N;n++) {
 		//! Re-focus analysis window
-		const int RangeScaleFxp = 4;
+		const int RangeScaleFxp = 5;
 		int BandLen; {
 			//! NOTE: This curve is overkill, but is very resistant
 			//! to amplitude spikes/dips across the analysis region,
@@ -59,8 +59,8 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 			//! spectrum as the weight (instead of the amplitude),
 			//! but it still shows up sometimes.
 			int Old, New;
-			const int LoRangeScale = 10; //! Beg = 0.625*Band
-			const int HiRangeScale = 20; //! End = 1.250*Band
+			const int LoRangeScale = 22; //! Beg = 1 - 0.3125*Band
+			const int HiRangeScale = 42; //! End = 1 + 0.3125*Band
 
 			//! Remove samples that went out of focus
 			Old = FloorBeg >> RangeScaleFxp, FloorBeg += LoRangeScale;
@@ -90,11 +90,11 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	int NoiseBeg = 0, NoiseEnd = 0; uint64_t NoiseSum = 0, NoiseSumW = 0;
 	for(n=0;n<N;n++) {
 		//! Re-focus analysis window
-		const int RangeScaleFxp = 4;
+		const int RangeScaleFxp = 5;
 		{
 			int Old, New;
-			const int LoRangeScale = 13; //! Beg = 0.8125*Band
-			const int HiRangeScale = 18; //! End = 1.1250*Band
+			const int LoRangeScale = 27; //! Beg = 1 - 0.15625*Band
+			const int HiRangeScale = 37; //! End = 1 + 0.15625*Band
 
 			//! Remove samples that went out of focus
 			Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
