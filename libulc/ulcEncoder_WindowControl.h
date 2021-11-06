@@ -159,18 +159,10 @@ static inline int Block_Transform_GetWindowCtrl(
 	float L, R, r;
 
 	//! Control thresholds
-	//! NOTE: The "raw" thresholds (without THRES_CORRECTION) were
-	//! tuned for BlockSize=2048, so we compensate by multiplying
-	//! with 2048/BlockSize:
-	//!  Log[CorrectedThreshold] = Log[Threshold * 2048/BlockSize]
-	//!  =Log[Threshold] + Log[2048/BlockSize]
-	//!  =Log[Threshold] + (1/Log2[E])*Log2[2048/BlockSize]
-	//!  =Log[Threshold] + (1/Log2[E])*(11 - Log2[BlockSize])
-	const float THRES_CORRECTION = 0x1.62E430p-1f*(11 - Log2BlockSize); //! 0x1.62E430p-1 = 1/Log2[E], for change of base
-	const float ATT_THRES  = THRES_CORRECTION + 0x1.62E430p0f;  //! Log[ 4]; attack threshold
-	const float DEC_THRES  = THRES_CORRECTION + 0x1.62E430p1f;  //! Log[16]; decay threshold
-	const float LEAK_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[ 2]; post-echo leakage threshold
-	const float EDGE_THRES = THRES_CORRECTION + 0x1.62E430p-1f; //! Log[ 2]; edge-case threshold (x[n+1]/x[n-1] must be this much higher/lower than x[n]/x[n-1])
+	const float ATT_THRES  = 0x1.62E430p0f;  //! Log[ 4]; attack threshold
+	const float DEC_THRES  = 0x1.62E430p1f;  //! Log[16]; decay threshold
+	const float LEAK_THRES = 0x1.62E430p-1f; //! Log[ 2]; post-echo leakage threshold
+	const float EDGE_THRES = 0x1.62E430p-1f; //! Log[ 2]; edge-case threshold (x[n+1]/x[n-1] must be this much higher/lower than x[n]/x[n-1])
 
 	//! Perform filtering to obtain transient analysis
 	//! then seek to this "new" block's transient data
@@ -223,9 +215,21 @@ static inline int Block_Transform_GetWindowCtrl(
 			if(r < MinRatio-EDGE_THRES) MinRatio = r;
 		}
 
+		//! "Unbias" the ratios based on the block size.
+		//! Everything here has been tuned to operate best with
+		//! BlockSize=2048 (and everything seems to converge on
+		//! this being the best BlockSize to tune in), so:
+		//!  Log2[(BlockSize/2048)^2]
+		//! =(2/Log2[E]) * Log2[BlockSize/2048]
+		//! =(2/Log2[E]) * (Log2[BlockSize] - Log2[2048])
+		//! =(2/Log2[E]) * (Log2[BlockSize] - 11)
+		float RatioAdjust = 0x1.62E430p0f*(Log2BlockSize - 11); //! 0x1.62E430p0 = 2/Log2[E]
+		MaxRatio += RatioAdjust;
+		MinRatio -= RatioAdjust;
+
 		//! If we don't have a significant attack, use release as transient marker
-		     if(MaxRatio > +ATT_THRES) TransientIndex = MaxIndex, TransientRatio =  MaxRatio - ATT_THRES;
-		else if(MinRatio < -DEC_THRES) TransientIndex = MinIndex, TransientRatio = -MinRatio - DEC_THRES;
+		     if(MaxRatio > +ATT_THRES) TransientIndex = MaxIndex, TransientRatio =  MaxRatio;
+		else if(MinRatio < -DEC_THRES) TransientIndex = MinIndex, TransientRatio = -MinRatio;
 		else                           TransientIndex = -1,       TransientRatio =  0.0f;
 	}
 
@@ -269,7 +273,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	}
 
 	//! Determine overlap size from the ratio
-	float DecimationRatio = (Log2SubBlockSize - 12) + 0x1.715476p1f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
+	float DecimationRatio = 0x1.715476p0f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
 	int OverlapScale = (DecimationRatio <= 0.0f) ? 0 : (DecimationRatio >= 7.0f) ? 7 : (int)DecimationRatio;
 	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
