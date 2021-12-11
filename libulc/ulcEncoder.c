@@ -48,7 +48,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*BlockSize));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * ((nChan + (nChan < 2)) * BlockSize));
 	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan*BlockSize));
-	CREATE_BUFFER(TransientBuffer, sizeof(float) * ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
+	CREATE_BUFFER(TransientBuffer, sizeof(struct ULC_TransientData_t) * ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
 #undef CREATE_BUFFER
 
 	//! Allocate buffer space
@@ -65,15 +65,18 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
-	State->TransientBuffer = (float*)(Buf + TransientBuffer_Offs);
+	State->TransientBuffer = (struct ULC_TransientData_t*)(Buf + TransientBuffer_Offs);
 
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap. Doesn't really matter, though.
-	for(i=0;i<2;              i++) State->TransientFilter[i] = 0.0f;
+	for(i=0;i<3;              i++) State->TransientFilter[i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
-	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) State->TransientBuffer[i] = -100.0f; //! -100 = Placeholder for Log[0]
+	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) {
+		//! -100 = Placeholder for Log[0]
+		State->TransientBuffer[i] = (struct ULC_TransientData_t){.Att = 0.0f, .Dec = 0.0f, .AttW = 0.0f, .DecW = 0.0f};
+	}
 
 	//! Success
 	return 1;

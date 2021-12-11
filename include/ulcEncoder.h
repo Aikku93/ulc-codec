@@ -50,6 +50,10 @@
 //!      ...
 //!      ModulationWindow[BlockSize],
 //!    }
+struct ULC_TransientData_t {
+	float Att,  Dec;
+	float AttW, DecW;
+};
 struct ULC_EncoderState_t {
 	//! Global state (do not change after initialization)
 	int RateHz;     //! Playback rate (used for rate control)
@@ -66,12 +70,12 @@ struct ULC_EncoderState_t {
 	//!   float TransformFwdLap[nChan*BlockSize]
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   int   TransformIndex [nChan*BlockSize]
-	//!   float TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*2]
+	//!   ULC_TransientData_t TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*2]
 	//! BufferData contains the original pointer returned by malloc()
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
 	float  BlockComplexity;   //! Coefficient distribution complexity (0 = Highly tonal, 1 = Highly noisy)
-	float  TransientFilter[2];
+	float  TransientFilter[3];
 	void  *BufferData;
 	float *SampleBuffer;
 	float *TransformBuffer;
@@ -81,7 +85,7 @@ struct ULC_EncoderState_t {
 	float *TransformFwdLap;
 	float *TransformTemp;
 	int   *TransformIndex;
-	float *TransientBuffer;
+	struct ULC_TransientData_t *TransientBuffer;
 };
 
 /**************************************/
