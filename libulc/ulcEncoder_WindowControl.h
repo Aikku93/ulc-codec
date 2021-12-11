@@ -46,21 +46,20 @@
 //!  The starred subblocks set overlap scaling with regards to the last [sub]block.
 //! NOTE:
 //!  -TransientBuffer[] must be ULC_MAX_BLOCK_DECIMATION_FACTOR*2 in size
-//!   and will be updated as (L = R_Old, R = New). This array will store
-//!   logarithmic values, so must be initialized as an approximation to
-//!   Log[0] (-100 should be fine for all cases).
+//!   and will be updated as (L = R_Old, R = New). Initialize with 0.
 //!  -TmpBuffer[] must be BlockSize*2 in size
-//!  -TransientFilter[] must be 2 elements in size
+//!  -TransientFilter[] must be 3 elements in size
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	const float *ThisBlockData,
 	const float *LastBlockData,
-	      float *TransientBuffer,
+	struct ULC_TransientData_t *TransientBuffer,
 	      float *TransientFilter,
 	      float *TmpBuffer,
 	      int    BlockSize,
-	      int    nChan
+	      int    nChan,
+	      int    RateHz
 ) {
 	int n, Chan;
 
@@ -74,207 +73,158 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! Transfer functions:
 	//!  Highpass: H(z) = -z^-1 + 2 - z^1 (Gain: 4.0)
 	//!  Bandpass: H(z) = -z^-1     + z^1 (Gain: 2.0)
-	//! NOTE: We need to center the buffer between the two
-	//! blocks (Old/New) for correct MDCT window alignment.
-	//! With window switching enabled, we also want to fix
-	//! edge cases where we need to apply jitter correction,
-	//! which means the "true" center is off by one segment.
-	//! Without window switching, we present the data fully
-	//! centered, but cannot perform jitter correction. It
-	//! really should not be necessary, though, as it won't
-	//! improve the output much, if at all.
-	//! NOTE: The filters used here is noncausal, so we
-	//! apply a 1-sample delay to compensate.
-	for(n=0;n<BlockSize*2;n++) TmpBuffer[n] = 0.0f;
-	for(Chan=0;Chan<nChan;Chan++) {
-#define DOHP(zM1, z0, z1) *Dst++ += SQR(-(zM1) + 2*(z0) - (z1))
-#define DOBP(zM1, z0, z1) *Dst++ += SQR(-(zM1)          + (z1))
-#define DOFILTER(zM1, z0, z1) DOHP(zM1, z0, z1), DOBP(zM1, z0, z1)
-		int Lag = BlockSize/2; if(ULC_USE_WINDOW_SWITCHING) Lag -= BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		Lag += 1; //! Noncausal filter compensation
-		float *Dst = TmpBuffer;
-		const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-Lag;
-		const float *SrcNew = ThisBlockData + Chan*BlockSize;
-		for(n=0;n<Lag-1;n++) {
-			DOFILTER(SrcOld[-1], SrcOld[ 0], SrcOld[+1]), SrcOld++;
-		}
-		{
-			DOFILTER(SrcOld[-1], SrcOld[ 0], SrcNew[ 0]), SrcOld++, n++;
-			DOFILTER(SrcOld[-1], SrcNew[ 0], SrcNew[+1]), SrcNew++, n++;
-		}
-		for(;n<BlockSize;n++) {
-			DOFILTER(SrcNew[-1], SrcNew[ 0], SrcNew[+1]), SrcNew++;
-		}
+	//! The output of these filters is multiplied together as
+	//! we will later use a geometric mean to combine them.
+	float *BufHP = TmpBuffer;
+	float *BufBP = TmpBuffer + BlockSize; {
+		for(n=0;n<BlockSize;n++) BufHP[n] = BufBP[n] = 0.0f;
+		for(Chan=0;Chan<nChan;Chan++) {
+			int Lag = BlockSize/2; //! MDCT alignment
+			float *DstHP = BufHP;
+			float *DstBP = BufBP;
+			const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-Lag;
+			const float *SrcNew = ThisBlockData + Chan*BlockSize;
+#define FILTHP(zM1, z0, z1) *DstHP++ += SQR(-(zM1) + 2*(z0) - (z1))
+#define FILTBP(zM1, z0, z1) *DstBP++ += SQR(-(zM1)          + (z1))
+#define DOFILTER(zM1, z0, z1) FILTHP(zM1, z0, z1), FILTBP(zM1, z0, z1)
+			for(n=0;n<Lag-1;n++) {
+				DOFILTER(SrcOld[-1], SrcOld[ 0], SrcOld[+1]), SrcOld++;
+			}
+			{
+				DOFILTER(SrcOld[-1], SrcOld[ 0], SrcNew[ 0]), SrcOld++, n++;
+				DOFILTER(SrcOld[-1], SrcNew[ 0], SrcNew[+1]), SrcNew++, n++;
+			}
+			for(;n<BlockSize;n++) {
+				DOFILTER(SrcNew[-1], SrcNew[ 0], SrcNew[+1]), SrcNew++;
+			}
 #undef DOFILTER
-#undef DOBP
-#undef DOHP
+#undef FILTBP
+#undef FILTHP
+		}
 	}
 
-	//! Pass the signal through a compressor envelope
-	//! generator, and then divide the signal by this
-	//! envelope (in effect producing an expander),
-	//! which then emphasizes transients.
+	//! Model the attack and decay envelopes, and then
+	//! integrate them separately over each segment.
 	{
-		//! NOTE: (UNITY_GAIN/SILENCE_BIAS)^2 must not overflow.
-		const float UNITY_GAIN   = 0x1.0p31f;
-		const float SILENCE_BIAS = 0x1.0p-32f;
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float HPTap = TransientFilter[0], HPDecay = 254/256.0f, HPGain = (UNITY_GAIN / SQR(4.0f)) / nChan;
-		float BPTap = TransientFilter[1], BPDecay = 254/256.0f, BPGain = (UNITY_GAIN / SQR(2.0f)) / nChan;
-		      float *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
-		const float *Src = TmpBuffer;
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D7p8f  / RateHz); //!  -3.0dB/ms
+		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p8f  / RateHz); //!  -3.0dB/ms
+		float EnvDec  = TransientFilter[2], DecRate  = expf(-0x1.5A92D7p10f / RateHz); //! -12.0dB/ms
+		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
+		const float *SrcHP = BufHP;
+		const float *SrcBP = BufBP;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
-			float HP, SumHP = 0.0f;
-			float BP, SumBP = 0.0f;
+			float v;
+			struct ULC_TransientData_t Sum = {.Att = 0.0f, .Dec = 0.0f, .AttW = 0.0f, .DecW = 0.0f};
 			n = BinSize; do {
-				HP     = *Src++ * HPGain;
-				BP     = *Src++ * BPGain;
-				HPTap += (UNITY_GAIN - HP)*(1.0f-HPDecay);
-				BPTap += (UNITY_GAIN - BP)*(1.0f-BPDecay);
-				SumHP += HP / (HPTap + SILENCE_BIAS);
-				SumBP += BP / (BPTap + SILENCE_BIAS);
+				//! Accumulate and subtract the "drift" bias
+				//! (ie. the amplitude at which everything is
+				//! happening around) to "unbias" the signal
+				//! and center it about 0 for attack/decay.
+				v        = sqrtf(sqrtf((*SrcHP++) * (*SrcBP++))); //! Pow2Amp[GeometricMean[{HP,BP}]] = Sqrt[Sqrt[HP*BP]]
+				EnvGain += (v - EnvGain)*(1.0f-GainRate);
+				v       -= EnvGain;
+
+				//! Update the attack/decay curves and integrate each
+				//! as the contraharmonic mean power over each segment.
+				//! Using a contraharmonic mean allows us to catch
+				//! onsets a lot more cleanly when they're "on the edge".
+				//! NOTE: EnvDec is sign-inverted.
+				//! NOTE: Envelope attack (fade-in) is proportional to
+				//! the signal level, whereas envelope decay (fade-out)
+				//! follows a constant falloff.
+				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= AttRate;
+				if(v <= EnvDec) EnvDec += (v-EnvDec)*(1.0f-DecRate); else EnvDec *= DecRate;
+				v = SQR(EnvAtt); Sum.Att += SQR(v), Sum.AttW += v;
+				v = SQR(EnvDec); Sum.Dec += SQR(v), Sum.DecW += v;
 			} while(--n);
 
 			//! Swap out the old "new" data, and replace with new "new" data
-			float Sum = SumHP*SumBP;
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
-			*Dst++ = Sum ? logf(Sum) : (-100.0f); //! -100 = Placeholder for Log[0]
+			*Dst++ = Sum;
 		} while(--i);
-		TransientFilter[0] = HPTap;
-		TransientFilter[1] = BPTap;
+		TransientFilter[0] = EnvGain;
+		TransientFilter[1] = EnvAtt;
+		TransientFilter[2] = EnvDec;
 	}
 }
 #pragma GCC pop_options
 static inline int Block_Transform_GetWindowCtrl(
 	const float *ThisBlockData,
 	const float *LastBlockData,
-	      float *TransientBuffer,
+	struct ULC_TransientData_t *TransientBuffer,
 	      float *TransientFilter,
 	      float *TmpBuffer,
 	      int    BlockSize,
-	      int    nChan
+	      int    nChan,
+	      int    RateHz
 ) {
 	int n;
-	int Log2BlockSize = 31 - __builtin_clz(BlockSize);
-	float L, R, r;
-
-	//! Control thresholds
-	const float ATT_THRES  = 0x1.62E430p0f;  //! Log[ 4]; attack threshold
-	const float DEC_THRES  = 0x1.62E430p1f;  //! Log[16]; decay threshold
-	const float LEAK_THRES = 0x1.62E430p-1f; //! Log[ 2]; post-echo leakage threshold
-	const float EDGE_THRES = 0x1.62E430p-1f; //! Log[ 2]; edge-case threshold (x[n+1]/x[n-1] must be this much higher/lower than x[n]/x[n-1])
 
 	//! Perform filtering to obtain transient analysis
 	//! then seek to this "new" block's transient data
 	//! (which is centered between the two blocks).
-	//! NOTE: Without window switching, the output of
-	//! the filter has already been centered and we
-	//! simply move to the next block at once.
-	//! With window switching, we're shifted by one
-	//! segment relative to the center, so we adjust.
-	Block_Transform_GetWindowCtrl_TransientFiltering(ThisBlockData, LastBlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan);
-	TransientBuffer += ULC_MAX_BLOCK_DECIMATION_FACTOR - ULC_USE_WINDOW_SWITCHING;
+	Block_Transform_GetWindowCtrl_TransientFiltering(ThisBlockData, LastBlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan, RateHz);
+	TransientBuffer += ULC_MAX_BLOCK_DECIMATION_FACTOR;
 
-	//! Find the most relevant transient
-	int   TransientIndex;
-	float TransientRatio; {
-		//! Find the segment with the largest attack/release
-		int MaxIndex = 0; float MaxRatio = -1000.0f;
-		int MinIndex = 0; float MinRatio = +1000.0f;
-		for(n=0;n<ULC_MAX_BLOCK_DECIMATION_FACTOR;n++) {
-			L = TransientBuffer[n-1];
-			R = TransientBuffer[n];
-			r = R-L;
-			if(r > MaxRatio) MaxIndex = n, MaxRatio = r;
-			if(r < MinRatio) MinIndex = n, MinRatio = r;
-		}
-
-		//! In some cases, jitter happens and our transient ratio
-		//! becomes skewed due to a higher-than-expected value in
-		//! the previous segment. This attempts to compensate by
-		//! comparing the next segment against the previous, and
-		//! deciding whether to use that ratio instead of
-		//! the 'canonical' ratio of x[n]/x[n-1].
-		//! NOTE: Despite what intuition tells us, we dot NOT
-		//! alter the transient subblock index. This can cause
-		//! serious artifacts when transients "only just" begin
-		//! on that subblock, as then that large spike in energy
-		//! will pre-echo very audibly. A similar issue happens
-		//! with decay transients and post-echo.
-		if(ULC_USE_WINDOW_SWITCHING) {
-			//! Attack
-			L = TransientBuffer[MaxIndex-1];
-			R = TransientBuffer[MaxIndex+1];
-			r = R-L;
-			if(r > MaxRatio+EDGE_THRES) MaxRatio = r;
-
-			//! Decay
-			L = TransientBuffer[MinIndex-2];
-			R = TransientBuffer[MinIndex];
-			r = R-L;
-			if(r < MinRatio-EDGE_THRES) MinRatio = r;
-		}
-
-		//! "Unbias" the ratios based on the block size.
-		//! Everything here has been tuned to operate best with
-		//! BlockSize=2048 (and everything seems to converge on
-		//! this being the best BlockSize to tune in), so:
-		//!  Log2[(BlockSize/2048)^2]
-		//! =(2/Log2[E]) * Log2[BlockSize/2048]
-		//! =(2/Log2[E]) * (Log2[BlockSize] - Log2[2048])
-		//! =(2/Log2[E]) * (Log2[BlockSize] - 11)
-		float RatioAdjust = 0x1.62E430p0f*(Log2BlockSize - 11); //! 0x1.62E430p0 = 2/Log2[E]
-		MaxRatio += RatioAdjust;
-		MinRatio -= RatioAdjust;
-
-		//! If we don't have a significant attack, use release as transient marker
-		     if(MaxRatio > +ATT_THRES) TransientIndex = MaxIndex, TransientRatio =  MaxRatio;
-		else if(MinRatio < -DEC_THRES) TransientIndex = MinIndex, TransientRatio = -MinRatio;
-		else                           TransientIndex = -1,       TransientRatio =  0.0f;
-	}
-
-	//! Attempt to enlarge the window to the right (if there is no post-echo)
-	int Decimation       = 0b0001; //! Default to SubBlocks={N/1}
-	int Log2SubBlockSize = Log2BlockSize;
-	if(TransientIndex != -1) {
-		int AnalysisLen = 1;
-		int PostEchoIsHandled = 0;
-		Decimation        = ULC_MAX_BLOCK_DECIMATION_FACTOR + TransientIndex;
-		Log2SubBlockSize -= 31 - __builtin_clz(ULC_MAX_BLOCK_DECIMATION_FACTOR); //! Log2[BlockSize/MAX_DECIMATION_FACTOR]
-		while((Decimation & 1) == 0) {
-			//! Check for decaying segments
-			//! NOTE: We already checked AnalysisLen/2 segments,
-			//! so we can start at AnalysisLen/2.
-			for(n=AnalysisLen/2;n<AnalysisLen;n++) {
-				L = TransientBuffer[TransientIndex+n];
-				R = TransientBuffer[TransientIndex+n+1];
-				r = R-L;
-				if(r < -LEAK_THRES) { PostEchoIsHandled = 1; break; }
+	//! Keep decimating until no pre-/post-echo is detected in any segment
+	int   Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
+	int   Decimation     = 0b0001;
+	float TransientRatio = 0.0f; {
+		int nSegments   = 1;
+		int SegmentSize = ULC_MAX_BLOCK_DECIMATION_FACTOR;
+		for(;;) {
+			//! Get the maximum Attack or Decay ratio for all segments
+			//! NOTE: The ratio is calculated as AttR/DecL multiplied
+			//! by AttR/AttL. The former is the most important ratio
+			//! as it describes how much pre-echo we will have, while
+			//! the latter just serves to clean things up when attack
+			//! swells and takes a while to decay (this can cause the
+			//! segment after the onset to be chosen instead, which
+			//! can cause annoying pre-echo glitching). Conveniently,
+			//! this latter ratio also ensures that decay transients
+			//! are considered "less important" than attack.
+			int Segment;
+			int MaxSegment = 0; float MaxRatio = -1000.0f;
+			for(Segment=0;Segment<nSegments;Segment++) {
+				struct ULC_TransientData_t L = {.Att = 0.0f, .Dec = 0.0f, .AttW = 0.0f, .DecW = 0.0f};
+				struct ULC_TransientData_t R = {.Att = 0.0f, .Dec = 0.0f, .AttW = 0.0f, .DecW = 0.0f};
+				const struct ULC_TransientData_t *Src = TransientBuffer + Segment*SegmentSize;
+				for(n=0;n<SegmentSize;n++) {
+#define ADDSEGMENT(Dst, Src) Dst.Att += Src.Att, Dst.Dec += Src.Dec, Dst.AttW += Src.AttW, Dst.DecW += Src.DecW
+					ADDSEGMENT(L, Src[-1-n]);
+					ADDSEGMENT(R, Src[   n]);
+#undef ADDSEGMENT
+				}
+				L.Att = L.Att ? logf(L.Att / L.AttW) : (-100.0f); //! -100 = Placeholder for Log[0]
+				L.Dec = L.Dec ? logf(L.Dec / L.DecW) : (-100.0f);
+				R.Att = R.Att ? logf(R.Att / R.AttW) : (-100.0f);
+				float Ratio  = ABS(R.Att - L.Dec) + (R.Att - L.Att);
+				if(Ratio > MaxRatio) MaxSegment = Segment, MaxRatio = Ratio;
 			}
-			if(PostEchoIsHandled) break;
+			MaxRatio *= 0x1.715476p0f; //! 0x1.715476p0 = 1/Log[2] for change of base
 
-			//! No decay transient (yet) - Keep enlarging
-			Log2SubBlockSize++;
-			AnalysisLen *= 2;
-			Decimation >>= 1;
-		}
+			//! If no transients are detected, break out and use last values
+			//! NOTE: 2.0 is the threshold for SubBlockSize=2048 and it scales
+			//! proportionally to the subblock size.
+			float Thres = 1 + 11-Log2SubBlockSize; //! Log2[2.0 * 2048/SubBlockSize]
+			if(MaxRatio < Thres) break;
 
-		//! When leakage happens on the edge of a block,
-		//! ensure that the next segment triggers a decay
-		//! transient event.
-		if(!PostEchoIsHandled) {
-			L = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1];
-			R = TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR];
-			r = R-L;
-			if(r < -LEAK_THRES) {
-				TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR-1] = L + (DEC_THRES - LEAK_THRES);
-			}
+			//! Set new decimation pattern + transient ratio, and continue
+			//! NOTE: Also cut off at SubBlockSize=64. This should be plenty.
+			Decimation     = nSegments + MaxSegment;
+			TransientRatio = MaxRatio - Thres;
+			if(SegmentSize > 1 && Log2SubBlockSize > 6) {
+				//! Increase temporal resolution
+				nSegments   *= 2;
+				SegmentSize /= 2;
+				Log2SubBlockSize--;
+			} else break;
 		}
 	}
 
 	//! Determine overlap size from the ratio
-	float DecimationRatio = 0x1.715476p0f*TransientRatio; //! 0x1.715476p0 = 1/Log[2] for change of base
-	int OverlapScale = (DecimationRatio <= 0.0f) ? 0 : (DecimationRatio >= 7.0f) ? 7 : (int)DecimationRatio;
+	int OverlapScale = (TransientRatio < 0.5f) ? 0 : (TransientRatio >= 6.5f) ? 7 : (int)(TransientRatio+0.5f);
 	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
 
 	//! Return the combined overlap+window switching parameters
