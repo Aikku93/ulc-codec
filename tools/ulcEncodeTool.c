@@ -51,7 +51,7 @@ int main(int argc, const char *argv[]) {
 		for(n=5;n<argc;n++) {
 			if(!memcmp(argv[n], "-nc:", 4)) {
 				int x = atoi(argv[n] + 4);
-				if(n > 0 && n < 65535) nChan = x;
+				if(x > 0 && x < 65535) nChan = x;
 				else printf("WARNING: Ignoring invalid parameter to number of channels (%d)\n", x);
 			}
 
