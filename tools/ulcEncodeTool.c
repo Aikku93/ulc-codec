@@ -68,7 +68,7 @@ int main(int argc, const char *argv[]) {
 	//! Determine encoding mode (CBR/ABR/VBR) and set appropriate block encoding routine
 	//! NOTE: This is kinda janky, but works fine. The main problem is passing AvgComplexity,
 	//! which requires casting all the function pointers to a single form.
-	typedef const uint8_t* (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Rate, float AvgComplexity);
+	typedef const void* (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Rate, /*float AvgComplexity*/...);
 	BlockEncodeFnc_t BlockEncodeFnc;
 	                          BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_CBR;
 	if(AvgComplexity > 0.0f)  BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_ABR;
@@ -173,7 +173,7 @@ int main(int argc, const char *argv[]) {
 			if((uint64_t)(clock()-LastUpdateTime) >= DISPLAY_UPDATE_RATE) {
 				size_t nBlkProcessed = 2 * (Blk-BlkLastUpdate); //! Updated every 0.5s, displayed as X*s^-1
 				printf(
-					"\rBlock %u/%u (%.2f%% | %.2f X rt) | Average: %.2fkbps",
+					"\rBlock %zu/%zu (%.2f%% | %.2f X rt) | Average: %.2fkbps",
 					Blk, nBlk, Blk*100.0/nBlk,
 					nBlkProcessed*BlockSize / (double)RateHz,
 					Blk ? (TotalSize * RateHz/1000.0 / (Blk * BlockSize)) : 0.0f
