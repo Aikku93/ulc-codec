@@ -46,6 +46,8 @@ DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.c=.o)))
 ENCODETOOL_EXE := ulcencodetool.exe # Change this for other platforms
 DECODETOOL_EXE := ulcdecodetool.exe # Change this for other platforms
 
+DFILES := $(wildcard $(OBJDIR)/*.d)
+
 VPATH := $(COMMON_SRCDIR) $(ENCODETOOL_SRCDIR) $(DECODETOOL_SRCDIR)
 
 #----------------------------#
@@ -54,7 +56,7 @@ VPATH := $(COMMON_SRCDIR) $(ENCODETOOL_SRCDIR) $(DECODETOOL_SRCDIR)
 
 $(OBJDIR)/%.o : %.c
 	@echo $(notdir $<)
-	@$(CC) $(CCFLAGS) -c -o $@ $<
+	@$(CC) $(CCFLAGS) -c -o $@ $< -MMD -MP -MF $(OBJDIR)/$*.d
 
 #----------------------------#
 # make all
@@ -99,5 +101,11 @@ $(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
 #----------------------------#
 
 clean :; rm -rf $(OBJDIR) $(RELDIR)
+
+#----------------------------#
+# Dependencies
+#----------------------------#
+
+include $(wildcard $(DFILES))
 
 #----------------------------#
