@@ -37,6 +37,7 @@ This will take ```Input.ulc``` and output ```Output.raw```.
     * Because noise-fill is not coupled to the L/R signal, noise will leak to both channels when used.
 * Encode/decode tools compile with SSE+SSE2/AVX+AVX2/FMA enabled by default. If the encoder crashes/doesn't work, change these flags in the ```Makefile```.
 * The codec VBR in the way it operates; CBR and ABR are faked by adjusting quality until reaching the desired bitrate, roughly halving the encoding speed.
+* Transient detection/window selection is an ongoing area of research.
 
 ## Technical details
 * Target bitrate: 32..256kbps+ (44.1kHz, M/S stereo)
