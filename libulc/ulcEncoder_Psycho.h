@@ -62,7 +62,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, fl
 				Energy  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 			}
 			float LogNorm     = -0.25f*logf(Norm); //! Log[1/Norm] * 1/2 * 1/2 (for converting Power to Amplitude plus weight for coefficient amplitude)
-			float InvLogScale = 0x1.62E430p-30f;   //! Inverse, scaled by (1/2)/SubBlockSize (round up)
+			float InvLogScale = 0x1.62E430p-30f;   //! Inverse, scaled by (1/2 * 1/2)/SubBlockSize (round up)
 
 			//! Extract the tone masking levels (spectral peaks) and
 			//! make the level proportional to the masking bandwidth,
@@ -100,7 +100,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, fl
 					} while(++Old < New);
 
 					//! Extract level
-					ToneMask = (ToneSum/ToneSumW);
+					ToneMask = ToneSum / ToneSumW;
 				}
 
 				//! Re-focus the noise analysis window
@@ -131,7 +131,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(float *MaskingNp, fl
 					MaskBw = New - MaskBw;
 
 					//! Extract level
-					NoiseMask = NoiseSum/MaskBw;
+					NoiseMask = NoiseSum / MaskBw;
 				}
 
 				//! Final masking level calculation:
