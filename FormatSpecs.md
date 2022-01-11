@@ -25,7 +25,7 @@ These blocks code MDCT coefficients that have been pre-normalized. So to decode,
 
 Each block always starts with a window control code before any coefficients are coded (this is considered the header). This controls the window lengths and shapes, and is explained in the `Block header` section.
 
-NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization). The result is that all coefficients are in the range ```|x| <= 1.0```.
+NB: The encoder is expected to handle all scaling, such that the inverse transform needs no scaling whatsoever (not even MDCT normalization). The result is that all coefficients are in the range ```|x| <= 4/Pi``` (where 4/Pi is the p=1 limit of the MDCT matrix as N approaches infinity).
 
 ### Block header
 ***
