@@ -51,7 +51,7 @@ ULC_FORCED_INLINE void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuff
 //! Build quantizer from weighted average
 static inline int Block_Encode_BuildQuantizer(float MaxVal2) {
 	//! NOTE: `MaxVal2` approaches (4/Pi)^2 as BlockSize
-	//! approaches infinity, due to the infinity norm of
+	//! approaches infinity, due to the p=1 norm of
 	//! the MDCT matrix. Therefore, we use a bias of 5
 	//! in the syntax to allow for a full range (that is
 	//! to say: 7^2 * 2^-5 = 1.53125, 1.53125 >= 4/Pi).
@@ -96,9 +96,9 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
-		do {
+		do if(CoefIdx[CurIdx] < nOutCoef) {
 			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*q, 0x7);
-			if(Qn && CoefIdx[CurIdx] < nOutCoef) break;
+			if(Qn) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
 
