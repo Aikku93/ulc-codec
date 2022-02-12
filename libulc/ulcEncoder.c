@@ -74,8 +74,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
 	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) {
-		//! -100 = Placeholder for Log[0]
-		State->TransientBuffer[i] = (struct ULC_TransientData_t){.Att = 0.0f, .Dec = 0.0f, .AttW = 0.0f, .DecW = 0.0f};
+		State->TransientBuffer[i] = (struct ULC_TransientData_t){.Att = 0.0f, .Rel = 0.0f};
 	}
 
 	//! Success
