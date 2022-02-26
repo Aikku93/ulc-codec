@@ -307,7 +307,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_PSYCHOACOUSTICS
 		//! Perform psychoacoustics analysis
 		//! NOTE: Trashes BufferAmp2[]
-		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, WindowCtrl);
+		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->FreqWeightTable, WindowCtrl);
 
 		//! Add the psychoacoustics adjustment to the importance levels
 		//! NOTE: No need to split this section into subblock handling.
@@ -317,7 +317,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(n=0;n<BlockSize;n++) {
 				float ValNp = BufferIndex[n];
 				if(ValNp != -0x1.0p126f) {
-					BufferIndex[n] = ValNp - MaskingNp[n];
+					//! NOTE: Masking is stronger the further we are from the center channel
+					BufferIndex[n] = ValNp + (ValNp-MaskingNp[n])*(1+Chan);
 					nNzCoef++;
 				}
 			}

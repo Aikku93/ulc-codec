@@ -13,6 +13,9 @@
 /**************************************/
 #include "ulcEncoder_BlockTransform.h"
 #include "ulcEncoder_Encode.h"
+#if ULC_USE_PSYCHOACOUSTICS
+# include "ulcEncoder_Psycho.h"
+#endif
 /**************************************/
 #define BUFFER_ALIGNMENT 64u //! Always align memory to 64-byte boundaries (preparation for AVX-512)
 /**************************************/
@@ -47,6 +50,9 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 #endif
 	CREATE_BUFFER(TransformFwdLap, sizeof(float) * (nChan*BlockSize));
 	CREATE_BUFFER(TransformTemp,   sizeof(float) * ((nChan + (nChan < 2)) * BlockSize));
+#if ULC_USE_PSYCHOACOUSTICS
+	CREATE_BUFFER(FreqWeightTable, sizeof(float) * (2*BlockSize - BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR));
+#endif
 	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan*BlockSize));
 	CREATE_BUFFER(TransientBuffer, sizeof(struct ULC_TransientData_t) * ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
 #undef CREATE_BUFFER
@@ -64,6 +70,9 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 #endif
 	State->TransformFwdLap = (float*)(Buf + TransformFwdLap_Offs);
 	State->TransformTemp   = (float*)(Buf + TransformTemp_Offs);
+#if ULC_USE_PSYCHOACOUSTICS
+	State->FreqWeightTable = (float*)(Buf + FreqWeightTable_Offs);
+#endif
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
 	State->TransientBuffer = (struct ULC_TransientData_t*)(Buf + TransientBuffer_Offs);
 
@@ -76,6 +85,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) {
 		State->TransientBuffer[i] = (struct ULC_TransientData_t){.Att = 0.0f, .Rel = 0.0f};
 	}
+	Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(State->FreqWeightTable, BlockSize, State->RateHz*0.5f);
 
 	//! Success
 	return 1;
