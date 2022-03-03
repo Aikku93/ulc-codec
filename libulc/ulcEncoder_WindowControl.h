@@ -113,10 +113,12 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! Model the attack and release envelopes, then
 	//! integrate them separately over each segment.
 	{
+		//! The AttRate parameter refers to how long a signal takes to reach unity.
+		//! The RelRate parameter refers to how long a signal takes to decay to 0.
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D7p8f  / RateHz); //!  -3dB/ms (1000 * Log[2^-0.5])
-		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p10f / RateHz); //! -12dB/ms (1000 * Log[2^-2])
-		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p10f / RateHz); //! -12dB/ms (1000 * Log[2^-2])
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D7p6f  / RateHz); //!  -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p10f / RateHz); //! -12.04dB/ms (1000 * Log[2^-2])
+		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p6f  / RateHz); //!  -0.75dB/ms (1000 * Log[2^-0.125])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
@@ -130,19 +132,15 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				v        = sqrtf(*Src++) - EnvGain;
 				EnvGain += v*(1.0f-GainRate);
 
-				//! Update attack/release envelopes
+				//! Update attack/release envelopes and integrate
 				//! NOTE: EnvRel is sign-inverted.
 				//! NOTE: Envelope attack (fade-in) is proportional to
 				//! the signal level, whereas envelope decay (fade-out)
 				//! follows a constant falloff.
-				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= AttRate;
-				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-RelRate); else EnvRel *= RelRate;
-
-				//! Expand attack/release via side-chaining with the gain
-				//! via ExpandedEnvelope = Envelope^2 / Gain, and integrate.
-				float InvGain = 1.0f / (0x1.0p-32f + EnvGain); //! <- Small bias to avoid division by 0
-				Sum.Att += SQR(SQR(EnvAtt) * InvGain);
-				Sum.Rel += SQR(SQR(EnvRel) * InvGain);
+				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= RelRate;
+				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-AttRate); else EnvRel *= RelRate;
+				Sum.Att += SQR(EnvAtt);
+				Sum.Rel += SQR(EnvRel);
 			} while(--n);
 
 			//! Swap out the old "new" data, and replace with new "new" data
@@ -172,24 +170,34 @@ static inline int Block_Transform_GetWindowCtrl(
 	Block_Transform_GetWindowCtrl_TransientFiltering(ThisBlockData, LastBlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan, RateHz);
 	TransientBuffer += ULC_MAX_BLOCK_DECIMATION_FACTOR;
 
-	//! Keep trying smaller windows until no noticeable
-	//! pre-/post-echo is detected in any segment
-	int   Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
+	//! Keep trying to increase the window size until the
+	//! transient drops off compared to the last window
+	//! NOTE: Default to maximum overlap, no decimation
+	int   Log2SubBlockSize = 31 - __builtin_clz(BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR);
 	int   Decimation     = 0b0001;
 	float TransientRatio = 0.0f; {
-		int nSegments   = 1;
-		int SegmentSize = ULC_MAX_BLOCK_DECIMATION_FACTOR;
+		//! First, enforce a minimum SubBlockSize of 64
+		int nSegments   = ULC_MAX_BLOCK_DECIMATION_FACTOR;
+		int SegmentSize = 1;
+		if(Log2SubBlockSize < 6) {
+			int Shift = 6 - Log2SubBlockSize;
+			nSegments   >>= Shift;
+			SegmentSize <<= Shift;
+			Log2SubBlockSize = 6;
+		}
+
+		//! Begin searching for the right windows
+		//! NOTE: The transient threshold here is fairly
+		//! arbitrary, but was experimentally tuned.
+		float TransientThreshold = 4 - 0.5f*Log2SubBlockSize;
 		for(;;) {
+			//! For this iteration, we are preparing for a larger window.
+			//! Putting this here avoids awkward formulations later on.
+			Log2SubBlockSize++;
+
 			//! Get the maximum Attack/Release ratio for all segments
-			//! NOTE: The ratio is calculated as AttR/RelL multiplied
-			//! by AttR/AttL. The former is the most important ratio
-			//! as it describes how much pre-echo we will have, while
-			//! the latter just serves to clean things up when attack
-			//! swells and takes a while to decay (this can cause the
-			//! segment after the onset to be chosen instead, which
-			//! can cause annoying pre-echo glitching). Conveniently,
-			//! this latter ratio also ensures that release transients
-			//! are considered "less important" than attack transients
+			//! by removing the masking (Release) level and then comparing
+			//! the remaining energy to that of the last segment
 			int Segment;
 			int MaxSegment = 0; float MaxRatio = -1000.0f;
 			for(Segment=0;Segment<nSegments;Segment++) {
@@ -198,41 +206,48 @@ static inline int Block_Transform_GetWindowCtrl(
 				const struct ULC_TransientData_t *Src = TransientBuffer + Segment*SegmentSize;
 				for(n=0;n<SegmentSize;n++) {
 #define ADDSEGMENT(Dst, Src) Dst.Att += Src.Att, Dst.Rel += Src.Rel
-					ADDSEGMENT(L, Src[n-SegmentSize]);
-					ADDSEGMENT(R, Src[n]);
+					ADDSEGMENT(L, Src[-1-n]);
+					ADDSEGMENT(R, Src[   n]);
 #undef ADDSEGMENT
 				}
 				L.Att = L.Att ? logf(L.Att) : (-100.0f); //! -100 = Placeholder for Log[0]
 				L.Rel = L.Rel ? logf(L.Rel) : (-100.0f);
 				R.Att = R.Att ? logf(R.Att) : (-100.0f);
-				//R.Rel = R.Rel ? logf(R.Rel) : (-100.0f); //! <- Unused
-				float Ratio = ABS(R.Att - L.Rel) + (R.Att - L.Att);
+				R.Rel = R.Rel ? logf(R.Rel) : (-100.0f); //! <- Unused
+				float Ratio = ABS((R.Att - R.Rel) - (L.Att - L.Rel));
 				if(Ratio > MaxRatio) MaxSegment = Segment, MaxRatio = Ratio;
 			}
-			MaxRatio *= 0x1.715476p0f; //! 0x1.715476p0 = 1/Log[2] for change of base
 
-			//! If no transients are detected, break out and use last values
-			//! NOTE: 8.0 is the threshold for SubBlockSize=2048 and it scales
-			//! proportionally to the subblock size.
-			float Thres = 3 + 11-Log2SubBlockSize; //! Log2[4.0 * 2048/SubBlockSize]
-			if(MaxRatio < Thres) break;
+			//! Convert MaxRatio to log base-2 and subtract
+			//! the (somewhat arbitrary) transient threshold
+			MaxRatio = MaxRatio*0x1.715476p0f - TransientThreshold; //! 0x1.715476p0 = 1/Log[2] for change of base
+
+			//! If this window causes the transient ratio to drop too much,
+			//! stop enlarging and use the windows from the last iteration.
+			//! On the other hand: If the ratio /increases/ as the window
+			//! size increases, then the transient is likely close to the
+			//! center of two subblocks; in this case, we /can/ continue
+			//! increasing the window size, but we must be very careful to
+			//! only do this if the transient is significant enough - when
+			//! it's not, increasing the window size will cause 'metallic'
+			//! artifacts around the transient, as well as post-echo.
+			if(MaxRatio-TransientRatio < 2.0f) break;
 
 			//! Set new decimation pattern + transient ratio, and continue
-			//! NOTE: Also cut off at SubBlockSize=64. This should be plenty.
 			Decimation     = nSegments + MaxSegment;
-			TransientRatio = MaxRatio - Thres;
-			if(SegmentSize > 1 && Log2SubBlockSize > 6) {
-				//! Increase temporal resolution
-				nSegments   *= 2;
-				SegmentSize /= 2;
-				Log2SubBlockSize--;
+			TransientRatio = MaxRatio;
+			if(nSegments > 1) {
+				//! Increase spectral resolution
+				nSegments   /= 2;
+				SegmentSize *= 2;
 			} else break;
 		}
 	}
 
 	//! Determine overlap size from the ratio
+	//! NOTE: Log2SubBlockSize was pre-incremented earlier, so account for this here.
 	int OverlapScale = (TransientRatio < 0.5f) ? 0 : (TransientRatio >= 6.5f) ? 7 : (int)(TransientRatio+0.5f);
-	if(Log2SubBlockSize-OverlapScale < 4) OverlapScale = Log2SubBlockSize-4; //! Minimum 16-sample overlap
+	if(Log2SubBlockSize-OverlapScale < 5+1) OverlapScale = Log2SubBlockSize - (5+1); //! Minimum 32-sample overlap
 
 	//! Return the combined overlap+window switching parameters
 	return OverlapScale + 0x8*(Decimation != 1) + 0x10*Decimation;
