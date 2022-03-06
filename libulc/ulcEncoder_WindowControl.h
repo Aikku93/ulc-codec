@@ -206,14 +206,14 @@ static inline int Block_Transform_GetWindowCtrl(
 				const struct ULC_TransientData_t *Src = TransientBuffer + Segment*SegmentSize;
 				for(n=0;n<SegmentSize;n++) {
 #define ADDSEGMENT(Dst, Src) Dst.Att += Src.Att, Dst.Rel += Src.Rel
-					ADDSEGMENT(L, Src[-1-n]);
-					ADDSEGMENT(R, Src[   n]);
+					ADDSEGMENT(L, Src[n-SegmentSize]);
+					ADDSEGMENT(R, Src[n]);
 #undef ADDSEGMENT
 				}
 				L.Att = L.Att ? logf(L.Att) : (-100.0f); //! -100 = Placeholder for Log[0]
 				L.Rel = L.Rel ? logf(L.Rel) : (-100.0f);
 				R.Att = R.Att ? logf(R.Att) : (-100.0f);
-				R.Rel = R.Rel ? logf(R.Rel) : (-100.0f); //! <- Unused
+				R.Rel = R.Rel ? logf(R.Rel) : (-100.0f);
 				float Ratio = ABS((R.Att - R.Rel) - (L.Att - L.Rel));
 				if(Ratio > MaxRatio) MaxSegment = Segment, MaxRatio = Ratio;
 			}
