@@ -68,7 +68,7 @@ int main(int argc, const char *argv[]) {
 	//! Determine encoding mode (CBR/ABR/VBR) and set appropriate block encoding routine
 	//! NOTE: This is kinda janky, but works fine. The main problem is passing AvgComplexity,
 	//! which requires casting all the function pointers to a single form.
-	typedef const void* (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Rate, /*float AvgComplexity*/...);
+	typedef const void* (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Rate, float AvgComplexity);
 	BlockEncodeFnc_t BlockEncodeFnc;
 	                          BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_CBR;
 	if(AvgComplexity > 0.0f)  BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_ABR;
