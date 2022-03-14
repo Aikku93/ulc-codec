@@ -116,9 +116,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! The AttRate parameter refers to how long a signal takes to reach unity.
 		//! The RelRate parameter refers to how long a signal takes to decay to 0.
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D7p6f  / RateHz); //!  -0.75dB/ms (1000 * Log[2^-0.125])
-		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p10f / RateHz); //! -12.04dB/ms (1000 * Log[2^-2])
-		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p6f  / RateHz); //!  -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
@@ -129,7 +129,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! (ie. the amplitude at which everything is
 				//! happening around) to "unbias" the signal
 				//! and center it about 0 for attack/release.
-				v        = sqrtf(*Src++) - EnvGain;
+				v        = *Src++ - EnvGain;
 				EnvGain += v*(1.0f-GainRate);
 
 				//! Update attack/release envelopes and integrate
@@ -139,8 +139,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! follows a constant falloff.
 				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= RelRate;
 				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-AttRate); else EnvRel *= RelRate;
-				Sum.Att += SQR(EnvAtt);
-				Sum.Rel += SQR(EnvRel);
+				Sum.Att += EnvAtt;
+				Sum.Rel -= EnvRel; //! EnvRel is sign-inverted, so flip again
 			} while(--n);
 
 			//! Swap out the old "new" data, and replace with new "new" data
@@ -189,7 +189,8 @@ static inline int Block_Transform_GetWindowCtrl(
 		//! Begin searching for the right windows
 		//! NOTE: The transient threshold here is fairly
 		//! arbitrary, but was experimentally tuned.
-		float TransientThreshold = 4 - 0.5f*Log2SubBlockSize;
+		int Log2BlockSize = 31 - __builtin_clz(BlockSize);
+		float TransientThreshold = 5.5f - 0.5f*Log2BlockSize;
 		for(;;) {
 			//! For this iteration, we are preparing for a larger window.
 			//! Putting this here avoids awkward formulations later on.
@@ -231,7 +232,7 @@ static inline int Block_Transform_GetWindowCtrl(
 			//! only do this if the transient is significant enough - when
 			//! it's not, increasing the window size will cause 'metallic'
 			//! artifacts around the transient, as well as post-echo.
-			if(MaxRatio-TransientRatio < 2.0f) break;
+			if(MaxRatio-TransientRatio < 1.0f) break;
 
 			//! Set new decimation pattern + transient ratio, and continue
 			Decimation     = nSegments + MaxSegment;
@@ -242,6 +243,13 @@ static inline int Block_Transform_GetWindowCtrl(
 				SegmentSize *= 2;
 			} else break;
 		}
+	}
+	if(Decimation == 0b0001) {
+		//! When we don't detect a transient during the first pass,
+		//! Log2SubBlockSize is incorrect, so fix it up here. This
+		//! is still cleaner code than the alternative :/
+		Log2SubBlockSize = 31 - __builtin_clz(BlockSize);
+		Log2SubBlockSize++; //! <- Account for pre-increment
 	}
 
 	//! Determine overlap size from the ratio
