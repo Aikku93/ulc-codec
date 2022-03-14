@@ -28,8 +28,10 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 			//! NOTE: The line power we multiply this table with will be
 			//! normalized to 2^32, so undo that normalization here to
 			//! save a multiply in the processing loop later.
+			//! NOTE: I'm not sure why, but things sound much better if
+			//! the peak is placed at 1kHz instead of 3kHz.
 			float Freq = (n+0.5f)*FreqStep;
-			float x = logf(Freq/3000.0f);
+			float x = logf(Freq/1000.0f);
 			*Dst++ = expf(-SQR(x)) * 0x1.0p-32f;
 		}
 	} while(FreqStep *= 0.5f, (SubBlockSize *= 2) <= BlockSize);
