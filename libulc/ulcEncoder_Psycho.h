@@ -14,7 +14,7 @@
 
 static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(float *Dst, int BlockSize, float NyquistHz) {
 	int n, SubBlockSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-	float FreqStep = NyquistHz / SubBlockSize;
+	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.BA18AAp2f; //! -0x1.BA18AAp2 = Log[1/1000]
 	do {
 		for(n=0;n<SubBlockSize;n++) {
 			//! The weight function is a log-normal distribution function,
@@ -30,11 +30,10 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 			//! save a multiply in the processing loop later.
 			//! NOTE: I'm not sure why, but things sound much better if
 			//! the peak is placed at 1kHz instead of 3kHz.
-			float Freq = (n+0.5f)*FreqStep;
-			float x = logf(Freq/1000.0f);
-			*Dst++ = expf(-SQR(x)) * 0x1.0p-32f;
+			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
+			*Dst++ = expf(-SQR(x) + -0x1.62E430p4f); //! -0x1.62E430p4 = Log[2^-32], round up
 		}
-	} while(FreqStep *= 0.5f, (SubBlockSize *= 2) <= BlockSize);
+	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
 }
 static inline void Block_Transform_CalculatePsychoacoustics(
 	float *MaskingNp,
