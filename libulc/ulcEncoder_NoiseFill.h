@@ -17,6 +17,9 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	int n;
 	float v;
 
+	//! DCT+DST -> Pseudo-DFT
+	N /= 2;
+
 	//! Find the subblock's normalization factor
 	float Norm = 0.0f;
 	for(n=0;n<N;n++) if((v = Data[n]) > Norm) Norm = v;
@@ -37,7 +40,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		LogAmp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 		Weight[n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.3687AAp1f - 0.5f*logf(Norm); //! Pre-scale by Scale=16.0/Sqrt[2] for noise quantizer (by adding Log[Scale]=0x1.3687AAp1)
+	float LogNorm     = 0x1.0A2B24p1f - 0.5f*logf(Norm); //! Pre-scale by Scale=16.0/2 for noise quantizer (by adding Log[Scale]=0x1.0A2B24p1)
 	float InvLogScale = N * 0x1.51FDE5p-30f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
@@ -120,11 +123,15 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 
 //! Get the quantized noise amplitude for encoding
 static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int N, float q) {
+	//! Fixup for DCT+DST -> Pseudo-DFT
+	LogCoef += Band / 2;
+	N = (N + (Band & 1) + 1) / 2;
+
 	//! Analyze for the noise amplitude (geometric mean over N coefficients)
 	float Amplitude; {
 		int n;
 		Amplitude = 0.0f;
-		for(n=0;n<N;n++) Amplitude += LogCoef[Band+n];
+		for(n=0;n<N;n++) Amplitude += *LogCoef++;
 		Amplitude = expf(Amplitude/N);
 	}
 
@@ -137,6 +144,10 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe... please.
 static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, float q, int *_NoiseQ, int *_NoiseDecay) {
+	//! Fixup for DCT+DST -> Pseudo-DFT
+	LogCoef += Band / 2;
+	N = (N + (Band & 1) + 1) / 2;
+
 	//! Solve for least-squares (in the log domain, for exponential fitting)
 	float Amplitude, Decay; {
 		//! NOTE: The analysis is the same as in normal noise-fill,
@@ -152,8 +163,8 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 		float w = 15.0f;
 		for(n=0;n<N;n++) {
 			float tw = 1.0f + w;
-			float x = (float)n;
-			float yLog = LogCoef[Band+n];
+			float x = n * 2.0f;
+			float yLog = *LogCoef++;
 			SumX  += tw*x;
 			SumX2 += tw*x*x;
 			SumXY += tw*x*yLog;

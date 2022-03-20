@@ -116,6 +116,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		float *BufferFwdLap  = State->TransformFwdLap;
 #if ULC_USE_NOISE_CODING
 		float *BufferNoise   = State->TransformNoise;
+
+		//! Clear the noise buffer; we'll be adding two MDCT/MDST lines into one pseudo-DFT line here
+		for(n=0;n<nChan*BlockSize/2;n++) BufferNoise[n] = 0.0f;
 #endif
 		float *BufferTemp    = State->TransformTemp;
 #if ULC_USE_PSYCHOACOUSTICS
@@ -123,7 +126,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		float *BufferAmp2    = BufferTemp + BlockSize; //! NOTE: Using upper half of BufferTemp
 
 		//! Clear the amplitude buffer; we'll be accumulating all channels here
-		for(n=0;n<BlockSize;n++) BufferAmp2[n] = 0.0f;
+		for(n=0;n<BlockSize/2;n++) BufferAmp2[n] = 0.0f;
 #endif
 		//! Apply M/S transform to the data
 		//! NOTE: Fully normalized; not orthogonal.
@@ -247,10 +250,10 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #endif
 					BufferIndex[n] = (AbsRe < 0.5f*ULC_COEF_EPS) ? (-0x1.0p126f) : logf(AbsRe);
 #if ULC_USE_NOISE_CODING
-					BufferNoise[n] = Abs2;
+					BufferNoise[n/2] += Abs2; //! <- DCT/DFT weirdness; two MDCT+MDST coefficients = One frequency line
 #endif
 #if ULC_USE_PSYCHOACOUSTICS
-					BufferAmp2[n] += Abs2;
+					BufferAmp2[n/2] += Abs2;  //! <- DCT/DFT weirdness
 #endif
 					//! NOTE: Using MDCT coefficients for complexity analysis
 					//! works out much better than combined MDCT+MDST as the
@@ -270,17 +273,17 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				BufferMDCT    += SubBlockSize;
 				BufferIndex   += SubBlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
-				BufferAmp2    += SubBlockSize;
+				BufferAmp2    += SubBlockSize/2;
 #endif
 #if ULC_USE_NOISE_CODING
-				BufferNoise   += SubBlockSize;
+				BufferNoise   += SubBlockSize/2;
 #endif
 			} while(DecimationPattern);
 
 			//! Move to the next channel
 			BufferFwdLap += BlockSize;
 #if ULC_USE_PSYCHOACOUSTICS
-			BufferAmp2   -= BlockSize; //! <- Accumulated across all channels - rewind
+			BufferAmp2   -= BlockSize/2; //! <- Accumulated across all channels - rewind
 #endif
 		}
 		BufferSamples -= BlockSize*nChan; //! Rewind to start of buffer
@@ -318,7 +321,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				float ValNp = BufferIndex[n];
 				if(ValNp != -0x1.0p126f) {
 					//! NOTE: Masking is stronger the further we are from the center channel
-					BufferIndex[n] = ValNp + (ValNp-MaskingNp[n])*(1+Chan);
+					BufferIndex[n] = ValNp + (ValNp-MaskingNp[n/2])*(1+Chan);
 					nNzCoef++;
 				}
 			}

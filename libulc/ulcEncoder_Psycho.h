@@ -13,8 +13,13 @@
 /**************************************/
 
 static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(float *Dst, int BlockSize, float NyquistHz) {
+	//! DCT+DST -> Pseudo-DFT
+	BlockSize /= 2;
+
+	//! Compute window for all subblock sizes in a sequential window
+	//! This should improve cache locality vs a single large window.
 	int n, SubBlockSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.BA18AAp2f; //! -0x1.BA18AAp2 = Log[1/1000]
+	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.26BB1Cp2f; //! -0x1.26BB1Cp2 = Log[1/100]
 	do {
 		for(n=0;n<SubBlockSize;n++) {
 			//! The weight function is a log-normal distribution function,
@@ -29,8 +34,13 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 			//! normalized to 2^32, so undo that normalization here to
 			//! save a multiply in the processing loop later.
 			//! NOTE: I'm not sure why, but things sound much better if
-			//! the peak is placed at 1kHz instead of 3kHz.
-			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
+			//! the peak is placed at 100Hz instead of 3kHz. This isn't
+			//! even remotely close to 3kHz (which is generally accepted
+			//! as the peak hearing frequency), so I have no idea what is
+			//! going on anymore. Moving this peak frequency higher makes
+			//! things sound blurry/watery/unstable, and moving it lower
+			//! begins to make things sound muffled with no improvement.
+			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 100]
 			*Dst++ = expf(-SQR(x) + -0x1.62E430p4f); //! -0x1.62E430p4 = Log[2^-32], round up
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
@@ -45,6 +55,9 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 ) {
 	int n;
 	float v;
+
+	//! DCT+DST -> Pseudo-DFT
+	BlockSize /= 2;
 
 	//! Compute masking levels for each [sub-]block
 	ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
@@ -80,7 +93,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			uint32_t *Weight   = (uint32_t*)BufferTemp;
 			uint32_t *EnergyNp = (uint32_t*)BufferAmp2;
 			Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f; //! NOTE: 2^32-eps*2 to ensure we don't overflow
-			float LogScale = 0x1.FBD422p28f / SubBlockSize; //! (2^32/Log[2^32] / (1-14/22)) / N (round down)
+			float LogScale = 0x1.B6944Cp29f / SubBlockSize; //! (2^32/Log[2^32] / (1-15/19)) / N (round down)
 			const float *ThisFreqWeightTable = FreqWeightTable + SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
 			for(n=0;n<SubBlockSize;n++) {
 				//! As mentioned earlier, the mixing weight must be scaled by
@@ -94,7 +107,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				Weight  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 			}
 			float LogNorm     = -0.5f*logf(Norm);             //! Log[1/Norm] * 1/2 (for converting Power to Amplitude)
-			float InvLogScale = 0x1.021A52p-30f*SubBlockSize; //! Inverse, scaled by 1/2 (round up)
+			float InvLogScale = 0x1.2ADB1Cp-31f*SubBlockSize; //! Inverse, scaled by 1/2 (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
@@ -103,8 +116,8 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				//! Re-focus the analysis window
 				int Old, New;
 				const int RangeScaleFxp = 4;
-				const int LoRangeScale = 14; //! Beg = (1-0.125)*Band
-				const int HiRangeScale = 22; //! End = (1+0.375)*Band
+				const int LoRangeScale = 15; //! Beg = (1-0.0625)*Band
+				const int HiRangeScale = 19; //! End = (1+0.1875)*Band
 
 				//! Remove samples that went out of focus
 				//! NOTE: We skip /at most/ one sample, so don't loop.
