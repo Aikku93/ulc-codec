@@ -54,6 +54,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	CREATE_BUFFER(FreqWeightTable, sizeof(float) * (2*BlockSize - BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR));
 #endif
 	CREATE_BUFFER(TransformIndex,  sizeof(int)   * (nChan*BlockSize));
+	CREATE_BUFFER(TransientFilter, sizeof(float) * (nChan*2 + 3));
 	CREATE_BUFFER(TransientBuffer, sizeof(struct ULC_TransientData_t) * ULC_MAX_BLOCK_DECIMATION_FACTOR*2);
 #undef CREATE_BUFFER
 
@@ -74,12 +75,13 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	State->FreqWeightTable = (float*)(Buf + FreqWeightTable_Offs);
 #endif
 	State->TransformIndex  = (int  *)(Buf + TransformIndex_Offs);
+	State->TransientFilter = (float*)(Buf + TransientFilter_Offs);
 	State->TransientBuffer = (struct ULC_TransientData_t*)(Buf + TransientBuffer_Offs);
 
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap. Doesn't really matter, though.
-	for(i=0;i<3;              i++) State->TransientFilter[i] = 0.0f;
+	for(i=0;i<nChan*2+3;      i++) State->TransientFilter[i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
 	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
 	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) {
