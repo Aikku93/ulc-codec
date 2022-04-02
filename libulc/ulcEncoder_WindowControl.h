@@ -52,13 +52,15 @@
 //!     struct ULC_TransientData_t L[ULC_MAX_BLOCK_DECIMATION_FACTOR];
 //!     struct ULC_TransientData_t R[ULC_MAX_BLOCK_DECIMATION_FACTOR];
 //!   }
-//!  -TransientFilter[] must be 3 elements in size. Initialize with 0.
+//!  -TransientFilter[] must be 3+2*nChan elements in size. Initialize with 0.
 //!   Internal layout is:
 //!   {
 //!     float EnvGain; //! Gain envelope tap
 //!     float EnvAtt;  //! Attack envelope tap
-//!     Float EnvRel;  //! Release envelope tap
-//!  -TmpBuffer[] must be BlockSize in size
+//!     float EnvRel;  //! Release envelope tap
+//!     float Yz[nChan][2]; //! IIR filter taps
+//!   }
+//!  -TmpBuffer[] must be BlockSize elements in size.
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
@@ -73,39 +75,35 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 ) {
 	int n, Chan;
 
-	//! Combine the high/mid band energies.
-	//! Transfer function:
-	//!  High-pass: H(z) = -z^-1 + 2 - z^1
-	//!  Band-pass: H(z) = -z^-2 + 2 - z^2
-	//! The purpose of this is that some signals have
-	//! 'chunky' LF transients (eg. a door closing),
-	//! whereas others are less so (eg. an orchestral
-	//! snare line, or cross-sticks), which will show
-	//! up in different parts of the spectrum, and if
-	//! we try to catch both types using one type of
-	//! filter, we would need to increase sensitivity
-	//! to the point of excessive false-positives as
-	//! then there's too much spectral leakage.
+	//! Perform an IIR bandpass filter to isolate the signal energy.
+	//! This doesn't appear to make much sense in theory, but this
+	//! seems to result in the cleanest transient response so far.
+	//! Tranfer function:
+	//!  H(z) = (z^1 - z^-1) / (1 + 0.5z^-2)
 	float *BufEnergy = TmpBuffer; {
+		float v;
 		for(n=0;n<BlockSize;n++) BufEnergy[n] = 0.0f;
 		for(Chan=0;Chan<nChan;Chan++) {
-#define DOFILTER(zM2, zM1, z0, z1, z2) *Dst++ += SQR(-(zM1) + 2*(z0) - (z1)) + SQR(-(zM2) + 2*(z0) - (z2))
-			int Lag = BlockSize/2; //! MDCT alignment
+#define DOFILTER(YzM1,YzM2, XzM1,Xz0,Xz1) v = (Xz1) - (XzM1) - 0.5f*(YzM2), YzM2 = YzM1, YzM1 = v, *Dst++ += SQR(v)
+			      int    Lag    = BlockSize/2; //! MDCT alignment
+			      float *YzTap  = &TransientFilter[3+Chan*2];
+			      float  YzM1   = YzTap[0];
+			      float  YzM2   = YzTap[1];
 			      float *Dst    = BufEnergy;
 			const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-Lag;
 			const float *SrcNew = ThisBlockData + Chan*BlockSize;
-			n = Lag-2; do {
-				DOFILTER(SrcOld[-2], SrcOld[-1], SrcOld[0], SrcOld[+1], SrcOld[+2]), SrcOld++;
+			n = Lag-1; do {
+				DOFILTER(YzM1, YzM2, SrcOld[-1], SrcOld[0], SrcOld[+1]), SrcOld++;
 			} while(--n);
 			{
-				DOFILTER(SrcOld[-2], SrcOld[-1], SrcOld[0], SrcOld[+1], SrcNew[ 0]), SrcOld++;
-				DOFILTER(SrcOld[-2], SrcOld[-1], SrcOld[0], SrcNew[ 0], SrcNew[+1]), SrcOld++;
-				DOFILTER(SrcOld[-2], SrcOld[-1], SrcNew[0], SrcNew[+1], SrcNew[+2]), SrcOld++, SrcNew++;
-				DOFILTER(SrcOld[-2], SrcNew[-1], SrcNew[0], SrcNew[+1], SrcNew[+2]), SrcOld++, SrcNew++;
+				DOFILTER(YzM1, YzM2, SrcOld[-1], SrcOld[0], SrcNew[ 0]), SrcOld++;
+				DOFILTER(YzM1, YzM2, SrcOld[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
 			}
-			n = BlockSize - (Lag-2) - 4; do {
-				DOFILTER(SrcNew[-2], SrcNew[-1], SrcNew[0], SrcNew[+1], SrcNew[+2]), SrcNew++;
+			n = BlockSize - (Lag-1) - 2; do {
+				DOFILTER(YzM1, YzM2, SrcNew[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
 			} while(--n);
+			YzTap[0] = YzM1;
+			YzTap[1] = YzM2;
 #undef DOFILTER
 		}
 	}
@@ -116,20 +114,21 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! The AttRate parameter refers to how long a signal takes to reach unity.
 		//! The RelRate parameter refers to how long a signal takes to decay to 0.
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p2f / BlockSize); //! -36dB/block (Log[2^-6])
 		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
-		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p5f / RateHz); //! -0.38dB/ms (1000 * Log[2^-0.0625])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
-			float v;
-			struct ULC_TransientData_t Sum = {.Att = 0.0f, .Rel = 0.0f};
+			//! Swap out the old "new" data, and clear the new "new" data
+			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
+			*Dst = (struct ULC_TransientData_t){.Att = 0.0f, .Rel = 0.0f};
 			n = BinSize; do {
 				//! Accumulate and subtract the "drift" bias
 				//! (ie. the amplitude at which everything is
 				//! happening around) to "unbias" the signal
 				//! and center it about 0 for attack/release.
-				v        = *Src++ - EnvGain;
+				float v  = *Src++ - EnvGain;
 				EnvGain += v*(1.0f-GainRate);
 
 				//! Update attack/release envelopes and integrate
@@ -139,14 +138,10 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! follows a constant falloff.
 				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= RelRate;
 				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-AttRate); else EnvRel *= RelRate;
-				Sum.Att += EnvAtt;
-				Sum.Rel -= EnvRel; //! EnvRel is sign-inverted, so flip again
+				Dst->Att += EnvAtt;
+				Dst->Rel -= EnvRel; //! EnvRel is sign-inverted, so flip again
 			} while(--n);
-
-			//! Swap out the old "new" data, and replace with new "new" data
-			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
-			*Dst++ = Sum;
-		} while(--i);
+		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
 		TransientFilter[1] = EnvAtt;
 		TransientFilter[2] = EnvRel;
@@ -187,10 +182,6 @@ static inline int Block_Transform_GetWindowCtrl(
 		}
 
 		//! Begin searching for the right windows
-		//! NOTE: The transient threshold here is fairly
-		//! arbitrary, but was experimentally tuned.
-		int Log2BlockSize = 31 - __builtin_clz(BlockSize);
-		float TransientThreshold = 5.5f - 0.5f*Log2BlockSize;
 		for(;;) {
 			//! For this iteration, we are preparing for a larger window.
 			//! Putting this here avoids awkward formulations later on.
@@ -219,10 +210,6 @@ static inline int Block_Transform_GetWindowCtrl(
 				if(Ratio > MaxRatio) MaxSegment = Segment, MaxRatio = Ratio;
 			}
 
-			//! Convert MaxRatio to log base-2 and subtract
-			//! the (somewhat arbitrary) transient threshold
-			MaxRatio = MaxRatio*0x1.715476p0f - TransientThreshold; //! 0x1.715476p0 = 1/Log[2] for change of base
-
 			//! If this window causes the transient ratio to drop too much,
 			//! stop enlarging and use the windows from the last iteration.
 			//! On the other hand: If the ratio /increases/ as the window
@@ -232,7 +219,7 @@ static inline int Block_Transform_GetWindowCtrl(
 			//! only do this if the transient is significant enough - when
 			//! it's not, increasing the window size will cause 'metallic'
 			//! artifacts around the transient, as well as post-echo.
-			if(MaxRatio-TransientRatio < 1.0f) break;
+			if(MaxRatio-TransientRatio < 0x1.62E430p-1f) break; //! 0x1.62E430p-1 = Log[2.0]
 
 			//! Set new decimation pattern + transient ratio, and continue
 			Decimation     = nSegments + MaxSegment;
@@ -244,7 +231,7 @@ static inline int Block_Transform_GetWindowCtrl(
 			} else break;
 		}
 	}
-	if(Decimation == 0b0001) {
+	if(TransientRatio == 0.0f) {
 		//! When we don't detect a transient during the first pass,
 		//! Log2SubBlockSize is incorrect, so fix it up here. This
 		//! is still cleaner code than the alternative :/
@@ -254,6 +241,7 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Determine overlap size from the ratio
 	//! NOTE: Log2SubBlockSize was pre-incremented earlier, so account for this here.
+	TransientRatio *= 0x1.715476p0f; //! 0x1.715476p0 = 1/Log[2] for change of base
 	int OverlapScale = (TransientRatio < 0.5f) ? 0 : (TransientRatio >= 6.5f) ? 7 : (int)(TransientRatio+0.5f);
 	if(Log2SubBlockSize-OverlapScale < 5+1) OverlapScale = Log2SubBlockSize - (5+1); //! Minimum 32-sample overlap
 
