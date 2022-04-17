@@ -11,6 +11,7 @@
 #endif
 /**************************************/
 #include "Fourier.h"
+#include "FourierHelper.h"
 /**************************************/
 
 //! Implementation notes for IMDCT:
@@ -31,8 +32,15 @@
 //!  Allowing us to reconstruct the inputs A,B.
 void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
 	int i;
-	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
-	const float *WinC = WinS + Overlap;
+	FOURIER_ASSUME_ALIGNED(BufOut, 32);
+	FOURIER_ASSUME_ALIGNED(BufIn,  32);
+	FOURIER_ASSUME_ALIGNED(BufLap, 32);
+	FOURIER_ASSUME_ALIGNED(BufTmp, 32);
+	FOURIER_ASSUME_ALIGNED(ModulationWindow, 32);
+	FOURIER_ASSUME(N >= 16 && N <= 8192);
+	FOURIER_ASSUME(Overlap >= 0 && Overlap <= N);
+
+	const float *Win   = Fourier_SinTableN(Overlap, ModulationWindow);
 	const float *Lap   = BufLap + N/2;
 	const float *Tmp   = BufTmp + N/2;
 	      float *OutLo = BufOut;
@@ -63,10 +71,12 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		b = _mm256_load_ps(Tmp); Tmp += 8;
 		a = _mm256_shuffle_ps(a, a, 0x1B);
 		a = _mm256_permute2f128_ps(a, a, 0x01);
-		WinC -= 8; c = _mm256_load_ps(WinC);
-		s = _mm256_load_ps(WinS); WinS += 8;
-		c = _mm256_shuffle_ps(c, c, 0x1B);
-		c = _mm256_permute2f128_ps(c, c, 0x01);
+		c  = _mm256_load_ps(Win); Win += 8;
+		s  = _mm256_load_ps(Win); Win += 8;
+		t0 = _mm256_permute2f128_ps(c, s, 0x20);
+		t1 = _mm256_permute2f128_ps(c, s, 0x31);
+		c  = _mm256_shuffle_ps(t0, t1, 0x88);
+		s  = _mm256_shuffle_ps(t0, t1, 0xDD);
 #if defined(__FMA__)
 		t0 = _mm256_mul_ps(s, b);
 		t1 = _mm256_mul_ps(c, b);
@@ -95,8 +105,10 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	for(;i<N/2;i+=4) {
 		Lap -= 4; a = _mm_loadr_ps(Lap);
 		b = _mm_load_ps(Tmp); Tmp += 4;
-		s = _mm_load_ps(WinS); WinS += 4;
-		WinC -= 4; c = _mm_loadr_ps(WinC);
+		t0 = _mm_load_ps(Win); Win += 4;
+		t1 = _mm_load_ps(Win); Win += 4;
+		c  = _mm_shuffle_ps(t0, t1, 0x88);
+		s  = _mm_shuffle_ps(t0, t1, 0xDD);
 #if defined(__FMA__)
 		t0 = _mm_mul_ps(s, b);
 		t1 = _mm_mul_ps(c, b);
@@ -119,8 +131,8 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	for(;i<N/2;i++) {
 		float a = *--Lap;
 		float b = *Tmp++;
-		float c = *--WinC;
-		float s = *WinS++;
+		float c = *Win++;
+		float s = *Win++;
 		*OutLo++ = c*a - s*b;
 		*--OutHi = s*a + c*b;
 	}

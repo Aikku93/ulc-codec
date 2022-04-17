@@ -11,6 +11,7 @@
 #endif
 /**************************************/
 #include "Fourier.h"
+#include "FourierHelper.h"
 /**************************************/
 
 //! Implementation notes for MDCT:
@@ -54,8 +55,16 @@
 //!   DCT4(MDCT);
 void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
 	int n;
-	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
-	const float *WinC = WinS + Overlap;
+	FOURIER_ASSUME_ALIGNED(MDCT,   32);
+	FOURIER_ASSUME_ALIGNED(MDST,   32);
+	FOURIER_ASSUME_ALIGNED(New,    32);
+	FOURIER_ASSUME_ALIGNED(Lap,    32);
+	FOURIER_ASSUME_ALIGNED(BufTmp, 32);
+	FOURIER_ASSUME_ALIGNED(ModulationWindow, 32);
+	FOURIER_ASSUME(N >= 16 && N <= 8192);
+	FOURIER_ASSUME(Overlap >= 0 && Overlap <= N);
+
+	const float *Win   = Fourier_SinTableN(Overlap, ModulationWindow);
 	      float *LapLo = Lap;
 	      float *LapHi = Lap + N;
 	const float *NewLo = New;
@@ -91,18 +100,18 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 			_mm256_store_ps(MDSTMid   + n, _mm256_xor_ps(s, XorMask));
 		}
 		for(;n<N/2;n+=8) {
-			WinC -= 8;
-			c  = _mm256_load_ps(WinC);
-			s  = _mm256_load_ps(WinS);
-			WinS += 8;
+			c  = _mm256_load_ps(Win); Win += 8;
+			s  = _mm256_load_ps(Win); Win += 8;
+			A  = _mm256_permute2f128_ps(c, s, 0x20);
+			C  = _mm256_permute2f128_ps(c, s, 0x31);
+			c  = _mm256_shuffle_ps(A, C, 0x88);
+			s  = _mm256_shuffle_ps(A, C, 0xDD);
 			A  = _mm256_load_ps(LapLo   + n);
 			Br = _mm256_load_ps(LapHi-8 - n);
 			C  = _mm256_load_ps(NewLo   + n);
 			Dr = _mm256_load_ps(NewHi-8 - n);
 			_mm256_store_ps(LapLo   + n, _mm256_mul_ps(s, C));
 			_mm256_store_ps(LapHi-8 - n, _mm256_mul_ps(c, Dr));
-			c  = _mm256_permute2f128_ps(c,  c,  0x01);
-			c  = _mm256_shuffle_ps     (c,  c,  0x1B);
 			Br = _mm256_permute2f128_ps(Br, Br, 0x01);
 			Br = _mm256_shuffle_ps     (Br, Br, 0x1B);
 			Dr = _mm256_permute2f128_ps(Dr, Dr, 0x01);
@@ -144,17 +153,16 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 			_mm_store_ps(MDSTMid   + n, _mm_xor_ps(s, XorMask));
 		}
 		for(;n<N/2;n+=4) {
-			WinC -= 4;
-			c  = _mm_load_ps(WinC);
-			s  = _mm_load_ps(WinS);
-			WinS += 4;
+			A  = _mm_load_ps(Win); Win += 4;
+			C  = _mm_load_ps(Win); Win += 4;
+			c  = _mm_shuffle_ps(A, C, 0x88);
+			s  = _mm_shuffle_ps(A, C, 0xDD);
 			A  = _mm_load_ps(LapLo   + n);
 			Br = _mm_load_ps(LapHi-4 - n);
 			C  = _mm_load_ps(NewLo   + n);
 			Dr = _mm_load_ps(NewHi-4 - n);
 			_mm_store_ps(LapLo   + n, _mm_mul_ps(s, C));
 			_mm_store_ps(LapHi-4 - n, _mm_mul_ps(c, Dr));
-			c  = _mm_shuffle_ps(c,  c,  0x1B);
 			Br = _mm_shuffle_ps(Br, Br, 0x1B);
 			Dr = _mm_shuffle_ps(Dr, Dr, 0x1B);
 			C  = _mm_mul_ps(C,  c);
@@ -186,8 +194,8 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 			MDSTMid[   n] =  A + Br;
 		}
 		for(;n<N/2;n++) {
-			c = *--WinC;
-			s = *WinS++;
+			c = *Win++;
+			s = *Win++;
 			A  = LapLo[   n];
 			Br = LapHi[-1-n];
 			C  = NewLo[   n];
@@ -250,8 +258,15 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 }
 void Fourier_MDCT(float *MDCT, const float *New, float *Lap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
 	int n;
-	const float *WinS = ModulationWindow ? (ModulationWindow + Overlap-16) : Fourier_SinTableN(Overlap);
-	const float *WinC = WinS + Overlap;
+	FOURIER_ASSUME_ALIGNED(MDCT,   32);
+	FOURIER_ASSUME_ALIGNED(New,    32);
+	FOURIER_ASSUME_ALIGNED(Lap,    32);
+	FOURIER_ASSUME_ALIGNED(BufTmp, 32);
+	FOURIER_ASSUME_ALIGNED(ModulationWindow, 32);
+	FOURIER_ASSUME(N >= 16 && N <= 8192);
+	FOURIER_ASSUME(Overlap >= 0 && Overlap <= N);
+
+	const float *Win   = Fourier_SinTableN(Overlap, ModulationWindow);
 	const float *NewLo = New;
 	const float *NewHi = New + N;
 	      float *MDCTMid = MDCT + N/2;
@@ -281,10 +296,12 @@ void Fourier_MDCT(float *MDCT, const float *New, float *Lap, float *BufTmp, int 
 			a = _mm256_load_ps(NewLo); NewLo += 8;
 			b = _mm256_shuffle_ps(b, b, 0x1B);
 			b = _mm256_permute2f128_ps(b, b, 0x01);
-			WinC -= 8; c = _mm256_load_ps(WinC);
-			s = _mm256_load_ps(WinS); WinS += 8;
-			c = _mm256_shuffle_ps(c, c, 0x1B);
-			c = _mm256_permute2f128_ps(c, c, 0x01);
+			c  = _mm256_load_ps(Win); Win += 8;
+			s  = _mm256_load_ps(Win); Win += 8;
+			t0 = _mm256_permute2f128_ps(c, s, 0x20);
+			t1 = _mm256_permute2f128_ps(c, s, 0x31);
+			c  = _mm256_shuffle_ps(t0, t1, 0x88);
+			s  = _mm256_shuffle_ps(t0, t1, 0xDD);
 #if defined(__FMA__)
 			t0 = _mm256_mul_ps(s, b);
 			t1 = _mm256_mul_ps(s, a);
@@ -313,8 +330,10 @@ void Fourier_MDCT(float *MDCT, const float *New, float *Lap, float *BufTmp, int 
 		for(;n<N/2;n+=4) {
 			NewHi -= 4; b = _mm_loadr_ps(NewHi);
 			a = _mm_load_ps(NewLo); NewLo += 4;
-			s = _mm_load_ps(WinS); WinS += 4;
-			WinC -= 4; c = _mm_loadr_ps(WinC);
+			t0 = _mm_load_ps(Win); Win += 4;
+			t1 = _mm_load_ps(Win); Win += 4;
+			c  = _mm_shuffle_ps(t0, t1, 0x88);
+			s  = _mm_shuffle_ps(t0, t1, 0xDD);
 #if defined(__FMA__)
 			t0 = _mm_mul_ps(s, b);
 			t1 = _mm_mul_ps(s, a);
@@ -337,8 +356,8 @@ void Fourier_MDCT(float *MDCT, const float *New, float *Lap, float *BufTmp, int 
 		for(;n<N/2;n++) {
 			float a = *NewLo++;
 			float b = *--NewHi;
-			float c = *--WinC;
-			float s = *WinS++;
+			float c = *Win++;
+			float s = *Win++;
 			*--MDCTMid =  c*a + s*b;
 			*Lap++     = -s*a + c*b;
 		}

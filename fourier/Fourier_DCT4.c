@@ -3,6 +3,7 @@
 //! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
+#include <stddef.h>
 #if defined(__AVX__) || defined(__FMA__)
 # include <immintrin.h>
 #endif
@@ -11,16 +12,19 @@
 #endif
 /**************************************/
 #include "Fourier.h"
+#include "FourierHelper.h"
 /**************************************/
 
 //! DCT-IV (N=8)
 static void DCT4_8(float *x) {
+	FOURIER_ASSUME_ALIGNED(x, 32);
+
 	const float sqrt1_2 = 0x1.6A09E6p-1f;
-	const float c1_3 = 0x1.D906BDp-1f, s1_3 = 0x1.87DE2Ap-2f;
+	const float c1_3 = 0x1.D906BCp-1f, s1_3 = 0x1.87DE2Ap-2f;
 	const float c1_5 = 0x1.FD88DAp-1f, s1_5 = 0x1.917A6Cp-4f;
-	const float c3_5 = 0x1.E9F415p-1f, s3_5 = 0x1.294063p-2f;
-	const float c5_5 = 0x1.C38B2Fp-1f, s5_5 = 0x1.E2B5D4p-2f;
-	const float c7_5 = 0x1.8BC807p-1f, s7_5 = 0x1.44CF32p-1f;
+	const float c3_5 = 0x1.E9F416p-1f, s3_5 = 0x1.294062p-2f;
+	const float c5_5 = 0x1.C38B30p-1f, s5_5 = 0x1.E2B5D4p-2f;
+	const float c7_5 = 0x1.8BC806p-1f, s7_5 = 0x1.44CF32p-1f;
 
 	//! First stage (rotation butterflies; DCT4_8)
 	float ax =  c1_5*x[0] + s1_5*x[7];
@@ -67,6 +71,9 @@ static void DCT4_8(float *x) {
 
 void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 	int i;
+	FOURIER_ASSUME_ALIGNED(Buf, 32);
+	FOURIER_ASSUME_ALIGNED(Tmp, 32);
+	FOURIER_ASSUME(N >= 8 && N <= 8192);
 
 	//! Stop condition
 	if(N == 8) {
@@ -77,8 +84,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 	//! Perform rotation butterflies
 	//!  u = R_n.x
 	{
-		const float *WinS  = Fourier_SinTableN(N);
-		const float *WinC  = WinS + N;
+		const float *Win   = Fourier_SinTableN(N, NULL);
 		const float *SrcLo = Buf;
 		const float *SrcHi = Buf + N;
 		      float *DstLo = Tmp;
@@ -88,18 +94,16 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 		__m256 t0, t1;
 		__m256 c, s;
 		for(i=0;i<N/2;i+=8) {
-			SrcHi -= 8;
-			b = _mm256_load_ps(SrcHi);
-			a = _mm256_load_ps(SrcLo);
-			SrcLo += 8;
+			SrcHi -= 8; b = _mm256_load_ps(SrcHi);
+			a = _mm256_load_ps(SrcLo); SrcLo += 8;
 			b = _mm256_shuffle_ps(b, b, 0x1B);
 			b = _mm256_permute2f128_ps(b, b, 0x01);
-			WinC -= 8;
-			c = _mm256_load_ps(WinC);
-			s = _mm256_load_ps(WinS);
-			WinS += 8;
-			c = _mm256_shuffle_ps(c, c, 0x1B);
-			c = _mm256_permute2f128_ps(c, c, 0x01);
+			c  = _mm256_load_ps(Win); Win += 8;
+			s  = _mm256_load_ps(Win); Win += 8;
+			t0 = _mm256_permute2f128_ps(c, s, 0x20);
+			t1 = _mm256_permute2f128_ps(c, s, 0x31);
+			c  = _mm256_shuffle_ps(t0, t1, 0x88);
+			s  = _mm256_shuffle_ps(t0, t1, 0xDD);
 #if defined(__FMA__)
 			t1 = _mm256_mul_ps(s, a);
 			t0 = _mm256_mul_ps(c, a);
@@ -118,14 +122,12 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 		__m128 t0, t1;
 		__m128 c, s;
 		for(i=0;i<N/2;i+=4) {
-			SrcHi -= 4;
-			b = _mm_loadr_ps(SrcHi);
-			a = _mm_load_ps(SrcLo);
-			SrcLo += 4;
-			s = _mm_load_ps(WinS);
-			WinS += 4;
-			WinC -= 4;
-			c = _mm_loadr_ps(WinC);
+			SrcHi -= 4; b = _mm_loadr_ps(SrcHi);
+			a = _mm_load_ps(SrcLo); SrcLo += 4;
+			t0 = _mm_load_ps(Win); Win += 4;
+			t1 = _mm_load_ps(Win); Win += 4;
+			c  = _mm_shuffle_ps(t0, t1, 0x88);
+			s  = _mm_shuffle_ps(t0, t1, 0xDD);
 #if defined(__FMA__)
 			t1 = _mm_mul_ps(s, a);
 			t0 = _mm_mul_ps(c, a);
@@ -146,15 +148,15 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 		for(i=0;i<N/2;i+=2) {
 			a = *SrcLo++;
 			b = *--SrcHi;
-			c = *--WinC;
-			s = *WinS++;
+			c = *Win++;
+			s = *Win++;
 			*DstLo++ =  c*a + s*b;
 			*DstHi++ =  s*a - c*b;
 
 			a = *SrcLo++;
 			b = *--SrcHi;
-			c = *--WinC;
-			s = *WinS++;
+			c = *Win++;
+			s = *Win++;
 			*DstLo++ =  c*a + s*b;
 			*DstHi++ = -s*a + c*b;
 		}

@@ -11,14 +11,17 @@
 #endif
 /**************************************/
 #include "Fourier.h"
+#include "FourierHelper.h"
 /**************************************/
 
 //! DCT-II (N=8)
 static void DCT2_8(float *x) {
+	FOURIER_ASSUME_ALIGNED(x, 32);
+
 	const float sqrt1_2 = 0x1.6A09E6p-1f;
-	const float c1_4 = 0x1.F6297Dp-1f, s1_4 = 0x1.8F8B84p-3f;
-	const float c3_4 = 0x1.A9B663p-1f, s3_4 = 0x1.1C73B4p-1f;
-	const float c6_4 = 0x1.87DE2Ap-2f, s6_4 = 0x1.D906BDp-1f;
+	const float c1_4 = 0x1.F6297Cp-1f, s1_4 = 0x1.8F8B84p-3f;
+	const float c3_4 = 0x1.A9B662p-1f, s3_4 = 0x1.1C73B4p-1f;
+	const float c6_4 = 0x1.87DE2Ap-2f, s6_4 = 0x1.D906BCp-1f;
 
 	//! First stage butterflies (DCT2_8)
 	float s07 = x[0]+x[7];
@@ -65,6 +68,9 @@ static void DCT2_8(float *x) {
 
 void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 	int i;
+	FOURIER_ASSUME_ALIGNED(Buf, 32);
+	FOURIER_ASSUME_ALIGNED(Tmp, 32);
+	FOURIER_ASSUME(N >= 8 && N <= 8192);
 
 	//! Stop condition
 	if(N == 8) {

@@ -11,16 +11,19 @@
 #endif
 /**************************************/
 #include "Fourier.h"
+#include "FourierHelper.h"
 /**************************************/
 
 //! DCT-III (N=8)
 static void DCT3_8(float *x) {
-	const float sqrt1_2 = 0x1.6A09E6p-1f;
-	const float c1_4 = 0x1.F6297Dp-1f, s1_4 = 0x1.8F8B84p-3f;
-	const float c3_4 = 0x1.A9B663p-1f, s3_4 = 0x1.1C73B4p-1f;
-	const float c6_4 = 0x1.87DE2Ap-2f, s6_4 = 0x1.D906BDp-1f;
+	FOURIER_ASSUME_ALIGNED(x, 32);
 
-	float a0 = x[0];
+	const float sqrt1_2 = 0x1.6A09E6p-1f;
+	const float c1_4 = 0x1.F6297Cp-1f, s1_4 = 0x1.8F8B84p-3f;
+	const float c3_4 = 0x1.A9B662p-1f, s3_4 = 0x1.1C73B4p-1f;
+	const float c6_4 = 0x1.87DE2Ap-2f, s6_4 = 0x1.D906BCp-1f;
+
+	float a0 = x[0] * 0.5f;
 	float b0 = x[4] * sqrt1_2;
 	float c0 = x[2];
 	float d0 = x[6];
@@ -29,8 +32,8 @@ static void DCT3_8(float *x) {
 	float b1 = x[5];
 	float c1 = x[3];
 
-	float ss07s34 = a0*0.5f + b0;
-	float ss16s25 = a0*0.5f - b0;
+	float ss07s34 = a0 + b0;
+	float ss16s25 = a0 - b0;
 	float ds16s25 = c6_4*c0 - s6_4*d0;
 	float ds07s34 = s6_4*c0 + c6_4*d0;
 	float d34d07y = a1 + c1;
@@ -61,6 +64,9 @@ static void DCT3_8(float *x) {
 
 void Fourier_DCT3(float *Buf, float *Tmp, int N) {
 	int i;
+	FOURIER_ASSUME_ALIGNED(Buf, 32);
+	FOURIER_ASSUME_ALIGNED(Tmp, 32);
+	FOURIER_ASSUME(N >= 8 && N <= 8192);
 
 	//! Stop condition
 	if(N == 8) {
