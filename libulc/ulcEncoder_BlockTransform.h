@@ -244,11 +244,17 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					//! will correct it after we've got that data.
 					float Re = (BufferMDCT[n] *= Norm), Re2 = SQR(Re);
 					float Im = (BufferMDST[n] *  Norm), Im2 = SQR(Im);
+					(void)Im2; //! <- Needed to avoid warning with ULC_USE_PSYCHOACOUSTICS==0
 					float AbsRe = ABS(Re);
 #if ULC_USE_NOISE_CODING || ULC_USE_PSYCHOACOUSTICS
 					float Abs2 = Re2 + Im2;
 #endif
-					BufferIndex[n] = (AbsRe < 0.5f*ULC_COEF_EPS) ? (-0x1.0p126f) : logf(AbsRe);
+					if(AbsRe < 0.5f*ULC_COEF_EPS) {
+						BufferIndex[n] = -0x1.0p126f;
+					} else {
+						BufferIndex[n] = logf(AbsRe);
+						nNzCoef++;
+					}
 #if ULC_USE_NOISE_CODING
 					BufferNoise[n/2] += Abs2; //! <- DCT/DFT weirdness; two MDCT+MDST coefficients = One frequency line
 #endif
@@ -322,7 +328,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				if(ValNp != -0x1.0p126f) {
 					//! NOTE: Masking is stronger the further we are from the center channel
 					BufferIndex[n] = ValNp + (ValNp-MaskingNp[n/2])*(1+Chan);
-					nNzCoef++;
 				}
 			}
 			BufferIndex += BlockSize;

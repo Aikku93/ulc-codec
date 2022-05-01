@@ -87,8 +87,9 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) {
 		State->TransientBuffer[i] = (struct ULC_TransientData_t){.Att = 0.0f, .Rel = 0.0f};
 	}
+#if ULC_USE_PSYCHOACOUSTICS
 	Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(State->FreqWeightTable, BlockSize, State->RateHz*0.5f);
-
+#endif
 	//! Success
 	return 1;
 }
