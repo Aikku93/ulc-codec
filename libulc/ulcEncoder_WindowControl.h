@@ -52,15 +52,14 @@
 //!     struct ULC_TransientData_t L[ULC_MAX_BLOCK_DECIMATION_FACTOR];
 //!     struct ULC_TransientData_t R[ULC_MAX_BLOCK_DECIMATION_FACTOR];
 //!   }
-//!  -TransientFilter[] must be 3+2*nChan elements in size. Initialize with 0.
+//!  -TransientFilter[] must be 3 elements in size. Initialize with 0.
 //!   Internal layout is:
 //!   {
 //!     float EnvGain; //! Gain envelope tap
 //!     float EnvAtt;  //! Attack envelope tap
 //!     float EnvRel;  //! Release envelope tap
-//!     float Yz[nChan][2]; //! IIR filter taps
 //!   }
-//!  -TmpBuffer[] must be BlockSize elements in size.
+//!  -TmpBuffer[] must be BlockSize*2 elements in size.
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
@@ -75,35 +74,36 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 ) {
 	int n, Chan;
 
-	//! Perform an IIR bandpass filter to isolate the signal energy.
-	//! This doesn't appear to make much sense in theory, but this
-	//! seems to result in the cleanest transient response so far.
-	//! Tranfer function:
-	//!  H(z) = (z^1 - z^-1) / (1 + 0.5z^-2)
+	//! Extract the energy of a highpass and bandpass filter,
+	//! which will later be combined as a geometric mean.
+	//! The filters are 90deg out of phase w.r.t. one another
+	//! such that multiplying them together should not result
+	//! in beating artifacts, allowing cleaner extraction of
+	//! the transient signal ("mid" band modulated by the
+	//! higher-energy/high-frequency band).
+	//! Transfer functions:
+	//!  H(z) = -z^-1 + 2 - z^1 (Highpass; Gain = 4.0)
+	//!  H(z) = z^1 - z^-1      (Bandpass; Gain = 2.0)
+	//! This section outputs interleaved {Highpass,Bandpass}
+	//! into BufEnergy[].
 	float *BufEnergy = TmpBuffer; {
-		float v;
-		for(n=0;n<BlockSize;n++) BufEnergy[n] = 0.0f;
+		for(n=0;n<BlockSize*2;n++) BufEnergy[n] = 0.0f;
 		for(Chan=0;Chan<nChan;Chan++) {
-#define DOFILTER(YzM1,YzM2, XzM1,Xz0,Xz1) v = (Xz1) - (XzM1) - 0.5f*(YzM2), YzM2 = YzM1, YzM1 = v, *Dst++ += SQR(v)
+#define DOFILTER(XzM1,Xz0,Xz1) *Dst++ += SQR(-XzM1+2*Xz0-Xz1), *Dst++ += SQR(Xz1-XzM1)
 			      int    Lag    = BlockSize/2; //! MDCT alignment
-			      float *YzTap  = &TransientFilter[3+Chan*2];
-			      float  YzM1   = YzTap[0];
-			      float  YzM2   = YzTap[1];
 			      float *Dst    = BufEnergy;
 			const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-Lag;
 			const float *SrcNew = ThisBlockData + Chan*BlockSize;
 			n = Lag-1; do {
-				DOFILTER(YzM1, YzM2, SrcOld[-1], SrcOld[0], SrcOld[+1]), SrcOld++;
+				DOFILTER(SrcOld[-1], SrcOld[0], SrcOld[+1]), SrcOld++;
 			} while(--n);
 			{
-				DOFILTER(YzM1, YzM2, SrcOld[-1], SrcOld[0], SrcNew[ 0]), SrcOld++;
-				DOFILTER(YzM1, YzM2, SrcOld[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
+				DOFILTER(SrcOld[-1], SrcOld[0], SrcNew[ 0]), SrcOld++;
+				DOFILTER(SrcOld[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
 			}
 			n = BlockSize - (Lag-1) - 2; do {
-				DOFILTER(YzM1, YzM2, SrcNew[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
+				DOFILTER(SrcNew[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
 			} while(--n);
-			YzTap[0] = YzM1;
-			YzTap[1] = YzM2;
 #undef DOFILTER
 		}
 	}
@@ -114,7 +114,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		//! The AttRate parameter refers to how long a signal takes to reach unity.
 		//! The RelRate parameter refers to how long a signal takes to decay to 0.
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p2f / BlockSize); //! -36dB/block (Log[2^-6])
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p3f / BlockSize); //! -36dB/block (Log[2^-6])
 		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
 		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p5f / RateHz); //! -0.38dB/ms (1000 * Log[2^-0.0625])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
@@ -128,7 +128,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! (ie. the amplitude at which everything is
 				//! happening around) to "unbias" the signal
 				//! and center it about 0 for attack/release.
-				float v  = *Src++ - EnvGain;
+				//! NOTE: Square root to extract geometric mean
+				//! of combined highpass/bandpass energy.
+				float v  = sqrtf(Src[0]*Src[1]) - EnvGain; Src += 2;
 				EnvGain += v*(1.0f-GainRate);
 
 				//! Update attack/release envelopes and integrate
@@ -136,8 +138,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! NOTE: Envelope attack (fade-in) is proportional to
 				//! the signal level, whereas envelope decay (fade-out)
 				//! follows a constant falloff.
-				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= RelRate;
-				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-AttRate); else EnvRel *= RelRate;
+				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= AttRate;
+				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-RelRate); else EnvRel *= RelRate;
 				Dst->Att += EnvAtt;
 				Dst->Rel -= EnvRel; //! EnvRel is sign-inverted, so flip again
 			} while(--n);

@@ -70,12 +70,12 @@ struct ULC_EncoderState_t {
 	//!   float TransformTemp  [MAX(2,nChan)*BlockSize]
 	//!   float FreqWeightTable[2*BlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR] <- With ULC_USE_PSYCHOACOUSTICS only
 	//!   int   TransformIndex [nChan*BlockSize]
-	//!   float TransientFilter[nChan*2+3]
 	//!   ULC_TransientData_t TransientBuffer[ULC_MAX_BLOCK_DECIMATION_FACTOR*2]
 	//! BufferData contains the original pointer returned by malloc()
 	int    WindowCtrl;        //! Window control parameter (for last coded block)
 	int    NextWindowCtrl;    //! Window control parameter (for data in SampleBuffer)
 	float  BlockComplexity;   //! Coefficient distribution complexity (0 = Highly tonal, 1 = Highly noisy)
+	float  TransientFilter[3];
 	void  *BufferData;
 	float *SampleBuffer;
 	float *TransformBuffer;
@@ -88,7 +88,6 @@ struct ULC_EncoderState_t {
 	float *FreqWeightTable;
 #endif
 	int   *TransformIndex;
-	float *TransientFilter;
 	struct ULC_TransientData_t *TransientBuffer;
 };
 
