@@ -110,8 +110,10 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 			Br = _mm256_load_ps(LapHi-8 - n);
 			C  = _mm256_load_ps(NewLo   + n);
 			Dr = _mm256_load_ps(NewHi-8 - n);
+			Zero = _mm256_permute2f128_ps(c, c, 0x01); //! <- Reverse for Dr*c :/
+			Zero = _mm256_shuffle_ps(Zero, Zero, 0x1B);
 			_mm256_store_ps(LapLo   + n, _mm256_mul_ps(s, C));
-			_mm256_store_ps(LapHi-8 - n, _mm256_mul_ps(c, Dr));
+			_mm256_store_ps(LapHi-8 - n, _mm256_mul_ps(Zero, Dr));
 			Br = _mm256_permute2f128_ps(Br, Br, 0x01);
 			Br = _mm256_shuffle_ps     (Br, Br, 0x1B);
 			Dr = _mm256_permute2f128_ps(Dr, Dr, 0x01);
@@ -155,7 +157,7 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 		for(;n<N/2;n+=4) {
 			A  = _mm_load_ps(Win); Win += 4;
 			C  = _mm_load_ps(Win); Win += 4;
-			c  = _mm_shuffle_ps(A, C, 0x88);
+			c  = _mm_shuffle_ps(C, A, 0x22); //! <- Reversed
 			s  = _mm_shuffle_ps(A, C, 0xDD);
 			A  = _mm_load_ps(LapLo   + n);
 			Br = _mm_load_ps(LapHi-4 - n);
@@ -163,6 +165,7 @@ void Fourier_MDCT_MDST(float *MDCT, float *MDST, const float *New, float *Lap, f
 			Dr = _mm_load_ps(NewHi-4 - n);
 			_mm_store_ps(LapLo   + n, _mm_mul_ps(s, C));
 			_mm_store_ps(LapHi-4 - n, _mm_mul_ps(c, Dr));
+			c  = _mm_shuffle_ps(c,  c,  0x1B); //! <- Restore
 			Br = _mm_shuffle_ps(Br, Br, 0x1B);
 			Dr = _mm_shuffle_ps(Dr, Dr, 0x1B);
 			C  = _mm_mul_ps(C,  c);
