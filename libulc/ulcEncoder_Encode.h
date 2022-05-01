@@ -49,8 +49,8 @@ ULC_FORCED_INLINE void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuff
 /**************************************/
 
 //! Build quantizer from weighted average
-static inline int Block_Encode_BuildQuantizer(float MaxVal2) {
-	//! NOTE: `MaxVal2` approaches (4/Pi)^2 as BlockSize
+ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
+	//! NOTE: `MaxVal` approaches (4/Pi)^2 as BlockSize
 	//! approaches infinity, due to the p=1 norm of
 	//! the MDCT matrix. Therefore, we use a bias of 5
 	//! in the syntax to allow for a full range (that is
@@ -59,7 +59,7 @@ static inline int Block_Encode_BuildQuantizer(float MaxVal2) {
 	//! to correctly round off for the best distortion
 	//! trade-off (in terms of underload/overload, not
 	//! PSNR).
-	int q = (int)(6.0f - 0x1.715476p-1f*logf(MaxVal2)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	int q = (int)(6.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
 }
@@ -77,27 +77,16 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 #endif
 	const int    *CoefIdx,
 	int           NextCodedIdx,
-	int          *PrevQuant,
 	int           nOutCoef,
 	BitStream_t **DstBuffer,
 	int          *Size
 ) {
-	//! Write/update the quantizer
-	float q; {
-		int qi = Block_Encode_BuildQuantizer(Quant);
-		q = (float)(1u << qi);
-		if(qi != *PrevQuant) {
-			Block_Encode_WriteQuantizer(qi, DstBuffer, Size, *PrevQuant != -1);
-			*PrevQuant = qi;
-		}
-	}
-
 	//! Write the coefficients
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
 		do if(CoefIdx[CurIdx] < nOutCoef) {
-			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*q, 0x7);
+			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
 			if(Qn) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
@@ -191,58 +180,55 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int NextCodedIdx  = Idx;
 	int PrevQuant     = -1;
 	int QuantStartIdx = -1;
-	float QuantSum  = 0.0f;
-	float QuantSumW = 0.0f;
+	float CurCoef;
 	float QuantMax  = 0.0f;
 	do {
 		//! Seek the next coefficient
 		while(Idx < EndIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
 
 		//! Read coefficient and set the first quantizer's first coefficient index
-		//! NOTE: Set BandCoef2=0.0 upon reaching the end. This causes the range
+		//! NOTE: Set CurCoef=0.0 upon reaching the end. This causes the range
 		//! check to fail in the next step, causing the final quantizer zone to dump
-		//! if we had any data (if we don't, the check "passes" because QuantSum==0).
-		float BandCoef2 = 0.0f;
+		//! if we had any data (if we don't, the check "passes" because QuantMax==0).
+		CurCoef = 0.0f;
 		if(Idx < EndIdx) {
-			BandCoef2 = SQR(Coef[Idx]);
+			CurCoef = ABS(Coef[Idx]);
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
 		}
 
 		//! Level out of range in this quantizer zone?
-		const float MaxRangeLo = SQR(8.0f);
-		const float MaxRangeHi = SQR(2.0f);
-		if(
-			BandCoef2*QuantSumW > MaxRangeHi*QuantSum ||
-			BandCoef2*MaxRangeLo*QuantSumW < QuantSum
-		) {
+		const float MaxRangeLo = 8.0f;
+		if(CurCoef < QuantMax*(1.0f/MaxRangeLo)) {
+			//! Write/update the quantizer
+			int qi = Block_Encode_BuildQuantizer(QuantMax);
+			if(qi != PrevQuant) {
+				Block_Encode_WriteQuantizer(qi, DstBuffer, Size, PrevQuant != -1);
+				PrevQuant = qi;
+			}
+
 			//! Write the quantizer zone we just searched through
 			//! and start a new one from this coefficient
 			NextCodedIdx = Block_Encode_EncodePass_WriteQuantizerZone(
 				QuantStartIdx,
 				Idx,
-				QuantMax,
+				(float)(1u << qi),
 				Coef,
 #if ULC_USE_NOISE_CODING
 				CoefNoise,
 #endif
 				CoefIdx,
 				NextCodedIdx,
-				&PrevQuant,
 				nOutCoef,
 				DstBuffer,
 				Size
 			);
 			QuantStartIdx = Idx;
-			QuantSum = QuantSumW = 0.0f;
 			QuantMax = 0.0f;
 		}
 
-		//! Accumulate to the current quantizer zone.
-		//! This uses a contraharmonic mean as the quantizer step size.
-		QuantSum  += BandCoef2 * BandCoef2;
-		QuantSumW += BandCoef2;
-		if(BandCoef2 > QuantMax) QuantMax = BandCoef2;
-	} while(++Idx <= EndIdx); //! Idx will go over by 1 or 2 here to dump the last quantizer zone, but doesn't matter; not used after this loop
+		//! Set new maximum
+		if(CurCoef > QuantMax) QuantMax = CurCoef;
+	} while(Idx++, CurCoef != 0);
 
 	//! Decide what to do about the tail coefficients
 	//! If we're at the edge of the block, it might work better to just fill with 0h
