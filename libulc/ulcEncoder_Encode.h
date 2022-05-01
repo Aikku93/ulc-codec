@@ -114,7 +114,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			if(zR >= 16) {
 				v = zR - 16; if(v > 0xFF) v = 0xFF;
 				n = v  + 16;
-				NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, q);
+				NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, Quant);
 			}
 			if(NoiseQ) {
 				//! 0h,Zh,Yh,Xh: 16 .. 271 noise fill (Xh != 0)
