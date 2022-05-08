@@ -180,25 +180,28 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int NextCodedIdx  = Idx;
 	int PrevQuant     = -1;
 	int QuantStartIdx = -1;
-	float CurCoef;
-	float QuantMax  = 0.0f;
+	float QuantMin = 1000.0f, QuantMax = -1000.0f;
 	do {
 		//! Seek the next coefficient
 		while(Idx < EndIdx && CoefIdx[Idx] >= nOutCoef) Idx++;
 
 		//! Read coefficient and set the first quantizer's first coefficient index
-		//! NOTE: Set CurCoef=0.0 upon reaching the end. This causes the range
+		//! NOTE: Set NewMin=0.0 upon reaching the end. This causes the range
 		//! check to fail in the next step, causing the final quantizer zone to dump
-		//! if we had any data (if we don't, the check "passes" because QuantMax==0).
-		CurCoef = 0.0f;
+		//! if we had any data (if we don't, the check "passes" because NewMax==0).
+		float NewMin = 0.0f;
+		float NewMax = QuantMax;
+		float CurLevel = 0.0f;
 		if(Idx < EndIdx) {
-			CurCoef = ABS(Coef[Idx]);
+			CurLevel = ABS(Coef[Idx]);
+			NewMin = (CurLevel < QuantMin) ? CurLevel : QuantMin;
+			NewMax = (CurLevel > QuantMax) ? CurLevel : QuantMax;
 			if(QuantStartIdx == -1) QuantStartIdx = Idx;
 		}
 
 		//! Level out of range in this quantizer zone?
 		const float MaxRangeLo = 8.0f;
-		if(CurCoef < QuantMax*(1.0f/MaxRangeLo)) {
+		if(NewMin < NewMax*(1.0f/MaxRangeLo)) {
 			//! Write/update the quantizer
 			int qi = Block_Encode_BuildQuantizer(QuantMax);
 			if(qi != PrevQuant) {
@@ -223,12 +226,13 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 				Size
 			);
 			QuantStartIdx = Idx;
-			QuantMax = 0.0f;
+			QuantMin = QuantMax = CurLevel;
+		} else {
+			//! Update ranges
+			QuantMin = NewMin;
+			QuantMax = NewMax;
 		}
-
-		//! Set new maximum
-		if(CurCoef > QuantMax) QuantMax = CurCoef;
-	} while(Idx++, CurCoef != 0);
+	} while(++Idx <= EndIdx);
 
 	//! Decide what to do about the tail coefficients
 	//! If we're at the edge of the block, it might work better to just fill with 0h

@@ -227,11 +227,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! coefficients for psychoacoustic analysis.
 				//! MDCT is treated as the Real part of a DFT,
 				//! while MDST is treated as the Imaginary part.
-				//! NOTE: MDCT/MDST scaling is 2/N, but here we are
-				//! scaling by 2/N * Sqrt[0.75]. This latter factor
-				//! is to account for quantization distortion, in
-				//! order to minimize clipping during output.
-				float Norm = 0x1.BB67B0p0f / SubBlockSize; //! 0x1.BB67B0p0 = 2*Sqrt[0.75]
+				float Norm = 2.0f / SubBlockSize;
 				for(n=0;n<SubBlockSize;n++) {
 					//! NOTE: MDST is only used here, so don't bother
 					//! storing back the normalized data once we're done.

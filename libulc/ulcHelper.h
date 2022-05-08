@@ -5,6 +5,9 @@
 /**************************************/
 #pragma once
 /**************************************/
+#include <math.h>
+#include <stdint.h>
+/**************************************/
 #include "ulcEncoder.h"
 /**************************************/
 #define ABS(x) ((x) < 0 ? (-(x)) : (x))
@@ -66,9 +69,10 @@ ULC_FORCED_INLINE int ULC_CompandedQuantize(float v) {
 }
 
 //! Quantize coefficient
-//! NOTE: Not mathematically optimal, but appears to sound better.
+//! This is its own function in case we need to change the rounding
+//! behaviour for coefficients, relative to simply minimizing RMSE.
 ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficientUnsigned(float v, int Limit) {
-	int vq = (int)(0x1.6A09E8p-1f + sqrtf(v)); //! Sqrt[1/2], rounded up
+	int vq = ULC_CompandedQuantizeUnsigned(v);
 	return (vq < Limit) ? vq : Limit;
 }
 ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficient(float v, int Limit) {
