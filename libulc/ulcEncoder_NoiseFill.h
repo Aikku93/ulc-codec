@@ -141,12 +141,13 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 }
 
 //! Compute quantized HF extension parameters for encoding
-#pragma GCC push_options
-#pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe... please.
 static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Band, int N, float q, int *_NoiseQ, int *_NoiseDecay) {
 	//! Fixup for DCT+DST -> Pseudo-DFT
 	LogCoef += Band / 2;
 	N = (N + (Band & 1) + 1) / 2;
+
+	//! Default to disabling noise fill
+	*_NoiseQ = *_NoiseDecay = 0;
 
 	//! Solve for least-squares (in the log domain, for exponential fitting)
 	float Amplitude, Decay; {
@@ -177,14 +178,15 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 		float Det = SumW*SumX2 - SQR(SumX);
 		if(Det == 0.0f) {
 			//! Play it safe and disable HF extension
-			*_NoiseQ = *_NoiseDecay = 0;
 			return;
 		}
 		Amplitude = (SumX2*SumY  - SumX*SumXY) / Det;
 		Decay     = (SumW *SumXY - SumX*SumY ) / Det;
 
 		//! Convert to linear units
-		Amplitude = expf(Amplitude);
+		//! NOTE: It seems to work better if we apply a
+		//! single step of decay before calculating Amplitude.
+		Amplitude = expf(Amplitude + Decay);
 		Decay     = expf(Decay);
 	}
 
@@ -196,7 +198,6 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
 }
-#pragma GCC pop_options
 
 /**************************************/
 //! EOF
