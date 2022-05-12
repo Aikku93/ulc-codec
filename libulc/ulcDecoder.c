@@ -87,10 +87,10 @@ static inline uint8_t Block_Decode_ReadNybble(const uint8_t **Src, int *Size) {
 	return x&0xF;
 }
 static inline int Block_Decode_ReadQuantizer(const uint8_t **Src, int *Size) {
-	int           qi  = Block_Decode_ReadNybble(Src, Size); //! 8h,0h,0h..Dh:      Quantizer change
-	if(qi == 0xF) return ESCAPE_SEQUENCE_STOP_NOISEFILL;    //! 8h,0h,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
-	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size); //! 8h,0h,Eh,0h..Ch:   Quantizer change (extended precision)
-	if(qi == 0xE + 0xF) return ESCAPE_SEQUENCE_STOP;        //! 8h,0h,Eh,Fh:       Zeros fill (to end)
+	int           qi  = Block_Decode_ReadNybble(Src, Size); //! Fh,0h..Dh:      Quantizer change
+	if(qi == 0xF) return ESCAPE_SEQUENCE_STOP_NOISEFILL;    //! Fh,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
+	if(qi == 0xE) qi += Block_Decode_ReadNybble(Src, Size); //! Fh,Eh,0h..Ch:   Quantizer change (extended precision)
+	if(qi == 0xE + 0xF) return ESCAPE_SEQUENCE_STOP;        //! Fh,Eh,Fh:       Zeros fill (to end)
 	return qi;
 }
 static inline float Block_Decode_ExpandQuantizer(int qi) {
@@ -102,7 +102,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 	//! Check first quantizer for Stop code
 	v = Block_Decode_ReadQuantizer(Src, Size);
 	if(v == ESCAPE_SEQUENCE_STOP) {
-		//! [8h,0h,]Eh,Fh: Stop
+		//! [Fh,]Eh,Fh: Stop
 		do *CoefDst++ = 0.0f; while(--N);
 		return;
 	}
@@ -110,9 +110,9 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 	//! Unpack the [sub]block's coefficients
 	float Quant = Block_Decode_ExpandQuantizer(v);
 	for(;;) {
-		//! -7h..-1h, +1..+7h: Normal
+		//! -7h..-2h, +2..+7h: Normal
 		v = Block_Decode_ReadNybble(Src, Size);
-		if(v != 0x8 && v != 0x0) {
+		if(v != 0x0 && v != 0x1 && v != 0x8 && v != 0xF) { //! <- Exclude all control codes
 			//! Store linearized, dequantized coefficient
 			v = (v^0x8) - 0x8; //! Sign extension
 			v = (v < 0) ? (-v*v) : (+v*v);
@@ -121,30 +121,9 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			continue;
 		}
 
-		//! 0h,Zh,Yh,Xh: 16 .. 271 noise fill (Xh.bit[1..3] != 0)
-		//! 0h,Zh,Yh,Xh: 31 .. 286 zeros fill (Xh.bit[1..3] == 0)
+		//! 0h,0h..Fh: Zeros fill (1 .. 16 coefficients)
 		if(v == 0x0) {
-			n  = Block_Decode_ReadNybble(Src, Size);
-			n  = Block_Decode_ReadNybble(Src, Size) | (n<<4);
-			v  = Block_Decode_ReadNybble(Src, Size);
-			n += (v == 0) ? 31 : 16;
-			if(n > N) n = N; //! <- Clip on corrupt blocks
-			N -= n;
-			if(v) {
-				float p = (v*v) * Quant * (1.0f/16);
-				do {
-					if(Block_Decode_UpdateRandomSeed() & 0x80000000) p = -p;
-					*CoefDst++ = p;
-				} while(--n);
-			} else do *CoefDst++ = 0.0f; while(--n);
-			if(N == 0) break;
-			continue;
-		}
-
-		//! 8h,1h..Fh: Zeros fill (1 .. 15 coefficients)
-		v = Block_Decode_ReadNybble(Src, Size);
-		if(v != 0x0) {
-			n = v;
+			n = Block_Decode_ReadNybble(Src, Size) + 1;
 			if(n > N) n = N; //! <- Clip on corrupt blocks
 			N -= n;
 			do *CoefDst++ = 0.0f; while(--n);
@@ -152,21 +131,53 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			continue;
 		}
 
-		//! 8h,0h,0h..Dh:    Quantizer change
-		//! 8h,0h,Eh,0h..Ch: Quantizer change (extended precision)
+		//! 1h,Yh,Xh: 33 .. 288 zeros fill
+		if(v == 0x1) {
+			n  = Block_Decode_ReadNybble(Src, Size);
+			n  = Block_Decode_ReadNybble(Src, Size) | (n<<4);
+			n += 33;
+			if(n > N) n = N; //! <- Clip on corrupt blocks
+			N -= n;
+			do *CoefDst++ = 0.0f; while(--n);
+			if(N == 0) break;
+			continue;
+		}
+
+		//! 8h,Zh,Yh,Xh: 16 .. 527 noise fill
+		if(v == 0x8) {
+			n  = Block_Decode_ReadNybble(Src, Size);
+			n  = Block_Decode_ReadNybble(Src, Size) | (n<<4);
+			v  = Block_Decode_ReadNybble(Src, Size);
+			n  = (v&1) | (n<<1);
+			v  = (v>>1) + 1;
+			n += 16;
+			if(n > N) n = N; //! <- Clip on corrupt blocks
+			N -= n; {
+				float p = (v*v) * Quant * (1.0f/4);
+				do {
+					if(Block_Decode_UpdateRandomSeed() & 0x80000000) p = -p;
+					*CoefDst++ = p;
+				} while(--n);
+			}
+			if(N == 0) break;
+			continue;
+		}
+
+		//! Fh,0h..Dh:    Quantizer change
+		//! Fh,Eh,0h..Ch: Quantizer change (extended precision)
 		v = Block_Decode_ReadQuantizer(Src, Size);
 		if(v >= 0) {
 			Quant = Block_Decode_ExpandQuantizer(v);
 			continue;
 		}
 
-		//! 8h,0h,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
+		//! Fh,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
 		if(v == ESCAPE_SEQUENCE_STOP_NOISEFILL) {
 			v = Block_Decode_ReadNybble(Src, Size) + 1;
 			n = Block_Decode_ReadNybble(Src, Size);
 			n = Block_Decode_ReadNybble(Src, Size) | (n<<4);
-			float p = (v*v) * Quant * (1.0f/16);
-			float r = 1.0f + (n*n)*-0x1.0p-16f;
+			float p = (v*v) * Quant * (1.0f/4);
+			float r = 1.0f + (n*n)*-0x1.0p-19f;
 			do {
 				if(Block_Decode_UpdateRandomSeed() & 0x80000000) p = -p;
 				*CoefDst++ = p, p *= r;
@@ -174,9 +185,9 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			break;
 		}
 
-		//! 8h,0h,Eh,Dh: Unused
-		//! 8h,0h,Eh,Eh: Unused
-		//! 8h,0h,Eh,Fh: Zeros fill (to end)
+		//! Fh,Eh,Dh: Unused
+		//! Fh,Eh,Eh: Unused
+		//! Fh,Eh,Fh: Zeros fill (to end)
 		if(v == ESCAPE_SEQUENCE_STOP) {
 			do *CoefDst++ = 0.0f; while(--N);
 			break;

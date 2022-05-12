@@ -40,7 +40,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		LogAmp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 		Weight[n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.0A2B24p1f - 0.5f*logf(Norm); //! Pre-scale by Scale=16.0/2 for noise quantizer (by adding Log[Scale]=0x1.0A2B24p1)
+	float LogNorm     = 0x1.62E430p-1f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale]=0x1.62E430p-1)
 	float InvLogScale = N * 0x1.51FDE5p-30f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
@@ -136,7 +136,7 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *LogCoef, int Band, int
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 0xF);
+	int NoiseQ = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0x7);
 	return NoiseQ;
 }
 
@@ -188,12 +188,12 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 		//! single step of decay before calculating Amplitude.
 		Amplitude = expf(Amplitude + Decay);
 		Decay     = expf(Decay);
+		if(Decay > 1.0f) Decay = 1.0f; //! <- Safety
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0xF);
-	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p16f); //! (1-Decay) * 2^16
-	if(NoiseDecay < 0x00) NoiseDecay = 0x00;
+	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0x7);
+	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p19f); //! (1-Decay) * 2^19
 	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;

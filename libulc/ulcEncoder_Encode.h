@@ -33,14 +33,13 @@ ULC_FORCED_INLINE void Block_Encode_WriteNybble(BitStream_t x, BitStream_t **Dst
 ULC_FORCED_INLINE void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuffer, int *Size, int Lead) {
 	int s = qi - 5;
 	if(Lead) {
-		Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
+		Block_Encode_WriteNybble(0xF, DstBuffer, Size);
 	}
 	if(s < 0xE) {
-		//! 8h,0h,0h..Dh: Quantizer change
+		//! Fh,0h..Dh: Quantizer change
 		Block_Encode_WriteNybble(s, DstBuffer, Size);
 	} else {
-		//! 8h,0h,Eh,0h..Ch: Quantizer change (extended precision)
+		//! Fh,Eh,0h..Ch: Quantizer change (extended precision)
 		Block_Encode_WriteNybble(  0xE, DstBuffer, Size);
 		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
 	}
@@ -86,8 +85,10 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		//! Seek the next viable coefficient
 		int Qn;
 		do if(CoefIdx[CurIdx] < nOutCoef) {
+			//! We can only code +/-2..+/-7, so we
+			//! check that Qn is inside this range
 			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
-			if(Qn) break;
+			if(ABS(Qn) > 1) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
 
@@ -112,37 +113,36 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			//! decimating), smaller runs are useful.
 			int NoiseQ = 0;
 			if(zR >= 16) {
-				v = zR - 16; if(v > 0xFF) v = 0xFF;
+				v = zR - 16; if(v > 0x01FF) v = 0x01FF;
 				n = v  + 16;
 				NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, Quant);
 			}
 			if(NoiseQ) {
-				//! 0h,Zh,Yh,Xh: 16 .. 271 noise fill (Xh != 0)
-				Block_Encode_WriteNybble(0x0,    DstBuffer, Size);
-				Block_Encode_WriteNybble(v>>4,   DstBuffer, Size);
-				Block_Encode_WriteNybble(v>>0,   DstBuffer, Size);
-				Block_Encode_WriteNybble(NoiseQ, DstBuffer, Size);
+				//! 8h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh != 0)
+				Block_Encode_WriteNybble(0x8,  DstBuffer, Size);
+				Block_Encode_WriteNybble(v>>5, DstBuffer, Size);
+				Block_Encode_WriteNybble(v>>1, DstBuffer, Size);
+				Block_Encode_WriteNybble((v&1) | ((NoiseQ-1)<<1), DstBuffer, Size);
 			} else {
 #endif
 				//! Determine which run type to use and get the number of zeros coded
 				//! NOTE: A short run takes 2 nybbles, and a long run takes 4 nybbles.
-				//! So two short runs of maximum length code up to 30 zeros with the
+				//! So two short runs of maximum length code up to 32 zeros with the
 				//! same efficiency as a long run, meaning that long runs start with
-				//! 31 zeros.
-				if(zR < 31) {
-					//! 8h,1h..Fh: Zeros fill (1 .. 15 coefficients)
-					v = zR - 0; if(v > 0xF) v = 0xF;
-					n = v  + 0;
-					Block_Encode_WriteNybble(0x8, DstBuffer, Size);
+				//! 33 zeros.
+				if(zR < 33) {
+					//! 0h,0h..Fh: Zeros fill (1 .. 16 coefficients)
+					v = zR - 1; if(v > 0xF) v = 0xF;
+					n = v  + 1;
+					Block_Encode_WriteNybble(0x0, DstBuffer, Size);
 					Block_Encode_WriteNybble(v,   DstBuffer, Size);
 				} else {
-					//! 0h,Zh,Yh,Xh: 31 .. 286 zeros fill (Xh == 0)
-					v = zR - 31; if(v > 0xFF) v = 0xFF;
-					n = v  + 31;
-					Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
+					//! 1h,Yh,Xh: 33 .. 542 zeros fill (Xh == 0)
+					v = zR - 33; if(v > 0xFF) v = 0xFF;
+					n = v  + 33;
+					Block_Encode_WriteNybble(0x1,  DstBuffer, Size);
 					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
 					Block_Encode_WriteNybble(v>>0, DstBuffer, Size);
-					Block_Encode_WriteNybble(0x0,  DstBuffer, Size);
 				}
 #if ULC_USE_NOISE_CODING
 			}
@@ -240,8 +240,7 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	if(n > 4) {
 		//! If we coded anything, then we must specify the lead sequence
 		if(PrevQuant != -1) {
-			Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-			Block_Encode_WriteNybble(0x0, DstBuffer, Size);
+			Block_Encode_WriteNybble(0xF, DstBuffer, Size);
 		}
 
 		//! Analyze the remaining data for noise-fill mode
@@ -258,14 +257,14 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 			);
 		}
 		if(NoiseQ) {
-			//! 8h,0h,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
+			//! Fh,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
 			Block_Encode_WriteNybble(0xF,           DstBuffer, Size);
 			Block_Encode_WriteNybble(NoiseQ-1,      DstBuffer, Size);
 			Block_Encode_WriteNybble(NoiseDecay>>4, DstBuffer, Size);
 			Block_Encode_WriteNybble(NoiseDecay,    DstBuffer, Size);
 		} else {
 #endif
-			//! 8h,0h,Eh,Fh: Stop
+			//! Fh,Eh,Fh: Stop
 			Block_Encode_WriteNybble(0xE, DstBuffer, Size);
 			Block_Encode_WriteNybble(0xF, DstBuffer, Size);
 #if ULC_USE_NOISE_CODING
@@ -274,8 +273,8 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	} else if(n > 0) {
 		//! If we have less than 4 coefficients, it's cheaper to
 		//! store a zero run than to do anything else.
-		Block_Encode_WriteNybble(0x8, DstBuffer, Size);
-		Block_Encode_WriteNybble(n,   DstBuffer, Size);
+		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
+		Block_Encode_WriteNybble(n-1, DstBuffer, Size);
 	}
 }
 
