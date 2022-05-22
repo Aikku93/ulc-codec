@@ -138,10 +138,10 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! NOTE: Envelope attack (fade-in) is proportional to
 				//! the signal level, whereas envelope decay (fade-out)
 				//! follows a constant falloff.
-				if(v >= EnvAtt) EnvAtt += (v-EnvAtt)*(1.0f-AttRate); else EnvAtt *= AttRate;
-				if(v <= EnvRel) EnvRel += (v-EnvRel)*(1.0f-RelRate); else EnvRel *= RelRate;
-				Dst->Att += EnvAtt;
-				Dst->Rel -= EnvRel; //! EnvRel is sign-inverted, so flip again
+				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
+				EnvRel *= RelRate; if(v < 0.0f) EnvRel += v*(1.0f-RelRate);
+				Dst->Att += EnvAtt*ABS(v);
+				Dst->Rel -= EnvRel*ABS(v); //! EnvRel is sign-inverted, so flip again
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
