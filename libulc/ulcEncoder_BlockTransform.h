@@ -72,15 +72,12 @@ static inline void Block_Transform_SortIndices(int *SortedIndices, const float *
 		//! Pop all elements off the heap one at a time
 		n = N-1;
 		do {
-			int t = Order[n];
-			Order[n] = Order[0];
-			Order[0] = t;
+			SortedIndices[Order[0]] = n;
+			Order[0] = Order[n];
 			Block_Transform_SortIndices_SiftDown(SortValues, Order, 0, n);
 		} while(--n);
+		SortedIndices[Order[0]] = n;
 	}
-
-	//! Remap indices based on their sort order
-	for(n=0;n<N;n++) SortedIndices[Order[n]] = n;
 }
 static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) {
 	int nChan     = State->nChan;
