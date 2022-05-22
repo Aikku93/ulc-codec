@@ -95,6 +95,28 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		//! Code the zero runs
 		int n, v, zR = CurIdx - NextCodedIdx;
 		while(zR) {
+			//! If we plan to skip two or less coefficients, try to encode
+			//! them instead, as this is cheaper+better than filling with zero
+			if(zR == 1) {
+				int Qn1 = ULC_CompandedQuantizeCoefficient(Coef[NextCodedIdx]*Quant, 0x7);
+				if(ABS(Qn1) > 1) {
+					//! -7h..-2h, +2h..+7h: Normal coefficient
+					Block_Encode_WriteNybble(Qn1, DstBuffer, Size);
+					NextCodedIdx += 1;
+					break;
+				}
+			}
+			if(zR == 2) {
+				int Qn1 = ULC_CompandedQuantizeCoefficient(Coef[NextCodedIdx+0]*Quant, 0x7);
+				int Qn2 = ULC_CompandedQuantizeCoefficient(Coef[NextCodedIdx+1]*Quant, 0x7);
+				if(ABS(Qn1) > 1 && ABS(Qn2) > 1) {
+					//! -7h..-2h, +2h..+7h: Normal coefficient
+					Block_Encode_WriteNybble(Qn1, DstBuffer, Size);
+					Block_Encode_WriteNybble(Qn2, DstBuffer, Size);
+					NextCodedIdx += 2;
+					break;
+				}
+			}
 #if ULC_USE_NOISE_CODING
 			//! Determine the quantized coefficient for noise-fill mode
 			//! NOTE: The range of noise samples is coded as a trade-off
@@ -152,7 +174,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			zR           -= n;
 		}
 
-		//! -7h..-1h, +1h..+7h: Normal coefficient
+		//! -7h..-2h, +2h..+7h: Normal coefficient
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
 
