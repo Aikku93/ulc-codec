@@ -40,7 +40,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		LogAmp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 		Weight[n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 	}
-	float LogNorm     = 0x1.62E430p-1f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale]=0x1.62E430p-1)
+	float LogNorm     = 0x1.8B90C0p-2f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/E for noise quantizer (by adding Log[Scale])
 	float InvLogScale = N * 0x1.51FDE5p-30f;
 
 	//! Thoroughly smooth/flatten out the spectrum for noise analysis.
@@ -192,6 +192,9 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
+	//! Amplitude has already been scaled by 4.0 (plus normalization),
+	//! but we need to scale to 16.0 here because HF extension uses
+	//! a 4bit amplitude instead of 3bit like "normal" noise fill does
 	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*4.0f, 1 + 0xF);
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p19f); //! (1-Decay) * 2^19
 	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
