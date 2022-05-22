@@ -176,7 +176,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			v = Block_Decode_ReadNybble(Src, Size) + 1;
 			n = Block_Decode_ReadNybble(Src, Size);
 			n = Block_Decode_ReadNybble(Src, Size) | (n<<4);
-			float p = (v*v) * Quant * (1.0f/4);
+			float p = (v*v) * Quant * (1.0f/16);
 			float r = 1.0f + (n*n)*-0x1.0p-19f;
 			do {
 				if(Block_Decode_UpdateRandomSeed() & 0x80000000) p = -p;

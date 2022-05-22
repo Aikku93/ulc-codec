@@ -192,7 +192,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *LogCoef, int Ban
 	}
 
 	//! Quantize amplitude and decay
-	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0x7);
+	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*4.0f, 1 + 0xF);
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p19f); //! (1-Decay) * 2^19
 	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
 	*_NoiseQ     = NoiseQ;

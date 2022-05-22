@@ -130,7 +130,7 @@ A channel's block cannot begin with ```[Fh],Fh,Zh,Yh,Xh```; no quantizer has bee
 
 Unpack Amplitude and Decay as follows:
 
-    Amplitude = (Z+1)^2 * Quantizer/4
+    Amplitude = (Z+1)^2 * Quantizer/16
     Decay     = 1 - 2^-19*(Y<<4 | X)^2
 
 For each of the remaining coefficients in the block, noise is used in place of encoded coefficients as follows:
@@ -138,7 +138,7 @@ For each of the remaining coefficients in the block, noise is used in place of e
     Coef[n++] = Amplitude * [randomly generated +/-1]
     Amplitude = Amplitude * Decay
 
-The quantizer is scaled by 1/4, as this was found to give consistently good results with very minimal overload/saturation and underload/collapse.
+The quantizer is scaled by 1/16, as this was found to give consistently good results with very minimal overload/saturation and underload/collapse.
 
 ### Inverse transform process
 ***
