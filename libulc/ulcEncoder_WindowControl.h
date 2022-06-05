@@ -140,8 +140,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! follows a constant falloff.
 				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
 				EnvRel *= RelRate; if(v < 0.0f) EnvRel += v*(1.0f-RelRate);
-				Dst->Att += EnvAtt*ABS(v);
-				Dst->Rel -= EnvRel*ABS(v); //! EnvRel is sign-inverted, so flip again
+				Dst->Att += EnvAtt*EnvGain;
+				Dst->Rel -= EnvRel*EnvGain; //! EnvRel is sign-inverted, so flip again
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
