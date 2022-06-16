@@ -111,18 +111,16 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! Model the attack and release envelopes, then
 	//! integrate them separately over each segment.
 	{
-		//! The AttRate parameter refers to how long a signal takes to reach unity.
-		//! The RelRate parameter refers to how long a signal takes to decay to 0.
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p3f / BlockSize); //! -36dB/block (Log[2^-6])
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p3f / BlockSize); //! -72dB/block (Log[2^-12])
 		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
-		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p5f / RateHz); //! -0.38dB/ms (1000 * Log[2^-0.0625])
+		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
 			//! Swap out the old "new" data, and clear the new "new" data
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
-			*Dst = (struct ULC_TransientData_t){.Att = 0.0f, .Rel = 0.0f};
+			*Dst = (struct ULC_TransientData_t){.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
 			n = BinSize; do {
 				//! Accumulate and subtract the "drift" bias
 				//! (ie. the amplitude at which everything is
@@ -138,10 +136,15 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! NOTE: Envelope attack (fade-in) is proportional to
 				//! the signal level, whereas envelope decay (fade-out)
 				//! follows a constant falloff.
-				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
-				EnvRel *= RelRate; if(v < 0.0f) EnvRel += v*(1.0f-RelRate);
-				Dst->Att += EnvAtt*EnvGain;
-				Dst->Rel -= EnvRel*EnvGain; //! EnvRel is sign-inverted, so flip again
+				//! NOTE: We perform a weighted contraharmonic mean here,
+				//! using EnvGain as an extra weight parameter. This is
+				//! used to detect broadband energy jumps more cleanly.
+				//! Note that this is an extra weight on the data itself
+				//! rather than a weight for the contraharmonic mean.
+				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v /* *(1.0f-AttRate)*/; //! <- This cancels out during Ratio calculation
+				EnvRel *= RelRate; if(v < 0.0f) EnvRel += v /* *(1.0f-RelRate)*/;
+				v = EnvAtt*EnvGain, Dst->Att += SQR(v), Dst->AttW += v;
+				v = EnvRel*EnvGain, Dst->Rel += SQR(v), Dst->RelW -= v; //! EnvRel is sign-inverted, so flip again
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
@@ -195,19 +198,30 @@ static inline int Block_Transform_GetWindowCtrl(
 			int Segment;
 			int MaxSegment = 0; float MaxRatio = -1000.0f;
 			for(Segment=0;Segment<nSegments;Segment++) {
-				struct ULC_TransientData_t L = {.Att = 0.0f, .Rel = 0.0f};
-				struct ULC_TransientData_t R = {.Att = 0.0f, .Rel = 0.0f};
+				struct ULC_TransientData_t L = {.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
+				struct ULC_TransientData_t R = {.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
 				const struct ULC_TransientData_t *Src = TransientBuffer + Segment*SegmentSize;
 				for(n=0;n<SegmentSize;n++) {
-#define ADDSEGMENT(Dst, Src) Dst.Att += Src.Att, Dst.Rel += Src.Rel
+#define ADDSEGMENT(Dst, Src) Dst.Att += Src.Att, Dst.AttW += Src.AttW, Dst.Rel += Src.Rel, Dst.RelW += Src.RelW
 					ADDSEGMENT(L, Src[n-SegmentSize]);
 					ADDSEGMENT(R, Src[n]);
 #undef ADDSEGMENT
 				}
-				L.Att = L.Att ? logf(L.Att) : (-100.0f); //! -100 = Placeholder for Log[0]
-				L.Rel = L.Rel ? logf(L.Rel) : (-100.0f);
-				R.Att = R.Att ? logf(R.Att) : (-100.0f);
-				R.Rel = R.Rel ? logf(R.Rel) : (-100.0f);
+				L.Att = L.Att ? logf(L.Att/L.AttW) : (-100.0f); //! -100 = Placeholder for Log[0]
+				L.Rel = L.Rel ? logf(L.Rel/L.RelW) : (-100.0f);
+				R.Att = R.Att ? logf(R.Att/R.AttW) : (-100.0f);
+				R.Rel = R.Rel ? logf(R.Rel/R.RelW) : (-100.0f);
+
+				//! Get final energy ratio
+				//! Note that:
+				//!   (R.Att-R.Rel) - (L.Att-L.Rel) (Eq 1)
+				//!  =(R.Att-L.Att) - (R.Rel-L.Rel) (Eq 2)
+				//! This allows two mathematically-equivalent
+				//! interpretations, depending on the viewpoint:
+				//!  Eq 1: Treat "Release" as a sort of 'mask', and apply it
+				//!        to "Attack" prior to the energy ratio calculation.
+				//!  Eq 2: The energy ratio is equal to the jump in "Attack"
+				//!        energy, relative to the jump in "Release" energy.
 				float Ratio = ABS((R.Att - R.Rel) - (L.Att - L.Rel));
 				if(Ratio > MaxRatio) MaxSegment = Segment, MaxRatio = Ratio;
 			}

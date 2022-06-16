@@ -51,7 +51,7 @@
 //!      ModulationWindow[BlockSize],
 //!    }
 struct ULC_TransientData_t {
-	float Att, Rel;
+	float Att, AttW, Rel, RelW;
 };
 struct ULC_EncoderState_t {
 	//! Global state (do not change after initialization)
