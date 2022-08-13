@@ -106,8 +106,8 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				v = a*0x1.FFFFFCp31f + b*v;
 				Weight  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 			}
-			float LogNorm     = -0.5f*logf(Norm);             //! Log[1/Norm] * 1/2 (for converting Power to Amplitude)
-			float InvLogScale = 0x1.2ADB1Cp-31f*SubBlockSize; //! Inverse, scaled by 1/2 (round up)
+			float LogNorm     = -logf(Norm);                  //! Log[1/Norm]
+			float InvLogScale = 0x1.2ADB1Cp-30f*SubBlockSize; //! Inverse (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
