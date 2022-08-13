@@ -60,8 +60,12 @@ ULC_FORCED_INLINE int ULC_CompandedQuantizeUnsigned(float v) {
 	//!    = (2x >= 1 + 2*vq + 2vq^2)       // Divide by 2
 	//!    = (x >= 0.5 + vq + vq^2)         // Factor vq+vq^2
 	//!    = (x >= 0.5 + vq*(1+vq))
-	int vq = (int)sqrtf(v);
-	return vq + (v >= 0.5f + vq*(1+vq));
+	//! ... all of which is apparently unnecessary, and correct
+	//! rounding can be achieved via:
+	//!  xq = Sqrt[x - 0.25] + 0.5 | x > 0.25,
+	//!  xq = 0                    | otherwise
+	//! Which gives the smallest coefficient that returns xq>0 as 0.5.
+	return (v >= 0.5f) ? (int)lrintf(sqrtf(v - 0.25f)) : 0;
 }
 ULC_FORCED_INLINE int ULC_CompandedQuantize(float v) {
 	int vq = ULC_CompandedQuantizeUnsigned(ABS(v));
