@@ -54,11 +54,9 @@ ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
 	//! the MDCT matrix. Therefore, we use a bias of 5
 	//! in the syntax to allow for a full range (that is
 	//! to say: 7^2 * 2^-5 = 1.53125, 1.53125 >= 4/Pi).
-	//! We further add a bias of 1.0 in our calculations
-	//! to correctly round off for the best distortion
-	//! trade-off (in terms of underload/overload, not
-	//! PSNR).
-	int q = (int)(6.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	//! We then round this off to the nearest integer.
+	int q = (int)lrintf(5.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	if(q < 5) q = 5;
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
 }
@@ -84,6 +82,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
+#if 0
 		do if(CoefIdx[CurIdx] < nOutCoef) {
 			//! We can only code +/-2..+/-7, so we
 			//! check that Qn is inside this range
@@ -91,6 +90,15 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			if(ABS(Qn) > 1) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
+#else
+		//! If the psymodel says we /need/ this coefficient,
+		//! make sure we encode it rather than skip it, even
+		//! if we have more distortion than if we skipped it
+		while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef) CurIdx++;
+		if(CurIdx >= EndIdx) break;
+		Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
+		if(ABS(Qn) < 2) Qn = (Coef[CurIdx] < 0) ? (-2) : (+2);
+#endif
 
 		//! Code the zero runs
 		int n, v, zR = CurIdx - NextCodedIdx;
