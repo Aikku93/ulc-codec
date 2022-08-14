@@ -19,29 +19,18 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 	//! Compute window for all subblock sizes in a sequential window
 	//! This should improve cache locality vs a single large window.
 	int n, SubBlockSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.26BB1Cp2f; //! -0x1.26BB1Cp2 = Log[1/100]
+	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.BA18AAp2f; //! -0x1.BA18AAp2 = Log[1/1000]
 	do {
 		for(n=0;n<SubBlockSize;n++) {
 			//! The weight function is a log-normal distribution function,
-			//! which will itself be weighted by the frequency line power.
-			//! The idea is that the higher the value of this weight, the
-			//! less we can rely on masking behaviour. The curve was set
-			//! so that the least masking occurs in the frequencies most
-			//! sensitive to hearing, and the most masking outside. The
-			//! weight scaling by frequency line power also ensures that
-			//! lower-amplitude lines can be masked more aggressively.
-			//! NOTE: The line power we multiply this table with will be
-			//! normalized to 2^32, so undo that normalization here to
-			//! save a multiply in the processing loop later.
-			//! NOTE: I'm not sure why, but things sound much better if
-			//! the peak is placed at 100Hz instead of 3kHz. This isn't
-			//! even remotely close to 3kHz (which is generally accepted
-			//! as the peak hearing frequency), so I have no idea what is
-			//! going on anymore. Moving this peak frequency higher makes
-			//! things sound blurry/watery/unstable, and moving it lower
-			//! begins to make things sound muffled with no improvement.
-			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 100]
-			*Dst++ = expf(-SQR(x) + -0x1.62E430p4f); //! -0x1.62E430p4 = Log[2^-32], round up
+			//! which is used to change the amplitude of the analyzed
+			//! coefficients. The idea is to drop the amplitude of the
+			//! frequencies that the ear is most sensitive to (~1kHz)
+			//! so that these cannot take part in masking calculations.
+			//! This greatly improves stability of tones during transient
+			//! passages, as well as with smaller BlockSize.
+			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
+			*Dst++ = 1.0f - expf(-0.5f*SQR(x));
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
 }
@@ -93,21 +82,17 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			uint32_t *Weight   = (uint32_t*)BufferTemp;
 			uint32_t *EnergyNp = (uint32_t*)BufferAmp2;
 			Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f; //! NOTE: 2^32-eps*2 to ensure we don't overflow
-			float LogScale = 0x1.B6944Cp29f / SubBlockSize; //! (2^32/Log[2^32] / (1-15/19)) / N (round down)
+			float LogScale = 0x1.14FF58p29f / SubBlockSize; //! (2^32/Log[2^32] / (1-2/3)) / N (round down)
 			const float *ThisFreqWeightTable = FreqWeightTable + SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
 			for(n=0;n<SubBlockSize;n++) {
-				//! As mentioned earlier, the mixing weight must be scaled by
-				//! the line power, so we do that here. Note that the weight
-				//! table is pre-scaled by 2^-32 to account for the line power
-				//! already being normalized to 2^32.
 				v = BufferAmp2[n] * Norm;
-				float a = ThisFreqWeightTable[n] * v, b = 1.0f - a;
-				EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
-				v = a*0x1.FFFFFCp31f + b*v;
-				Weight  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
+				float ve = v*ThisFreqWeightTable[n];
+				float vw = v;
+				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
+				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
 			float LogNorm     = -logf(Norm);                  //! Log[1/Norm]
-			float InvLogScale = 0x1.2ADB1Cp-30f*SubBlockSize; //! Inverse (round up)
+			float InvLogScale = 0x1.D93040p-30f*SubBlockSize; //! Inverse (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
@@ -115,9 +100,9 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the analysis window
 				int Old, New;
-				const int RangeScaleFxp = 4;
-				const int LoRangeScale = 15; //! Beg = (1-0.0625)*Band
-				const int HiRangeScale = 19; //! End = (1+0.1875)*Band
+				const int RangeScaleFxp = 2;
+				const int LoRangeScale = 3; //! Beg = (1-0.25)*Band
+				const int HiRangeScale = 6; //! End = (1+0.50)*Band
 
 				//! Remove samples that went out of focus
 				//! NOTE: We skip /at most/ one sample, so don't loop.
