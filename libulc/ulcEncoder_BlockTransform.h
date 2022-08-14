@@ -250,7 +250,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 						//! frequency bands that actually encode meaningful data
 						//! while Abs^2 is used for psychoacoustics (we will later
 						//! subtract Log[MaskLevel^2])
-						float Level = AbsRe;
+						float Level = Re2;
 #if ULC_USE_PSYCHOACOUSTICS
 						Level *= Abs2;
 #endif
