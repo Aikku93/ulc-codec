@@ -23,14 +23,15 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 	do {
 		for(n=0;n<SubBlockSize;n++) {
 			//! The weight function is a log-normal distribution function,
-			//! which is used to change the amplitude of the analyzed
-			//! coefficients. The idea is to drop the amplitude of the
-			//! frequencies that the ear is most sensitive to (~1kHz)
-			//! so that these cannot take part in masking calculations.
+			//! which is used to basically apply a perceptual-amplitude
+			//! re-normalization, by protecting up to 18dB of amplitude.
 			//! This greatly improves stability of tones during transient
 			//! passages, as well as with smaller BlockSize.
+			//! This version is a trade-off between the last two versions,
+			//! where one didn't use this weight at all, and the other
+			//! applied the weight directly to the amplitude.
 			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
-			*Dst++ = 1.0f - expf(-0.5f*SQR(x));
+			*Dst++ = expf(-2.0f*SQR(x) + -0x1.05BFA6p-6f); //! (1 - 10^(-18/10))*E^x (-0x1.05BFA6p-6 = Log[1 - 10^(-18/10)])
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
 }
@@ -82,17 +83,17 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			uint32_t *Weight   = (uint32_t*)BufferTemp;
 			uint32_t *EnergyNp = (uint32_t*)BufferAmp2;
 			Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f; //! NOTE: 2^32-eps*2 to ensure we don't overflow
-			float LogScale = 0x1.14FF58p29f / SubBlockSize; //! (2^32/Log[2^32] / (1-2/3)) / N (round down)
+			float LogScale = 0x1.EC709Cp28f / SubBlockSize; //! (2^32/Log[2^32] / (1-15/24)) / N (round down)
 			const float *ThisFreqWeightTable = FreqWeightTable + SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
-				float ve = v*ThisFreqWeightTable[n];
-				float vw = v;
+				float ve = v;
+				float vw = v + (0x1.FFFFFCp31f-v)*ThisFreqWeightTable[n];
 				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
 			float LogNorm     = -logf(Norm);                  //! Log[1/Norm]
-			float InvLogScale = 0x1.D93040p-30f*SubBlockSize; //! Inverse (round up)
+			float InvLogScale = 0x1.0A2B24p-29f*SubBlockSize; //! Inverse (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
@@ -100,9 +101,9 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the analysis window
 				int Old, New;
-				const int RangeScaleFxp = 2;
-				const int LoRangeScale = 3; //! Beg = (1-0.25)*Band
-				const int HiRangeScale = 6; //! End = (1+0.50)*Band
+				const int RangeScaleFxp = 4;
+				const int LoRangeScale = 15; //! Beg = (1-0.0625)*Band
+				const int HiRangeScale = 24; //! End = (1+0.5000)*Band
 
 				//! Remove samples that went out of focus
 				//! NOTE: We skip /at most/ one sample, so don't loop.
