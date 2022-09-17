@@ -230,8 +230,8 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 		}
 
 		//! Level out of range in this quantizer zone?
-		const float MaxRangeLo = 8.0f;
-		if(NewMin < NewMax*(1.0f/MaxRangeLo)) {
+		const float MaxRange = 7.0f / 2.0f;
+		if(NewMax >= NewMin*MaxRange) {
 			//! Write/update the quantizer
 			int qi = Block_Encode_BuildQuantizer(QuantMax);
 			if(qi != PrevQuant) {
