@@ -330,7 +330,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(n=0;n<BlockSize;n++) {
 				float ValNp = BufferIndex[n];
 				if(ValNp != -0x1.0p126f) {
-					BufferIndex[n] = ValNp - MaskingNp[n/2];
+					BufferIndex[n] = ValNp - MaskingNp[n/2] - 0x1.62E430p0f*Chan; //! 0x1.62E430p0 = Log[0.5^2]
 				}
 			}
 			BufferIndex += BlockSize;
