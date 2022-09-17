@@ -115,7 +115,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		float *BufferNoise   = State->TransformNoise;
 
 		//! Clear the noise buffer; we'll be adding two MDCT/MDST lines into one pseudo-DFT line here
-		for(n=0;n<nChan*BlockSize/2;n++) BufferNoise[n] = 0.0f;
+		//! and then split it out into {Weight,Weight*LogNoiseLevel} pairs
+		for(n=0;n<nChan*BlockSize;n++) BufferNoise[n] = 0.0f;
 #endif
 		float *BufferTemp    = State->TransformTemp;
 #if ULC_USE_PSYCHOACOUSTICS
@@ -273,8 +274,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				}
 #if ULC_USE_NOISE_CODING
 				//! Compute noise spectrum
-				//! NOTE: BufferSamples[] used as secondary temporary storage.
-				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, BufferSamples, SubBlockSize);
+				//! NOTE: This outputs 2*(SubBlockSize/2) values into BufferNoise,
+				//! corresponding to {Weight,Weight*LogNoiseLevel} pairs.
+				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize);
 #endif
 				//! Move to the next subblock
 				BufferSamples += SubBlockSize;
@@ -284,7 +286,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				BufferAmp2    += SubBlockSize/2;
 #endif
 #if ULC_USE_NOISE_CODING
-				BufferNoise   += SubBlockSize/2;
+				BufferNoise   += SubBlockSize;
 #endif
 			} while(DecimationPattern);
 
