@@ -113,8 +113,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	{
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
 		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p3f / BlockSize); //! -72dB/block (Log[2^-12])
-		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
-		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D7p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D6p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D6p5f / RateHz); //! -0.38dB/ms (1000 * Log[2^-0.0625])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
@@ -131,20 +131,16 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				float v  = sqrtf(Src[0]*Src[1]) - EnvGain; Src += 2;
 				EnvGain += v*(1.0f-GainRate);
 
-				//! Update attack/release envelopes and integrate
-				//! NOTE: EnvRel is sign-inverted.
+				//! Update attack/release envelopes and integrate,
+				//! NOTE: The difference between Attack/Release is used as an extra weight.
 				//! NOTE: Envelope attack (fade-in) is proportional to
 				//! the signal level, whereas envelope decay (fade-out)
 				//! follows a constant falloff.
-				//! NOTE: We perform a weighted contraharmonic mean here,
-				//! using EnvGain as an extra weight parameter. This is
-				//! used to detect broadband energy jumps more cleanly.
-				//! Note that this is an extra weight on the data itself
-				//! rather than a weight for the contraharmonic mean.
-				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v /* *(1.0f-AttRate)*/; //! <- This cancels out during Ratio calculation
-				EnvRel *= RelRate; if(v < 0.0f) EnvRel += v /* *(1.0f-RelRate)*/;
-				v = EnvAtt*EnvGain, Dst->Att += SQR(v), Dst->AttW += v;
-				v = EnvRel*EnvGain, Dst->Rel += SQR(v), Dst->RelW -= v; //! EnvRel is sign-inverted, so flip again
+				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
+				EnvRel *= RelRate; if(v < 0.0f) EnvRel -= v*(1.0f-RelRate);
+				float w = 0x1.0p-32f + ABS(EnvAtt-EnvRel); //! <- Small bias to avoid false "to/from silence" transients
+				Dst->Att += EnvAtt*EnvAtt*w, Dst->AttW += EnvAtt*w;
+				Dst->Rel += EnvRel*EnvRel*w, Dst->RelW += EnvRel*w;
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
