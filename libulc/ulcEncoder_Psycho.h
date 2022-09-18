@@ -30,7 +30,10 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 			//! This version is a trade-off between the last two versions,
 			//! where one didn't use this weight at all, and the other
 			//! applied the weight directly to the amplitude.
+			//! NOTE: We "protect" everything below 1kHz by forcing the
+			//! masking calculations to rely only on the floor level.
 			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
+			if(x < 0.0f) x = 0.0f; //! If below 1kHz, clip
 			*Dst++ = expf(-2.0f*SQR(x) + -0x1.05BFA6p-6f); //! (1 - 10^(-18/10))*E^x (-0x1.05BFA6p-6 = Log[1 - 10^(-18/10)])
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
