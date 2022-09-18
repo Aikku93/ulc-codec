@@ -46,6 +46,16 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 	int n;
 	float v;
 
+	//! Ratio of noise-masks-tone masking.
+	//! When set too high (eg. ratio of 1:1), pure and
+	//! combination tones in an otherwise quiet band
+	//! will be culled prematurely, causing excessive
+	//! muffling and/or culling of perceptable tones.
+	//! When set too low (eg. ratio of 1:100), tones
+	//! will not be masked by noise, which may lead to
+	//! encoding of inaudible tones even at low rates.
+	static const int NoiseMasksToneRatio = 4;
+
 	//! DCT+DST -> Pseudo-DFT
 	BlockSize /= 2;
 
@@ -92,12 +102,13 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
-			float LogNorm     = -logf(Norm);                  //! Log[1/Norm]
-			float InvLogScale = 0x1.0A2B24p-29f*SubBlockSize; //! Inverse (round up)
+			float LogNorm     = -logf(Norm); //! Log[1/Norm]
+			float InvLogScale = (0x1.0A2B24p-29f / NoiseMasksToneRatio)*SubBlockSize; //! Inverse (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
 			uint64_t MaskSum = 0, MaskSumW = 0;
+			uint32_t FloorSum = 0;
 			for(n=0;n<SubBlockSize;n++) {
 				//! Re-focus the analysis window
 				int Old, New;
@@ -112,6 +123,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				if(Old < New) {
 					MaskSumW -= Weight[Old];
 					MaskSum  -= Weight[Old] * (uint64_t)EnergyNp[Old];
+					FloorSum -= EnergyNp[Old];
 				}
 
 				//! Add samples that came into focus
@@ -123,10 +135,19 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				if(Old < New) do {
 					MaskSumW += Weight[Old];
 					MaskSum  += Weight[Old] * (uint64_t)EnergyNp[Old];
+					FloorSum += EnergyNp[Old];
 				} while(++Old < New);
 
 				//! Extract level
-				MaskingNp[n] = (MaskSum / MaskSumW)*InvLogScale + LogNorm;
+				//! NOTE: FloorBw's computation must be done exactly as written;
+				//! attempting to simplify the maths will go wrong. Additionally,
+				//! using the actual number of bands in the sum of FloorSum can
+				//! cause strange artifacts at higher frequencies, so we use the
+				//! theoretical number of bands that would be in that bandwidth.
+				int FloorBw = (MaskEnd >> RangeScaleFxp) - (MaskBeg >> RangeScaleFxp);
+				int32_t Mask  = MaskSum / MaskSumW;
+				int32_t Floor = FloorSum / FloorBw;
+				MaskingNp[n] = ((NoiseMasksToneRatio+1)*Mask - Floor)*InvLogScale + LogNorm;
 			}
 		}
 
