@@ -82,7 +82,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
-#if 0
+#if 1
 		do if(CoefIdx[CurIdx] < nOutCoef) {
 			//! We can only code +/-2..+/-7, so we
 			//! check that Qn is inside this range
@@ -90,7 +90,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			if(ABS(Qn) > 1) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
-#else
+#else //! This code path can result in really bad noise when quantization gets extreme
 		//! If the psymodel says we /need/ this coefficient,
 		//! make sure we encode it rather than skip it, even
 		//! if we have more distortion than if we skipped it
