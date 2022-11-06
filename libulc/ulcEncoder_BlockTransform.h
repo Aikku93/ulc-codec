@@ -106,7 +106,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	//! speed things up in the rate-control step
 	int nNzCoef = 0; {
 		int n, Chan;
-		const float *ModulationWindow = State->ModulationWindow;
 		float *BufferSamples = State->SampleBuffer;
 		float *BufferMDCT    = State->TransformBuffer;
 		float *BufferIndex   = (float*)State->TransformIndex;
@@ -217,8 +216,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					BufferFwdLap + (BlockSize-SubBlockSize)/2,
 					BufferTemp,
 					SubBlockSize,
-					OverlapSize,
-					ModulationWindow
+					OverlapSize
 				);
 
 				//! Normalize the spectra, and then accumulate the

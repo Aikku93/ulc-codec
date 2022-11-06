@@ -3,13 +3,6 @@
 //! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
-#if defined(__AVX__) || defined(__FMA__)
-# include <immintrin.h>
-#endif
-#if defined(__SSE__)
-# include <xmmintrin.h>
-#endif
-/**************************************/
 #include "Fourier.h"
 #include "FourierHelper.h"
 /**************************************/
@@ -70,7 +63,7 @@ void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 	int i;
 	FOURIER_ASSUME_ALIGNED(Buf, 32);
 	FOURIER_ASSUME_ALIGNED(Tmp, 32);
-	FOURIER_ASSUME(N >= 8 && N <= 8192);
+	FOURIER_ASSUME(N >= 8);
 
 	//! Stop condition
 	if(N == 8) {
@@ -85,39 +78,16 @@ void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 		const float *SrcHi = Buf + N;
 		      float *DstLo = Tmp;
 		      float *DstHi = Tmp + N/2;
-#if defined(__AVX__)
-		__m256 a, b;
-		__m256 s, d;
-		for(i=0;i<N/2;i+=8) {
-			SrcHi -= 8; b = _mm256_load_ps(SrcHi);
-			a = _mm256_load_ps(SrcLo); SrcLo += 8;
-			b = _mm256_shuffle_ps(b, b, 0x1B);
-			b = _mm256_permute2f128_ps(b, b, 0x01);
-			s = _mm256_add_ps(a, b);
-			d = _mm256_sub_ps(a, b);
-			_mm256_store_ps(DstLo, s); DstLo += 8;
-			_mm256_store_ps(DstHi, d); DstHi += 8;
-		}
-#elif defined(__SSE__)
-		__m128 a0, b0;
-		__m128 a1, b1;
-		__m128 s0, d0;
-		__m128 s1, d1;
-		for(i=0;i<N/2;i+=8) {
-			SrcHi -= 8;
-			b0 = _mm_loadr_ps(SrcHi + 4);
-			b1 = _mm_loadr_ps(SrcHi + 0);
-			a0 = _mm_load_ps (SrcLo + 0);
-			a1 = _mm_load_ps (SrcLo + 4);
-			SrcLo += 8;
-			s0 = _mm_add_ps(a0, b0);
-			d0 = _mm_sub_ps(a0, b0);
-			s1 = _mm_add_ps(a1, b1);
-			d1 = _mm_sub_ps(a1, b1);
-			_mm_store_ps(DstLo + 0, s0);
-			_mm_store_ps(DstLo + 4, s1); DstLo += 8;
-			_mm_store_ps(DstHi + 0, d0);
-			_mm_store_ps(DstHi + 4, d1); DstHi += 8;
+#if FOURIER_VSTRIDE > 1
+		Fourier_Vec_t a, b;
+		Fourier_Vec_t s, d;
+		for(i=0;i<N/2;i+=FOURIER_VSTRIDE) {
+			SrcHi -= FOURIER_VSTRIDE; b = FOURIER_VREVERSE(FOURIER_VLOAD(SrcHi));
+			a = FOURIER_VLOAD(SrcLo); SrcLo += FOURIER_VSTRIDE;
+			s = FOURIER_VADD(a, b);
+			d = FOURIER_VSUB(a, b);
+			FOURIER_VSTORE(DstLo, s); DstLo += FOURIER_VSTRIDE;
+			FOURIER_VSTORE(DstHi, d); DstHi += FOURIER_VSTRIDE;
 		}
 #else
 		float a, b;
@@ -142,37 +112,14 @@ void Fourier_DCT2(float *Buf, float *Tmp, int N) {
 		const float *SrcLo = Tmp;
 		const float *SrcHi = Tmp + N/2;
 		      float *Dst   = Buf;
-#if defined(__AVX__)
-		__m256 a, b;
-		__m256 a0, b0;
-		__m256 t0, t1;
-		for(i=0;i<N/2;i+=8) {
-			a0 = _mm256_load_ps(SrcLo); SrcLo += 8;
-			b0 = _mm256_load_ps(SrcHi); SrcHi += 8;
-			t0 = _mm256_unpacklo_ps(a0, b0);
-			t1 = _mm256_unpackhi_ps(a0, b0);
-			a  = _mm256_permute2f128_ps(t0, t1, 0x20);
-			b  = _mm256_permute2f128_ps(t0, t1, 0x31);
-			_mm256_store_ps(Dst + 0, a);
-			_mm256_store_ps(Dst + 8, b); Dst += 16;
-		}
-#elif defined(__SSE__)
-		__m128 a, b, c, d;
-		__m128 a0, a1;
-		__m128 b0, b1;
-		for(i=0;i<N/2;i+=8) {
-			a0 = _mm_load_ps(SrcLo + 0);
-			b0 = _mm_load_ps(SrcHi + 0);
-			a1 = _mm_load_ps(SrcLo + 4); SrcLo += 8;
-			b1 = _mm_load_ps(SrcHi + 4); SrcHi += 8;
-			a = _mm_unpacklo_ps(a0, b0);
-			b = _mm_unpackhi_ps(a0, b0);
-			c = _mm_unpacklo_ps(a1, b1);
-			d = _mm_unpackhi_ps(a1, b1);
-			_mm_store_ps(Dst +  0, a);
-			_mm_store_ps(Dst +  4, b);
-			_mm_store_ps(Dst +  8, c);
-			_mm_store_ps(Dst + 12, d); Dst += 16;
+#if FOURIER_VSTRIDE > 1
+		Fourier_Vec_t a, b;
+		for(i=0;i<N/2;i+=FOURIER_VSTRIDE) {
+			a = FOURIER_VLOAD(SrcLo); SrcLo += FOURIER_VSTRIDE;
+			b = FOURIER_VLOAD(SrcHi); SrcHi += FOURIER_VSTRIDE;
+			FOURIER_VINTERLEAVE(a, b, &a, &b);
+			FOURIER_VSTORE(Dst+0,               a);
+			FOURIER_VSTORE(Dst+FOURIER_VSTRIDE, b); Dst += 2*FOURIER_VSTRIDE;
 		}
 #else
 		float a, b;

@@ -149,7 +149,6 @@ int main(int argc, const char *argv[]) {
 		.RateHz     = RateHz,
 		.nChan      = nChan,
 		.BlockSize  = BlockSize,
-		.ModulationWindow = NULL,
 	};
 	if(ULC_EncoderState_Init(&Encoder) > 0) {
 		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds

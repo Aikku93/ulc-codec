@@ -204,7 +204,6 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 	float *TransformBuffer = State->TransformBuffer;
 	float *TransformTemp   = State->TransformTemp;
 	float *TransformInvLap = State->TransformInvLap;
-	const float *ModulationWindow = State->ModulationWindow;
 	const uint8_t *SrcBuffer = _SrcBuffer;
 
 	//! Begin decoding
@@ -239,13 +238,13 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 
 			//! A single long block can be read straight into the output buffer
 			if(SubBlockSize == BlockSize) {
-				Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize, ModulationWindow);
+				Fourier_IMDCT(Dst, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
 				break;
 			}
 
 			//! For small blocks, we store the decoded data to a scratch buffer
 			float *DecBuf = TransformTemp + SubBlockSize;
-			Fourier_IMDCT(DecBuf, Src, Lap, TransformTemp, SubBlockSize, OverlapSize, ModulationWindow);
+			Fourier_IMDCT(DecBuf, Src, Lap, TransformTemp, SubBlockSize, OverlapSize);
 
 			//! Output samples from the lapping buffer, and cycle
 			//! the new samples through it for the next call

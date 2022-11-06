@@ -41,15 +41,6 @@
 //! NOTE:
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
 //!  -{RateHz, nChan, BlockSize, ModulationWindow} must not change after calling ULC_EncoderState_Init()
-//!  -To use custom modulation windows, store a pointer to the data at ModulationWindow.
-//!   This data must be physically laid out as:
-//!    {
-//!      ModulationWindow[16],
-//!      ModulationWindow[32],
-//!      ModulationWindow[64],
-//!      ...
-//!      ModulationWindow[BlockSize],
-//!    }
 struct ULC_TransientData_t {
 	float Att, AttW, Rel, RelW;
 };
@@ -58,7 +49,6 @@ struct ULC_EncoderState_t {
 	int RateHz;     //! Playback rate (used for rate control)
 	int nChan;      //! Channels in encoding scheme
 	int BlockSize;  //! Transform block size
-	const float *ModulationWindow;
 
 	//! Encoding state
 	//! Buffer memory layout:

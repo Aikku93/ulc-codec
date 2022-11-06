@@ -3,13 +3,6 @@
 //! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
-#if defined(__AVX__) || defined(__FMA__)
-# include <immintrin.h>
-#endif
-#if defined(__SSE__)
-# include <xmmintrin.h>
-#endif
-/**************************************/
 #include "Fourier.h"
 #include "FourierHelper.h"
 /**************************************/
@@ -30,17 +23,15 @@
 //!          (A_r + B) + Reverse(B_r - A) = (A_r + B) + (B - A_r) = 2B
 //!           ^ Buffered         ^ New input data
 //!  Allowing us to reconstruct the inputs A,B.
-void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap, const float *ModulationWindow) {
+void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufTmp, int N, int Overlap) {
 	int i;
 	FOURIER_ASSUME_ALIGNED(BufOut, 32);
 	FOURIER_ASSUME_ALIGNED(BufIn,  32);
 	FOURIER_ASSUME_ALIGNED(BufLap, 32);
 	FOURIER_ASSUME_ALIGNED(BufTmp, 32);
-	FOURIER_ASSUME_ALIGNED(ModulationWindow, 32);
-	FOURIER_ASSUME(N >= 16 && N <= 8192);
+	FOURIER_ASSUME(N >= 16);
 	FOURIER_ASSUME(Overlap >= 0 && Overlap <= N);
 
-	const float *Win   = Fourier_SinTableN(Overlap, ModulationWindow);
 	const float *Lap   = BufLap + N/2;
 	const float *Tmp   = BufTmp + N/2;
 	      float *OutLo = BufOut;
@@ -51,75 +42,33 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 	Fourier_DCT4(BufTmp, BufOut, N);
 
 	//! Undo lapping
-#if defined(__AVX__)
-	__m256 a, b;
-	__m256 t0, t1;
-	__m256 c, s;
-
-	for(i=0;i<(N-Overlap)/2;i+=8) {
-		Lap -= 8; a = _mm256_load_ps(Lap);
-		b = _mm256_load_ps(Tmp); Tmp += 8;
-		a = _mm256_shuffle_ps(a, a, 0x1B);
-		a = _mm256_permute2f128_ps(a, a, 0x01);
-		b = _mm256_shuffle_ps(b, b, 0x1B);
-		b = _mm256_permute2f128_ps(b, b, 0x01);
-		_mm256_store_ps(OutLo, a); OutLo += 8;
-		OutHi -= 8; _mm256_store_ps(OutHi, b);
+#if FOURIER_VSTRIDE > 1
+	Fourier_Vec_t a, b;
+	for(i=0;i<(N-Overlap)/2;i+=FOURIER_VSTRIDE) {
+		Lap -= FOURIER_VSTRIDE; a = FOURIER_VLOAD(Lap);
+		b = FOURIER_VLOAD(Tmp); Tmp += FOURIER_VSTRIDE;
+		a = FOURIER_VREVERSE(a);
+		b = FOURIER_VREVERSE(b);
+		FOURIER_VSTORE(OutLo, a); OutLo += FOURIER_VSTRIDE;
+		OutHi -= FOURIER_VSTRIDE; FOURIER_VSTORE(OutHi, b);
 	}
-	for(;i<N/2;i+=8) {
-		Lap -= 8; a = _mm256_load_ps(Lap);
-		b = _mm256_load_ps(Tmp); Tmp += 8;
-		a = _mm256_shuffle_ps(a, a, 0x1B);
-		a = _mm256_permute2f128_ps(a, a, 0x01);
-		c  = _mm256_load_ps(Win); Win += 8;
-		s  = _mm256_load_ps(Win); Win += 8;
-		t0 = _mm256_permute2f128_ps(c, s, 0x20);
-		t1 = _mm256_permute2f128_ps(c, s, 0x31);
-		c  = _mm256_shuffle_ps(t0, t1, 0x88);
-		s  = _mm256_shuffle_ps(t0, t1, 0xDD);
-#if defined(__FMA__)
-		t0 = _mm256_mul_ps(s, b);
-		t1 = _mm256_mul_ps(c, b);
-		t0 = _mm256_fmsub_ps(c, a, t0);
-		t1 = _mm256_fmadd_ps(s, a, t1);
-#else
-		t0 = _mm256_sub_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
-		t1 = _mm256_add_ps(_mm256_mul_ps(s, a), _mm256_mul_ps(c, b));
-#endif
-		t1 = _mm256_shuffle_ps(t1, t1, 0x1B);
-		t1 = _mm256_permute2f128_ps(t1, t1, 0x01);
-		_mm256_store_ps(OutLo, t0); OutLo += 8;
-		OutHi -= 8; _mm256_store_ps(OutHi, t1);
-	}
-#elif defined(__SSE__)
-	__m128 a, b;
-	__m128 t0, t1;
-	__m128 c, s;
-
-	for(i=0;i<(N-Overlap)/2;i+=4) {
-		Lap -= 4; a = _mm_loadr_ps(Lap);
-		b = _mm_load_ps(Tmp); Tmp += 4;
-		_mm_store_ps(OutLo, a); OutLo += 4;
-		OutHi -= 4; _mm_storer_ps(OutHi, b);
-	}
-	for(;i<N/2;i+=4) {
-		Lap -= 4; a = _mm_loadr_ps(Lap);
-		b = _mm_load_ps(Tmp); Tmp += 4;
-		t0 = _mm_load_ps(Win); Win += 4;
-		t1 = _mm_load_ps(Win); Win += 4;
-		c  = _mm_shuffle_ps(t0, t1, 0x88);
-		s  = _mm_shuffle_ps(t0, t1, 0xDD);
-#if defined(__FMA__)
-		t0 = _mm_mul_ps(s, b);
-		t1 = _mm_mul_ps(c, b);
-		t0 = _mm_fmsub_ps(c, a, t0);
-		t1 = _mm_fmadd_ps(s, a, t1);
-#else
-		t0 = _mm_sub_ps(_mm_mul_ps(c, a), _mm_mul_ps(s, b));
-		t1 = _mm_add_ps(_mm_mul_ps(s, a), _mm_mul_ps(c, b));
-#endif
-		_mm_store_ps(OutLo, t0); OutLo += 4;
-		OutHi -= 4; _mm_storer_ps(OutHi, t1);
+	Fourier_Vec_t t0, t1 = FOURIER_VMUL(FOURIER_VSET1(1.0f/Overlap), FOURIER_VADD(FOURIER_VSET_LINEAR_RAMP(), FOURIER_VSET1(0.5f)));
+	Fourier_Vec_t c  = Fourier_Cos(t1);
+	Fourier_Vec_t s  = Fourier_Sin(t1);
+	Fourier_Vec_t wc = Fourier_Cos(FOURIER_VSET1((float)FOURIER_VSTRIDE / Overlap));
+	Fourier_Vec_t ws = Fourier_Sin(FOURIER_VSET1((float)FOURIER_VSTRIDE / Overlap));
+	for(;i<N/2;i+=FOURIER_VSTRIDE) {
+		Lap -= FOURIER_VSTRIDE; a = FOURIER_VREVERSE(FOURIER_VLOAD(Lap));
+		b  = FOURIER_VLOAD(Tmp); Tmp += FOURIER_VSTRIDE;
+		t0 = FOURIER_VFMS(c, a, FOURIER_VMUL(s, b));
+		t1 = FOURIER_VFMA(s, a, FOURIER_VMUL(c, b));
+		t1 = FOURIER_VREVERSE(t1);
+		FOURIER_VSTORE(OutLo, t0); OutLo += FOURIER_VSTRIDE;
+		OutHi -= FOURIER_VSTRIDE; FOURIER_VSTORE(OutHi, t1);
+		t0 = c;
+		t1 = s;
+		c = FOURIER_VNFMA(t1, ws, FOURIER_VMUL(t0, wc));
+		s = FOURIER_VFMA (t1, wc, FOURIER_VMUL(t0, ws));
 	}
 #else
 	for(i=0;i<(N-Overlap)/2;i++) {
@@ -128,13 +77,19 @@ void Fourier_IMDCT(float *BufOut, const float *BufIn, float *BufLap, float *BufT
 		*OutLo++ = a;
 		*--OutHi = b;
 	}
+	float c  = Fourier_Cos(0.5f / Overlap);
+	float s  = Fourier_Sin(0.5f / Overlap);
+	float wc = Fourier_Cos(1.0f / Overlap);
+	float ws = Fourier_Sin(1.0f / Overlap);
 	for(;i<N/2;i++) {
 		float a = *--Lap;
 		float b = *Tmp++;
-		float c = *Win++;
-		float s = *Win++;
 		*OutLo++ = c*a - s*b;
 		*--OutHi = s*a + c*b;
+		a = c;
+		b = s;
+		c = wc*a - ws*b;
+		s = ws*a + wc*b;
 	}
 #endif
 	//! Copy state to old block

@@ -152,7 +152,6 @@ int main(int argc, const char *argv[]) {
 	struct ULC_DecoderState_t Decoder = {
 		.nChan      = Header.nChan,
 		.BlockSize  = Header.BlockSize,
-		.ModulationWindow = NULL,
 	};
 	if(ULC_DecoderState_Init(&Decoder) > 0) {
 		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds

@@ -9,22 +9,11 @@
 //! Decoder state structure
 //! NOTE:
 //!  -The global state data must be set before calling ULC_DecoderState_Init()
-//!  -{nChan, BlockSize, ModulationWindow} must not change after calling ULC_EncoderState_Init()
-//!  -To use custom modulation windows, store a pointer to the data at ModulationWindow.
-//!   This data must be physically laid out as:
-//!    {
-//!      ModulationWindow[16],
-//!      ModulationWindow[32],
-//!      ModulationWindow[64],
-//!      ...
-//!      ModulationWindow[BlockSize],
-//!    }
-//!   The windows must match those used during encoding.
+//!  -{nChan, BlockSize,} must not change after calling ULC_EncoderState_Init()
 struct ULC_DecoderState_t {
 	//! Global state (do not change after initialization)
 	int nChan;     //! Channels in encoding scheme
 	int BlockSize; //! Transform block size
-	const float *ModulationWindow;
 
 	//! Decoding state
 	//! Buffer memory layout:

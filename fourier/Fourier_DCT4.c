@@ -3,14 +3,6 @@
 //! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
-#include <stddef.h>
-#if defined(__AVX__) || defined(__FMA__)
-# include <immintrin.h>
-#endif
-#if defined(__SSE__)
-# include <xmmintrin.h>
-#endif
-/**************************************/
 #include "Fourier.h"
 #include "FourierHelper.h"
 /**************************************/
@@ -73,7 +65,7 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 	int i;
 	FOURIER_ASSUME_ALIGNED(Buf, 32);
 	FOURIER_ASSUME_ALIGNED(Tmp, 32);
-	FOURIER_ASSUME(N >= 8 && N <= 8192);
+	FOURIER_ASSUME(N >= 8);
 
 	//! Stop condition
 	if(N == 8) {
@@ -84,81 +76,56 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 	//! Perform rotation butterflies
 	//!  u = R_n.x
 	{
-		const float *Win   = Fourier_SinTableN(N, NULL);
 		const float *SrcLo = Buf;
 		const float *SrcHi = Buf + N;
 		      float *DstLo = Tmp;
 		      float *DstHi = Tmp + N/2;
-#if defined(__AVX__)
-		__m256 a, b;
-		__m256 t0, t1;
-		__m256 c, s;
-		for(i=0;i<N/2;i+=8) {
-			SrcHi -= 8; b = _mm256_load_ps(SrcHi);
-			a = _mm256_load_ps(SrcLo); SrcLo += 8;
-			b = _mm256_shuffle_ps(b, b, 0x1B);
-			b = _mm256_permute2f128_ps(b, b, 0x01);
-			c  = _mm256_load_ps(Win); Win += 8;
-			s  = _mm256_load_ps(Win); Win += 8;
-			t0 = _mm256_permute2f128_ps(c, s, 0x20);
-			t1 = _mm256_permute2f128_ps(c, s, 0x31);
-			c  = _mm256_shuffle_ps(t0, t1, 0x88);
-			s  = _mm256_shuffle_ps(t0, t1, 0xDD);
-#if defined(__FMA__)
-			t1 = _mm256_mul_ps(s, a);
-			t0 = _mm256_mul_ps(c, a);
-			t1 = _mm256_fnmadd_ps(c, b, t1);
-			t0 = _mm256_fmadd_ps (s, b, t0);
-#else
-			t1 = _mm256_sub_ps(_mm256_mul_ps(s, a), _mm256_mul_ps(c, b));
-			t0 = _mm256_add_ps(_mm256_mul_ps(c, a), _mm256_mul_ps(s, b));
-#endif
-			t1 = _mm256_xor_ps(t1, _mm256_setr_ps(0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f, 0.0f, -0.0f));
-			_mm256_store_ps(DstLo, t0); DstLo += 8;
-			_mm256_store_ps(DstHi, t1); DstHi += 8;
-		}
-#elif defined(__SSE__)
-		__m128 a, b;
-		__m128 t0, t1;
-		__m128 c, s;
-		for(i=0;i<N/2;i+=4) {
-			SrcHi -= 4; b = _mm_loadr_ps(SrcHi);
-			a = _mm_load_ps(SrcLo); SrcLo += 4;
-			t0 = _mm_load_ps(Win); Win += 4;
-			t1 = _mm_load_ps(Win); Win += 4;
-			c  = _mm_shuffle_ps(t0, t1, 0x88);
-			s  = _mm_shuffle_ps(t0, t1, 0xDD);
-#if defined(__FMA__)
-			t1 = _mm_mul_ps(s, a);
-			t0 = _mm_mul_ps(c, a);
-			t1 = _mm_fnmadd_ps(c, b, t1);
-			t0 = _mm_fmadd_ps (s, b, t0);
-#else
-			t1 = _mm_sub_ps(_mm_mul_ps(s, a), _mm_mul_ps(c, b));
-			t0 = _mm_add_ps(_mm_mul_ps(c, a), _mm_mul_ps(s, b));
-#endif
-			t1 = _mm_xor_ps(t1, _mm_setr_ps(0.0f, -0.0f, 0.0f, -0.0f));
-
-			_mm_store_ps(DstLo, t0); DstLo += 4;
-			_mm_store_ps(DstHi, t1); DstHi += 4;
+#if FOURIER_VSTRIDE > 1
+		Fourier_Vec_t a, b;
+		Fourier_Vec_t t0, t1 = FOURIER_VMUL(FOURIER_VSET1(1.0f/N), FOURIER_VADD(FOURIER_VSET_LINEAR_RAMP(), FOURIER_VSET1(0.5f)));
+		Fourier_Vec_t c  = Fourier_Cos(t1);
+		Fourier_Vec_t s  = Fourier_Sin(t1);
+		Fourier_Vec_t wc = Fourier_Cos(FOURIER_VSET1((float)FOURIER_VSTRIDE / N));
+		Fourier_Vec_t ws = Fourier_Sin(FOURIER_VSET1((float)FOURIER_VSTRIDE / N));
+		for(i=0;i<N/2;i+=FOURIER_VSTRIDE) {
+			SrcHi -= FOURIER_VSTRIDE; b = FOURIER_VREVERSE(FOURIER_VLOAD(SrcHi));
+			a = FOURIER_VLOAD(SrcLo); SrcLo += FOURIER_VSTRIDE;
+			t1 = FOURIER_VMUL(s, a);
+			t0 = FOURIER_VMUL(c, a);
+			t1 = FOURIER_VNFMA(c, b, t1);
+			t0 = FOURIER_VFMA (s, b, t0);
+			t1 = FOURIER_VNEGATE_ODD(t1);
+			FOURIER_VSTORE(DstLo, t0); DstLo += FOURIER_VSTRIDE;
+			FOURIER_VSTORE(DstHi, t1); DstHi += FOURIER_VSTRIDE;
+			t0 = c;
+			t1 = s;
+			c = FOURIER_VNFMA(t1, ws, FOURIER_VMUL(t0, wc));
+			s = FOURIER_VFMA (t1, wc, FOURIER_VMUL(t0, ws));
 		}
 #else
 		float a, b;
-		float c, s;
+		float c  = Fourier_Cos(0.5f / N);
+		float s  = Fourier_Sin(0.5f / N);
+		float wc = Fourier_Cos(1.0f / N);
+		float ws = Fourier_Sin(1.0f / N);
 		for(i=0;i<N/2;i+=2) {
 			a = *SrcLo++;
 			b = *--SrcHi;
-			c = *Win++;
-			s = *Win++;
 			*DstLo++ =  c*a + s*b;
 			*DstHi++ =  s*a - c*b;
+			a = c;
+			b = s;
+			c = wc*a - ws*b;
+			s = ws*a + wc*b;
 
 			a = *SrcLo++;
 			b = *--SrcHi;
-			c = *Win++;
-			s = *Win++;
 			*DstLo++ =  c*a + s*b;
-			*DstHi++ = -s*a + c*b;
+			*DstHi++ = -s*a + c*b; //! <- Sign-flip for DST
+			a = c;
+			b = s;
+			c = wc*a - ws*b;
+			s = ws*a + wc*b;
 		}
 #endif
 	}
@@ -172,90 +139,36 @@ void Fourier_DCT4(float *Buf, float *Tmp, int N) {
 	//! Combine
 	//!  w = U_n.(z1^T, z2^T)^T
 	//!  y = (P_n)^T.w
-	//! TODO: Avoid unaligned load/store in SSE/AVX code?
 	{
 		const float *TmpLo = Tmp;
 		const float *TmpHi = Tmp + N;
 		      float *Dst   = Buf;
-#if defined(__AVX__)
-		__m256 a, b;
-		__m256 t0, t1;
-
 		*Dst++ = *TmpLo++;
-		for(i=0;i<N/2-8;i+=8) {
-			TmpHi -= 8; b = _mm256_load_ps(TmpHi);
-			a = _mm256_loadu_ps(TmpLo); TmpLo += 8;
-			b = _mm256_shuffle_ps(b, b, 0x1B);
-			b = _mm256_permute2f128_ps(b, b, 0x01);
-
-			t0 = _mm256_add_ps(a, b);
-			t1 = _mm256_sub_ps(a, b);
-			a  = _mm256_unpacklo_ps(t0, t1);
-			b  = _mm256_unpackhi_ps(t0, t1);
-			t0 = _mm256_permute2f128_ps(a, b, 0x20);
-			t1 = _mm256_permute2f128_ps(a, b, 0x31);
-			_mm256_storeu_ps(Dst, t0); Dst += 8;
-			_mm256_storeu_ps(Dst, t1); Dst += 8;
-		}
+#if FOURIER_VSTRIDE > 1
 		{
-			TmpHi -= 8; b = _mm256_load_ps(TmpHi);
-			a = _mm256_loadu_ps(TmpLo); TmpLo += 8;
-			_mm_store_ss(Dst + 14, _mm256_castps256_ps128(b));
-			b = _mm256_shuffle_ps(b, b, 0x1B);
-			b = _mm256_permute2f128_ps(b, b, 0x01);
-
-			t0 = _mm256_add_ps(a, b);
-			t1 = _mm256_sub_ps(a, b);
-			a = _mm256_unpacklo_ps(t0, t1);
-			b = _mm256_unpackhi_ps(t0, t1);
-			t0 = _mm256_permute2f128_ps(a, b, 0x20);
-			t1 = _mm256_permute2f128_ps(a, b, 0x31);
-			_mm256_storeu_ps(Dst, t0);                              Dst += 8;
-			_mm_storeu_ps(Dst, _mm256_castps256_ps128(t1));         Dst += 4;
-			t1 = _mm256_permute2f128_ps(t1, t1, 0x01);
-			_mm_storel_pi((__m64*)Dst, _mm256_castps256_ps128(t1)); Dst += 2;
-		}
-#elif defined(__SSE__)
-		__m128 a, b;
-		__m128 t0, t1;
-
-		*Dst++ = *TmpLo++;
-		for(i=0;i<N/2-4;i+=4) {
-			TmpHi -= 4; b = _mm_loadr_ps(TmpHi);
-			a = _mm_loadu_ps(TmpLo); TmpLo += 4;
-
-			t0 = _mm_add_ps(a, b);
-			t1 = _mm_sub_ps(a, b);
-			a = _mm_unpacklo_ps(t0, t1);
-			b = _mm_unpackhi_ps(t0, t1);
-			_mm_storeu_ps(Dst, a); Dst += 4;
-			_mm_storeu_ps(Dst, b); Dst += 4;
-		}
-		{
-			TmpHi -= 4; b = _mm_load_ps(TmpHi);
-			a = _mm_loadu_ps(TmpLo); TmpLo += 4;
-			_mm_store_ss(Dst + 6, b);
-			b = _mm_shuffle_ps(b, b, 0x1B);
-
-			t0 = _mm_add_ps(a, b);
-			t1 = _mm_sub_ps(a, b);
-			a = _mm_unpacklo_ps(t0, t1);
-			b = _mm_unpackhi_ps(t0, t1);
-			_mm_storeu_ps(Dst, a);         Dst += 4;
-			_mm_storel_pi((__m64*)Dst, b); Dst += 2;
+			Fourier_Vec_t a, b;
+			Fourier_Vec_t t0, t1;
+			for(i=0;i<N/2-FOURIER_VSTRIDE;i+=FOURIER_VSTRIDE) {
+				TmpHi -= FOURIER_VSTRIDE; b = FOURIER_VREVERSE(FOURIER_VLOAD(TmpHi));
+				a = FOURIER_VLOADU(TmpLo); TmpLo += FOURIER_VSTRIDE;
+				t0 = FOURIER_VADD(a, b);
+				t1 = FOURIER_VSUB(a, b);
+				FOURIER_VINTERLEAVE(t0, t1, &a, &b);
+				FOURIER_VSTOREU(Dst, a); Dst += FOURIER_VSTRIDE;
+				FOURIER_VSTOREU(Dst, b); Dst += FOURIER_VSTRIDE;
+			}
 		}
 #else
+		i = 0;
+#endif
 		float a, b;
-
-		*Dst++ = *TmpLo++;
-		for(i=0;i<N/2-1;i++) {
+		for(;i<N/2-1;i++) {
 			a = *TmpLo++;
 			b = *--TmpHi;
 			*Dst++ = a + b;
 			*Dst++ = a - b;
 		}
 		*Dst++ = *--TmpHi;
-#endif
 	}
 }
 
