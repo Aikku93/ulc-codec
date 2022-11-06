@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -24,17 +24,13 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 		for(n=0;n<SubBlockSize;n++) {
 			//! The weight function is a log-normal distribution function,
 			//! which is used to basically apply a perceptual-amplitude
-			//! re-normalization, by protecting up to 18dB of amplitude.
+			//! re-normalization, by protecting sensitive bands <1kHz.
 			//! This greatly improves stability of tones during transient
 			//! passages, as well as with smaller BlockSize.
-			//! This version is a trade-off between the last two versions,
-			//! where one didn't use this weight at all, and the other
-			//! applied the weight directly to the amplitude.
 			//! NOTE: We "protect" everything below 1kHz by forcing the
 			//! masking calculations to rely only on the floor level.
 			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
-			if(x < 0.0f) x = 0.0f; //! If below 1kHz, clip
-			*Dst++ = expf(-2.0f*SQR(x) + -0x1.05BFA6p-6f); //! (1 - 10^(-18/10))*E^x (-0x1.05BFA6p-6 = Log[1 - 10^(-18/10)])
+			*Dst++ = (x > 0.0f) ? expf(-SQR(x)) : 1.0f; //! If below 1kHz (x < 0), clip (E^0 == 1.0)
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
 }
@@ -43,6 +39,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 	float *BufferAmp2,
 	void  *BufferTemp,
 	int    BlockSize,
+	int    RateHz,
 	const float *FreqWeightTable,
 	uint32_t WindowCtrl
 ) {
@@ -57,7 +54,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 	//! When set too low (eg. ratio of 1:100), tones
 	//! will not be masked by noise, which may lead to
 	//! encoding of inaudible tones even at low rates.
-	static const int NoiseMasksToneRatio = 4;
+	static const int NoiseMasksToneRatio = 1;
 
 	//! DCT+DST -> Pseudo-DFT
 	BlockSize /= 2;
@@ -71,23 +68,26 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		float Norm = 0.0f;
 		for(n=0;n<SubBlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
 		if(Norm != 0.0f) {
+			//! Get the window bandwidth scaling constants
+			int RangeScaleFxp = 8;
+			int LoRangeScale; {
+				float s = (2*22000.0f) / RateHz;
+				if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
+				LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
+			}
+			int HiRangeScale; {
+				float s = RateHz / (2*16000.0f);
+				if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
+				HiRangeScale = (int)ceilf((1<<RangeScaleFxp) * s);
+			}
+
 			//! Normalize the energy and convert to fixed-point
 			//! This normalization step forces the sums to be as precise as
 			//! possible without overflowing.
-                        //! NOTE: Renormalization of the log values is derived as follows:
-                        //!  -The bandwidth of a given line is given by:
-                        //!    Bw(f) = HiRangeScale*f - LoRangeScale*f
-                        //!  -The maximum number of summation terms occurs when the high
-                        //!   range is at MaskEnd=N, as when we try to go higher, we do
-                        //!   not have any more terms that we can add. Thus:
-                        //!    HiRangeScale*f_Max = N
-                        //!    f_Max = N/HiRangeScale
-                        //!  -Combining the two equations, we get:
-                        //!    Bw(f_Max) = HiRangeScale*f_Max - LoRangeScale*f_Max
-                        //!              = HiRangeScale*(N/HiRangeScale) - LoRangeScale*(N/HiRangeScale)
-                        //!              = N * (1 - LoRangeScale/HiRangeScale)
-                        //!   Thus, the renormalization factor becomes 1/Bw(f_Max):
-                        //!    Renormalization = 1 / (N * (1 - LoRangeScale/HiRangeScale))
+                        //! NOTE: We can't renormalize by taking into account the number
+                        //! of summation terms, as this can vary depending on RateHz. In
+                        //! theory, it's possible, but would require adjusting rounding
+                        //! behaviour so that 1-Lo/Hi rounds up, which makes it nasty.
 			//! NOTE: Ensure that Weight[] is not zero or division by 0 may
 			//! occur if the accumulated sums are all zeros.
 			//! NOTE: If the maximum value will cause overflow to +inf,
@@ -96,7 +96,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			uint32_t *Weight   = (uint32_t*)BufferTemp;
 			uint32_t *EnergyNp = (uint32_t*)BufferAmp2;
 			Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f; //! NOTE: 2^32-eps*2 to ensure we don't overflow
-			float LogScale = 0x1.EC709Cp28f / SubBlockSize; //! (2^32/Log[2^32] / (1-15/24)) / N (round down)
+			float LogScale = 0x1.715476p27f / SubBlockSize; //! 2^32/Log[2^32] / N
 			const float *ThisFreqWeightTable = FreqWeightTable + SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
@@ -106,18 +106,14 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
 			float LogNorm     = -logf(Norm); //! Log[1/Norm]
-			float InvLogScale = (0x1.0A2B24p-29f / NoiseMasksToneRatio)*SubBlockSize; //! Inverse (round up)
+			float InvLogScale = (0x1.62E430p-28f / NoiseMasksToneRatio)*SubBlockSize; //! Inverse (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
 			uint64_t MaskSum = 0, MaskSumW = 0;
 			uint32_t FloorSum = 0;
 			for(n=0;n<SubBlockSize;n++) {
-				//! Re-focus the analysis window
 				int Old, New;
-				const int RangeScaleFxp = 4;
-				const int LoRangeScale = 15; //! Beg = (1-0.0625)*Band
-				const int HiRangeScale = 24; //! End = (1+0.5000)*Band
 
 				//! Remove samples that went out of focus
 				//! NOTE: We skip /at most/ one sample, so don't loop.

@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -20,6 +20,9 @@
 //! Compute noise spectrum (logarithmic output)
 //! The code here is very similar to the one used in
 //! psychoacoustics (see ulcEncoder_Psycho.h for details).
+//! The main difference is that we're extracting the noise
+//! level after masking with the tone level, rather than
+//! the other way around.
 static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *Dst, float *Src, int N) {
 	//! Hopefully compilers apply loop peeling to the inner loops...
 	int i, n;
@@ -59,7 +62,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 	}
 #endif
 }
-static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N) {
+static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) {
 	int n;
 	float v;
 
@@ -71,34 +74,48 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	for(n=0;n<N;n++) if((v = Data[n]) > Norm) Norm = v;
 	if(Norm == 0.0f) return;
 
+	//! Get the window bandwidth scaling constants
+	int RangeScaleFxp = 8;
+	int LoRangeScale; {
+		float s = (2*16000.0f) / RateHz;
+		if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
+		LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
+	}
+	int HiRangeScale; {
+		float s = RateHz / (2*22000.0f);
+		if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
+		HiRangeScale = (int)ceilf((1<<RangeScaleFxp) * s);
+	}
+
 	//! Normalize the energy and convert to fixed-point
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
-	float LogScale = 0x1.715476p29f / N; //! (2^32/Log[2^32]) / (N * (1-12/16)) = (2^32/Log[2^32] / (1-12/16)) / N
+	float LogScale = 0x1.715476p27f / N;
+	uint32_t *Weight   = (uint32_t*)Data;
 	uint32_t *EnergyNp = (uint32_t*)Temp;
 	for(n=0;n<N;n++) {
 		v = Data[n] * Norm;
+		Weight  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
 		EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
 	}
-	float LogNorm     = 0x1.8B90C0p-2f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/E for noise quantizer (by adding Log[Scale])
-	float InvLogScale = N * 0x1.62E430p-31f;
+	float LogNorm     = 0x1.62E430p-1f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale])
+	float InvLogScale = 0x1.62E430p-29f * N;
 
 	//! Extract the noise floor level in each line's noise bandwidth
 	//! NOTE: We write to Data+N, because we then need to store 2*N
 	//! data points at Data[] when we calculate the weights next.
 	int NoiseBeg = 0, NoiseEnd = 0;
+	uint64_t MaskSum  = 0, MaskSumW = 0;
 	uint32_t FloorSum = 0;
 	float *LogNoiseFloor = Data + N;
 	for(n=0;n<N;n++) {
-		//! Re-focus analysis window
 		int Old, New, Bw;
-		const int RangeScaleFxp = 4;
-		const int LoRangeScale = 12; //! Beg = 1 - 0.25*Band
-		const int HiRangeScale = 16; //! End = 1 + 0.00*Band
 
 		//! Remove samples that went out of focus
 		Old = NoiseBeg >> RangeScaleFxp, NoiseBeg += LoRangeScale;
 		New = NoiseBeg >> RangeScaleFxp;
 		if(Old < New) {
+			MaskSumW -= Weight[Old];
+			MaskSum  -= Weight[Old] * (uint64_t)EnergyNp[Old];
 			FloorSum -= EnergyNp[Old];
 		}
 		Bw = New;
@@ -107,12 +124,17 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		Old = NoiseEnd >> RangeScaleFxp, NoiseEnd += HiRangeScale;
 		New = NoiseEnd >> RangeScaleFxp; if(New > N) New = N;
 		if(Old < New) do {
+			MaskSumW += Weight[Old];
+			MaskSum  += Weight[Old] * (uint64_t)EnergyNp[Old];
 			FloorSum += EnergyNp[Old];
 		} while(++Old < New);
 		Bw = New - Bw;
 
 		//! Extract level
-		LogNoiseFloor[n] = (FloorSum / Bw)*InvLogScale + LogNorm;
+		int FloorBw = (NoiseEnd >> RangeScaleFxp) - (NoiseBeg >> RangeScaleFxp);
+		int32_t Mask  = MaskSum / MaskSumW;
+		int32_t Floor = FloorSum / FloorBw;
+		LogNoiseFloor[n] = (2*Floor - Mask)*InvLogScale + LogNorm;
 	}
 
 	//! Save the (approximate) exponent to use as a weight during noise calculations.

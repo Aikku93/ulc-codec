@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -274,7 +274,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! Compute noise spectrum
 				//! NOTE: This outputs 2*(SubBlockSize/2) values into BufferNoise,
 				//! corresponding to {Weight,Weight*LogNoiseLevel} pairs.
-				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize);
+				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz);
 #endif
 				//! Move to the next subblock
 				BufferSamples += SubBlockSize;
@@ -318,7 +318,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_PSYCHOACOUSTICS
 		//! Perform psychoacoustics analysis
 		//! NOTE: Trashes BufferAmp2[]
-		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->FreqWeightTable, WindowCtrl);
+		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->RateHz, State->FreqWeightTable, WindowCtrl);
 
 		//! Add the psychoacoustics adjustment to the importance levels
 		//! NOTE: No need to split this section into subblock handling.
