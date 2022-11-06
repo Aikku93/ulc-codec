@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -139,8 +139,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
 				EnvRel *= RelRate; if(v < 0.0f) EnvRel -= v*(1.0f-RelRate);
 				float w = 0x1.0p-32f + ABS(EnvAtt-EnvRel); //! <- Small bias to avoid false "to/from silence" transients
-				Dst->Att += EnvAtt*EnvAtt*w, Dst->AttW += EnvAtt*w;
-				Dst->Rel += EnvRel*EnvRel*w, Dst->RelW += EnvRel*w;
+				Dst->Att += SQR(EnvAtt)*w, Dst->AttW += EnvAtt*EnvGain;
+				Dst->Rel += SQR(EnvRel)*w, Dst->RelW += EnvRel*EnvGain;
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
