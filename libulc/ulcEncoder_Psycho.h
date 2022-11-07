@@ -69,9 +69,9 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		for(n=0;n<SubBlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
 		if(Norm != 0.0f) {
 			//! Get the window bandwidth scaling constants
-			int RangeScaleFxp = 8;
+			int RangeScaleFxp = 16;
 			int LoRangeScale; {
-				float s = (2*22000.0f) / RateHz;
+				float s = (2*21000.0f) / RateHz;
 				if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
 				LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
 			}
