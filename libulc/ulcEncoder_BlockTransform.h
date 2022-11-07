@@ -274,7 +274,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! Compute noise spectrum
 				//! NOTE: This outputs 2*(SubBlockSize/2) values into BufferNoise,
 				//! corresponding to {Weight,Weight*LogNoiseLevel} pairs.
-				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz);
+				const float *ThisFreqWeightTable = State->FreqWeightTable + (SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR)/2;
+				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz, ThisFreqWeightTable);
 #endif
 				//! Move to the next subblock
 				BufferSamples += SubBlockSize;

@@ -62,7 +62,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 	}
 #endif
 }
-static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) {
+static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz, const float *FreqWeightTable) {
 	int n;
 	float v;
 
@@ -88,14 +88,18 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	}
 
 	//! Normalize the energy and convert to fixed-point
+	//! NOTE: Protect everything below 1kHz by setting the noise amplitude to the minimum.
+	//! Having noise there is a VERY bad idea, and WILL lead to very objectionable distortion.
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
 	float LogScale = 0x1.715476p27f / N;
 	uint32_t *Weight   = (uint32_t*)Data;
 	uint32_t *EnergyNp = (uint32_t*)Temp;
 	for(n=0;n<N;n++) {
 		v = Data[n] * Norm;
-		Weight  [n] = (v <= 1.0f) ? 1 : (uint32_t)v;
-		EnergyNp[n] = (v <= 1.0f) ? 0 : (uint32_t)(logf(v) * LogScale);
+		float vw = v;
+		float ve = v * (1.0f-FreqWeightTable[n]);
+		Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
+		EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 	}
 	float LogNorm     = 0x1.62E430p-1f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale])
 	float InvLogScale = 0x1.62E430p-29f * N;
