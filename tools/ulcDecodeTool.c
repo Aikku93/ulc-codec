@@ -114,7 +114,7 @@ int main(int argc, const char *argv[]) {
 		fmt.wBitsPerSample  = BytesPerSmp * 8;
 		int Error = WAV_OpenW(&FileOut, argv[2], &fmt);
 		if(Error < 0) {
-			printf("ERROR: Unable to create output file (%s); error %s.", argv[1], WAV_ErrorCodeToString(Error));
+			printf("ERROR: Unable to create output file (%s); error %s.\n", argv[1], WAV_ErrorCodeToString(Error));
 			ExitCode = -1; goto Exit_FailCreateOutFile;
 		}
 	}
