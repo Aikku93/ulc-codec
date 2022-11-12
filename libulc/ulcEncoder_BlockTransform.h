@@ -33,22 +33,21 @@ ULC_FORCED_INLINE void Block_Transform_SortIndices_SiftDown(const float *SortVal
 		//! NOTE: If a sibling exists, check it also.
 		//! NOTE: Using pre-increment (combined with post-decrement
 		//! for the FALSE case) appears to result in better performance?
-		float RootVal  = SortValues[Order[Root]];
-		float ChildVal = SortValues[Order[Child]], v;
-		if(++Child < N && (v = SortValues[Order[Child]]) < ChildVal)
-			ChildVal = v;
+		int RootIdx  = Order[Root];
+		int ChildIdx = Order[Child];
+		if(++Child < N && SortValues[Order[Child]] < SortValues[ChildIdx])
+			ChildIdx = Order[Child];
 		else Child--;
 
 		//! Already in order? Exit
-		if(ChildVal > RootVal) return;
+		if(SortValues[ChildIdx] > SortValues[RootIdx]) return;
 
 		//! Swap to restore heap order, and travel further down the heap
 		//! NOTE: Stashing Order[Root],Order[Child] in temps appears to
 		//! give slightly worse performance. This may be an x86 quirk
 		//! due to its low register count, though.
-		int t = Order[Root];
-		Order[Root]  = Order[Child];
-		Order[Child] = t;
+		Order[Root]  = ChildIdx;
+		Order[Child] = RootIdx;
 		Root = Child, Child = 2*Root+1;
 		if(Child >= N) return;
 	}
