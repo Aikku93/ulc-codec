@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -53,7 +53,7 @@ struct ULC_EncoderState_t {
 	//! Encoding state
 	//! Buffer memory layout:
 	//!   char  _Padding[];
-	//!   float SampleBuffer   [nChan*BlockSize]
+	//!   float SampleBuffer   [nChan*BlockSize * 2]
 	//!   float TransformBuffer[nChan*BlockSize]
 	//!   float TransformNoise [nChan*BlockSize] <- With ULC_USE_NOISE_CODING only
 	//!   float TransformFwdLap[nChan*BlockSize]

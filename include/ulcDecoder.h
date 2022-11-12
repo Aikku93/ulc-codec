@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -20,9 +20,10 @@ struct ULC_DecoderState_t {
 	//!  Data:
 	//!   char  _Padding[];
 	//!   float TransformBuffer[BlockSize]
-	//!   float TransformTemp  [BlockSize]
+	//!   float TransformTemp  [nChan * BlockSize]
 	//!   float TransformInvLap[nChan * BlockSize/2]
 	//! BufferData contains the pointer returned by malloc()
+	//! TransformTemp[] is large because we need to interleave the output.
 	int    LastSubBlockSize; //! Size of last [sub]block processed
 	void  *BufferData;
 	float *TransformBuffer;

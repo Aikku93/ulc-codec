@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -15,10 +15,10 @@
 /**************************************/
 
 //! Just for consistency
-#define MIN_CHANS    1
-#define MAX_CHANS  255
-#define MIN_BANDS  256
-#define MAX_BANDS 8192
+#define MIN_CHANS     1
+#define MAX_CHANS   255
+#define MIN_BANDS   256
+#define MAX_BANDS 32768
 
 /**************************************/
 
@@ -38,7 +38,7 @@ int ULC_DecoderState_Init(struct ULC_DecoderState_t *State) {
 	int AllocSize = 0;
 #define CREATE_BUFFER(Name, Sz) int Name##_Offs = AllocSize; AllocSize += Sz
 	CREATE_BUFFER(TransformBuffer, sizeof(float) * (       BlockSize   ));
-	CREATE_BUFFER(TransformTemp,   sizeof(float) * (       BlockSize   ));
+	CREATE_BUFFER(TransformTemp,   sizeof(float) * (nChan* BlockSize   ) * 2);
 	CREATE_BUFFER(TransformInvLap, sizeof(float) * (nChan*(BlockSize/2)));
 #undef CREATE_BUFFER
 
@@ -96,7 +96,7 @@ static inline int Block_Decode_ReadQuantizer(const uint8_t **Src, int *Size) {
 static inline float Block_Decode_ExpandQuantizer(int qi) {
 	return 0x1.0p-31f * ((1u<<(31-5)) >> qi); //! 1 / (2^5 * 2^qi)
 }
-static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const uint8_t **Src, int *Size) {
+static inline int Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const uint8_t **Src, int *Size) {
 	int32_t n, v;
 
 	//! Check first quantizer for Stop code
@@ -104,7 +104,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 	if(v == ESCAPE_SEQUENCE_STOP) {
 		//! [Fh,]Eh,Fh: Stop
 		do *CoefDst++ = 0.0f; while(--N);
-		return;
+		return 1;
 	}
 
 	//! Unpack the [sub]block's coefficients
@@ -124,7 +124,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 		//! 0h,0h..Fh: Zeros fill (1 .. 16 coefficients)
 		if(v == 0x0) {
 			n = Block_Decode_ReadNybble(Src, Size) + 1;
-			if(n > N) n = N; //! <- Clip on corrupt blocks
+			if(n > N) return 0;
 			N -= n;
 			do *CoefDst++ = 0.0f; while(--n);
 			if(N == 0) break;
@@ -136,7 +136,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			n  = Block_Decode_ReadNybble(Src, Size);
 			n  = Block_Decode_ReadNybble(Src, Size) | (n<<4);
 			n += 33;
-			if(n > N) n = N; //! <- Clip on corrupt blocks
+			if(n > N) return 0;
 			N -= n;
 			do *CoefDst++ = 0.0f; while(--n);
 			if(N == 0) break;
@@ -151,7 +151,7 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			n  = (v&1) | (n<<1);
 			v  = (v>>1) + 1;
 			n += 16;
-			if(n > N) n = N; //! <- Clip on corrupt blocks
+			if(n > N) return 0;
 			N -= n; {
 				float p = (v*v) * Quant * (1.0f/4);
 				do {
@@ -193,11 +193,10 @@ static inline void Block_Decode_DecodeSubBlockCoefs(float *CoefDst, int N, const
 			break;
 		}
 	}
+	return 1;
 }
 int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void *_SrcBuffer) {
 	//! Spill state to local variables to make things easier to read
-	//! PONDER: Hopefully the compiler realizes that State is const and
-	//!         doesn't just copy the whole thing out to the stack :/
 	int    n;
 	int    nChan           = State->nChan;
 	int    BlockSize       = State->BlockSize;
@@ -226,7 +225,10 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 		ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
 		do {
 			int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
-			Block_Decode_DecodeSubBlockCoefs(Src, SubBlockSize, &SrcBuffer, &Size);
+			if(!Block_Decode_DecodeSubBlockCoefs(Src, SubBlockSize, &SrcBuffer, &Size)) {
+				//! Corrupt block
+				return 0;
+			}
 
 			//! Get+update overlap size and limit to that of the last subblock
 			int OverlapSize = SubBlockSize;
@@ -276,11 +278,22 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 
 	//! Undo M/S transform
 	//! NOTE: Not orthogonal; must be fully normalized on the encoder side.
-	if(nChan == 2) for(n=0;n<BlockSize;n++) {
-		float M = DstData[n];
-		float S = DstData[n + BlockSize];
-		DstData[n]             = M+S;
-		DstData[n + BlockSize] = M-S;
+	for(Chan=1;Chan<nChan;Chan+=2) {
+		float *Buf = DstData + Chan*BlockSize;
+		for(n=0;n<BlockSize;n++) {
+			float a = Buf[n - BlockSize];
+			float b = Buf[n];
+			Buf[n - BlockSize] = (a+b);
+			Buf[n]             = (a-b);
+		}
+	}
+
+	//! Interleave channels
+	if(nChan != 1) {
+		for(n=0;n<BlockSize*nChan;n++) TransformTemp[n] = DstData[n];
+		for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
+			DstData[n*nChan+Chan] = TransformTemp[Chan*BlockSize+n];
+		}
 	}
 
 	//! Store the last [sub]block size, and return the number of bits read

@@ -83,10 +83,36 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 
+	//! Append new data samples
+	{
+		int n, Chan;
+		float *Old = State->SampleBuffer;
+		float *New = State->SampleBuffer + BlockSize*nChan;
+
+		//! Shift last block
+		for(n=0;n<BlockSize*nChan;n++) Old[n] = New[n];
+
+		//! Deinterleave samples to new buffer
+		for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
+			New[Chan*BlockSize+n] = Data[n*nChan+Chan];
+		}
+
+		//! Apply M/S transform to data
+		//! NOTE: Fully normalized; not orthogonal.
+		for(Chan=1;Chan<nChan;Chan+=2) {
+			float *Buf = New + Chan*BlockSize;
+			for(n=0;n<BlockSize;n++) {
+				float a = Buf[n - BlockSize];
+				float b = Buf[n];
+				Buf[n - BlockSize] = (a+b) * 0.5f;
+				Buf[n]             = (a-b) * 0.5f;
+			}
+		}
+	}
+
 	//! Get the window control parameters for this block and the next
 	int WindowCtrl     = State->WindowCtrl     = State->NextWindowCtrl;
 	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
-		Data,
 		State->SampleBuffer,
 		State->TransientBuffer,
 		State->TransientFilter,
@@ -125,15 +151,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		//! Clear the amplitude buffer; we'll be accumulating all channels here
 		for(n=0;n<BlockSize/2;n++) BufferAmp2[n] = 0.0f;
 #endif
-		//! Apply M/S transform to the data
-		//! NOTE: Fully normalized; not orthogonal.
-		if(nChan == 2) for(n=0;n<BlockSize;n++) {
-			float L = BufferSamples[n];
-			float R = BufferSamples[n + BlockSize];
-			BufferSamples[n]             = (L+R) * 0.5f;
-			BufferSamples[n + BlockSize] = (L-R) * 0.5f;
-		}
-
 		//! Transform the input data and get complexity measure (ABR, VBR modes)
 		float Complexity = 0.0f, ComplexityW = 0.0f;
 		for(Chan=0;Chan<nChan;Chan++) {
@@ -295,8 +312,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			BufferAmp2   -= BlockSize/2; //! <- Accumulated across all channels - rewind
 #endif
 		}
-		BufferSamples -= BlockSize*nChan; //! Rewind to start of buffer
-		BufferMDCT    -= BlockSize*nChan;
+		BufferMDCT    -= BlockSize*nChan; //! Rewind to start of buffer
 		BufferIndex   -= BlockSize*nChan;
 
 		//! Finalize and store block complexity
@@ -335,8 +351,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			BufferIndex += BlockSize;
 		}
 #endif
-		//! Cache the sample data for the next block
-		for(n=0;n<BlockSize*nChan;n++) BufferSamples[n] = *Data++;
 	}
 
 	//! Create the coefficient sorting indices

@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -20,11 +20,11 @@
 #define BUFFER_ALIGNMENT 64u //! Always align memory to 64-byte boundaries (preparation for AVX-512)
 /**************************************/
 
-#define MIN_CHANS    1
-#define MAX_CHANS  255
-#define MIN_BANDS  256 //! Limited by the transient detector's decimation
-#define MAX_BANDS 8192
-#define MIN_OVERLAP 16 //! Depends on SIMD routines; setting as 16 arbitrarily
+#define MIN_CHANS       1
+#define MAX_CHANS     255
+#define MIN_BANDS     256 //! Limited by the transient detector's decimation
+#define MAX_BANDS   32768
+#define MIN_OVERLAP    16 //! Depends on SIMD routines; setting as 16 arbitrarily
 
 //! Initialize encoder state
 int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
@@ -43,7 +43,7 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! blocks' worth of data (MDCT+MDST coefficients for analysis).
 	int AllocSize = 0;
 #define CREATE_BUFFER(Name, Sz) int Name##_Offs = AllocSize; AllocSize += Sz
-	CREATE_BUFFER(SampleBuffer,    sizeof(float) * (nChan*BlockSize));
+	CREATE_BUFFER(SampleBuffer,    sizeof(float) * (nChan*BlockSize) * 2);
 	CREATE_BUFFER(TransformBuffer, sizeof(float) * (nChan*BlockSize));
 #if ULC_USE_NOISE_CODING
 	CREATE_BUFFER(TransformNoise,  sizeof(float) * (nChan*BlockSize));
@@ -79,9 +79,9 @@ int ULC_EncoderState_Init(struct ULC_EncoderState_t *State) {
 	//! Set initial state
 	int i;
 	State->NextWindowCtrl = 0x10; //! No decimation, full overlap. Doesn't really matter, though.
-	for(i=0;i<3;              i++) State->TransientFilter[i] = 0.0f;
-	for(i=0;i<nChan*BlockSize;i++) State->SampleBuffer   [i] = 0.0f;
-	for(i=0;i<nChan*BlockSize;i++) State->TransformFwdLap[i] = 0.0f;
+	for(i=0;i<3;                i++) State->TransientFilter[i] = 0.0f;
+	for(i=0;i<nChan*BlockSize*2;i++) State->SampleBuffer   [i] = 0.0f;
+	for(i=0;i<nChan*BlockSize;  i++) State->TransformFwdLap[i] = 0.0f;
 	for(i=0;i<ULC_MAX_BLOCK_DECIMATION_FACTOR*2;i++) {
 		State->TransientBuffer[i] = (struct ULC_TransientData_t){.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
 	}
