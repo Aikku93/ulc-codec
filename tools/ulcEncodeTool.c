@@ -1,4 +1,5 @@
 /**************************************/
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -6,162 +7,127 @@
 #include <string.h>
 #include <time.h>
 /**************************************/
+#include "ulc_Helper.h"
 #include "ulcEncoder.h"
-/**************************************/
-#define BUFFER_ALIGNMENT 64u //! __mm256
-/**************************************/
-
-//! Header magic value
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '2'<<24)
-
-/**************************************/
-
-//! Cache memory
-//! This avoids too many calls to fwrite(), which
-//! hopefully avoids excessive system calls
-#define CACHE_SIZE (512 * 1024)
-static uint8_t CacheMem[CACHE_SIZE];
-
+#include "WavIO.h"
 /**************************************/
 
 int main(int argc, const char *argv[]) {
+	int   ExitCode = 0;
+	FILE *FileOut;
+	char *AllocBuffer;
+	struct WAV_State_t FileIn;
+	struct ULC_EncoderState_t Encoder;
+	struct FileHeader_t FileHeader;
+
 	//! Check arguments
-	if(argc < 5) {
+	if(argc < 4) {
 		printf(
 			"ulcEncodeTool - Ultra-Low Complexity Codec Encoding Tool\n"
 			"Usage:\n"
-			" ulcencodetool Input Output.ulc RateHz RateKbps[,AvgComplexity]|-Quality [Opt]\n"
+			" ulcencodetool Input.wav Output.ulc RateKbps[,AvgComplexity]|-Quality [Opt]\n"
 			"Options:\n"
-			" -nc:1           - Set number of channels.\n"
 			" -blocksize:2048 - Set number of coefficients per block (must be a power of 2).\n"
-			"Multi-channel data must be interleaved (packed).\n"
 			"Passing AvgComplexity uses ABR mode.\n"
 			"Passing negative RateKbps (-Quality) uses VBR mode.\n"
+			"Input file must be 8-bit, 16-bit, 24-bit, 32-bit, or 32-bit float.\n"
 		);
 		return 1;
 	}
 
-	//! Parse parameters
-	int BlockSize = 2048;
-	int nChan     = 1;
-	int RateHz    = atoi(argv[3]);
-	float RateKbps, AvgComplexity = 0.0f; sscanf(argv[4], "%f,%f", &RateKbps, &AvgComplexity);
+	//! Parse arguments
+	int   BlockSize = 2048;
+	float RateKbps;
+	float AvgComplexity = 0.0f;
+	sscanf(argv[3], "%f,%f", &RateKbps, &AvgComplexity);
+	if(RateKbps == 0.0f) {
+		printf("ERROR: Invalid coding rate (%.2f).\n", RateKbps);
+		ExitCode = -1; goto Exit_BadArgs;
+	}
+	if(AvgComplexity < 0.0f) {
+		printf("ERROR: Invalid AvgComplexity parameter (%.2f).\n", AvgComplexity);
+		ExitCode = -1; goto Exit_BadArgs;
+	}
 	{
 		int n;
-		for(n=5;n<argc;n++) {
-			if(!memcmp(argv[n], "-nc:", 4)) {
-				int x = atoi(argv[n] + 4);
-				if(x > 0 && x < 65535) nChan = x;
-				else printf("WARNING: Ignoring invalid parameter to number of channels (%d)\n", x);
-			}
-
-			else if(!memcmp(argv[n], "-blocksize:", 11)) {
+		for(n=4;n<argc;n++) {
+			if(!memcmp(argv[n], "-blocksize:", 11)) {
 				int x = atoi(argv[n] + 11);
-				if(x >= 64 && x <= 8192 && (x & (-x)) == x) BlockSize = x;
-				else printf("WARNING: Ignoring invalid parameter to block size (%d)\n", x);
+				if(x >= 256 && x <= 32768 && (x & (-x)) == x) BlockSize = x;
+				else {
+					printf("ERROR: Unsupported block size (%d).\n", x);
+					ExitCode = -1; goto Exit_BadArgs;
+				}
 			}
 
-			else printf("WARNING: Ignoring unknown argument (%s)\n", argv[n]);
+			else printf("WARNING: Ignoring unknown argument (%s).\n", argv[n]);
 		}
 	}
 
-	//! Determine encoding mode (CBR/ABR/VBR) and set appropriate block encoding routine
-	//! NOTE: This is kinda janky, but works fine. The main problem is passing AvgComplexity,
-	//! which requires casting all the function pointers to a single form.
-	typedef const void* (*BlockEncodeFnc_t)(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float Rate, float AvgComplexity);
-	BlockEncodeFnc_t BlockEncodeFnc;
-	                          BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_CBR;
-	if(AvgComplexity > 0.0f)  BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_ABR;
-	if(RateKbps < 0.0f)       BlockEncodeFnc = (BlockEncodeFnc_t)ULC_EncodeBlock_VBR, RateKbps = -RateKbps;
-
-	//! Verify parameters
-	if(RateHz < 1 || RateHz > 0x7FFFFFFF) {
-		printf("ERROR: Invalid playback rate.\n");
-		return -1;
+	//! Open input file and verify
+	{
+		int Error = WAV_OpenR(&FileIn, argv[1]);
+		if(Error < 0) {
+			printf("ERROR: Unable to open input file (%s); error %s.\n", argv[1], WAV_ErrorCodeToString(Error));
+			ExitCode = -1; goto Exit_FailOpenInFile;
+		}
 	}
-	if(RateKbps == 0.0f) {
-		printf("ERROR: Invalid coding rate.\n");
-		return -1;
+	if(FileIn.fmt->nSamplesPerSec < 1) {
+		printf("ERROR: Unsupported playback rate (%u).\n", FileIn.fmt->nSamplesPerSec);
+		ExitCode = -1; goto Exit_FailInFileValidation;
 	}
-	if(nChan < 1 || nChan > 0xFFFF) {
-		printf("ERROR: Invalid number of channels.\n");
-		return -1;
+	if(FileIn.fmt->nChannels < 1/* || FileIn.fmt->nChannels > 0xFFFF*/) {
+		printf("ERROR: Unsupported number of channels (%u).\n", FileIn.fmt->nChannels);
+		ExitCode = -1; goto Exit_FailInFileValidation;
 	}
 
-	//! Allocate buffers
-	int16_t *BlockFetch   = malloc(sizeof(int16_t) * nChan*BlockSize);
-	char    *_BlockBuffer = malloc(sizeof(float)   * nChan*BlockSize + BUFFER_ALIGNMENT-1);
-	if(!BlockFetch || !_BlockBuffer) {
-		printf("ERROR: Out of memory.\n");
-		free(_BlockBuffer);
-		free(BlockFetch);
-		return -1;
+	//! Allocate reading buffer
+	AllocBuffer = malloc(BUFFER_ALIGNMENT-1 + sizeof(float)*BlockSize*FileIn.fmt->nChannels);
+	if(!AllocBuffer) {
+		printf("ERROR: Couldn't allocate reading buffer.\n");
+		ExitCode = -1; goto Exit_FailCreateAllocBuffer;
 	}
-	float *BlockBuffer = (float*)(_BlockBuffer + (-(uintptr_t)_BlockBuffer % BUFFER_ALIGNMENT));
+	float *ReadBuffer = (float*)(AllocBuffer + (-(uintptr_t)AllocBuffer % BUFFER_ALIGNMENT));
 
-	//! Open input file
-	size_t nSamp;
-	FILE *InFile = fopen(argv[1], "rb");
-	if(!InFile) {
-		printf("ERROR: Unable to open input file.\n");
-		free(_BlockBuffer);
-		free(BlockFetch);
-		return -1;
-	} else {
-		fseek(InFile, 0, SEEK_END);
-		nSamp = ftell(InFile) / sizeof(int16_t) / nChan;
-		rewind(InFile);
-	}
-
-	//! Open output file
-	FILE *OutFile = fopen(argv[2], "wb");
-	if(!OutFile) {
-		printf("ERROR: Unable to open output file.\n");
-		fclose(InFile);
-		free(_BlockBuffer);
-		free(BlockFetch);
-		return -1;
-	}
-
-	//! Create file header and skip for now; written later
-	struct {
-		uint32_t Magic;        //! [00h] Magic value/signature
-		uint16_t BlockSize;    //! [04h] Transform block size
-		uint16_t MaxBlockSize; //! [06h] Largest block size (in bytes; 0 = Unknown)
-		uint32_t nBlocks;      //! [08h] Number of blocks
-		uint32_t RateHz;       //! [0Ch] Playback rate
-		uint16_t nChan;        //! [10h] Channels in stream
-		uint16_t RateKbps;     //! [12h] Nominal coding rate
-		uint32_t StreamOffs;   //! [14h] Offset of data stream
-	} FileHeader = {
-		.Magic      = HEADER_MAGIC,
-		.BlockSize  = BlockSize,
-		.nBlocks    = (nSamp + BlockSize-1) / BlockSize + 2, //! +1 to account for coding delay, +1 to account for MDCT delay
-		.RateHz     = RateHz,
-		.nChan      = nChan,
-		.RateKbps   = (uint16_t)RateKbps,
-	};
-	size_t FileHeaderOffs = ftell(OutFile);
-	fseek(OutFile, +sizeof(FileHeader), SEEK_CUR);
+	//! Create file header
+	//! nBlocks is +1 to account for coding delay, +1 to account for MDCT delay
+	//! ::RateKbps and ::StreamOffs are written later
+	FileHeader.Magic        = HEADER_MAGIC;
+	FileHeader.BlockSize    = BlockSize;
+	FileHeader.MaxBlockSize = 0;
+	FileHeader.nBlocks      = (FileIn.nSamplePoints + BlockSize-1) / BlockSize + 2;
+	FileHeader.RateHz       = FileIn.fmt->nSamplesPerSec;
+	FileHeader.nChan        = FileIn.fmt->nChannels;
 
 	//! Create encoder
-	struct ULC_EncoderState_t Encoder = {
-		.RateHz     = RateHz,
-		.nChan      = nChan,
-		.BlockSize  = BlockSize,
-	};
-	if(ULC_EncoderState_Init(&Encoder) > 0) {
-		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds
+	Encoder.RateHz    = FileHeader.RateHz;
+	Encoder.nChan     = FileHeader.nChan;
+	Encoder.BlockSize = FileHeader.BlockSize;
+	if(ULC_EncoderState_Init(&Encoder) <= 0) {
+		printf("ERROR: Unable to initialize encoder.\n");
+		ExitCode = -1; goto Exit_FailCreateEncoder;
+	}
+
+	//! Open output file and skip header
+	FileOut = fopen(argv[2], "wb");
+	if(!FileOut) {
+		printf("ERROR: Unable to open output file (%s).\n", argv[2]);
+		ExitCode = -1; goto Exit_FailOpenFileOut;
+	}
+	size_t FileHeaderOffs = ftell(FileOut);
+	fseek(FileOut, +sizeof(FileHeader), SEEK_CUR);
+
+	//! Begin encoding
+	{
+		const clock_t DISPLAY_UPDATE_RATE = (clock_t)(CLOCKS_PER_SEC * 0.5); //! Update every 0.5 seconds
 
 		//! Store stream offset
-		FileHeader.StreamOffs = ftell(OutFile);
+		FileHeader.StreamOffs = ftell(FileOut);
 
 		//! Process blocks
-		int n, Chan;
-		int CacheIdx = 0;
 		size_t Blk, nBlk = FileHeader.nBlocks;
 		uint64_t TotalSize = 0;
-		double ActualAvgComplexity = 0.0;
+		double ComplexitySum = 0.0;
 		size_t BlkLastUpdate = 0;
 		clock_t LastUpdateTime = clock() - DISPLAY_UPDATE_RATE;
 		for(Blk=0;Blk<nBlk;Blk++) {
@@ -174,80 +140,72 @@ int main(int argc, const char *argv[]) {
 				printf(
 					"\rBlock %zu/%zu (%.2f%% | %.2f X rt) | Average: %.2fkbps",
 					Blk, nBlk, Blk*100.0/nBlk,
-					nBlkProcessed*BlockSize / (double)RateHz,
-					Blk ? (TotalSize * RateHz/1000.0 / (Blk * BlockSize)) : 0.0f
+					nBlkProcessed*BlockSize / (double)FileHeader.RateHz,
+					Blk ? (TotalSize * 8.0 * FileHeader.RateHz/1000.0 / (Blk * BlockSize)) : 0.0f
 				);
 				fflush(stdout);
 				LastUpdateTime += DISPLAY_UPDATE_RATE;
 				BlkLastUpdate   = Blk;
 			}
 
-			//! Fill buffer data
-			size_t nMax = fread(BlockFetch, nChan*sizeof(int16_t), BlockSize, InFile);
-			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-				BlockBuffer[Chan*BlockSize+n] = ((size_t)n < nMax) ? (BlockFetch[n*nChan+Chan] * (1.0f/32768.0f)) : 0.0f;
-			}
+			//! Read samples
+			WAV_ReadAsFloat(&FileIn, ReadBuffer, BlockSize);
 
 			//! Encode block
-			//! Reuse BlockBuffer[] to avoid more memory allocation
 			int Size;
-			const uint8_t *EncData = BlockEncodeFnc(&Encoder, BlockBuffer, &Size, RateKbps, AvgComplexity);
-			TotalSize += Size;
-			ActualAvgComplexity += Encoder.BlockComplexity;
+			const uint8_t *EncData;
+			     if(RateKbps      < 0.0f) EncData = ULC_EncodeBlock_VBR(&Encoder, ReadBuffer, &Size, -RateKbps);
+			else if(AvgComplexity > 0.0f) EncData = ULC_EncodeBlock_ABR(&Encoder, ReadBuffer, &Size,  RateKbps, AvgComplexity);
+			else                          EncData = ULC_EncodeBlock_CBR(&Encoder, ReadBuffer, &Size,  RateKbps);
 
-			//! Copy what we can into the cache
+			//! Convert size to bytes and accumulate statistics
 			Size = (Size+7) / 8u;
+			TotalSize     += Size;
+			ComplexitySum += Encoder.BlockComplexity;
 			if((size_t)Size > FileHeader.MaxBlockSize) FileHeader.MaxBlockSize = Size;
-			while(Size) {
-				//! Copy up to the limits of the cache area
-				int n = CACHE_SIZE - CacheIdx; //! =CacheRem
-				if(Size < n) n = Size;
-				Size -= n;
 
-				memcpy(CacheMem+CacheIdx, EncData, n);
-				EncData += n;
-				CacheIdx += n;
-				if(CacheIdx == CACHE_SIZE) {
-					//! Flush to file
-					fwrite(CacheMem, sizeof(uint8_t), CacheIdx, OutFile);
-					CacheIdx = 0;
-				}
-			}
+			//! Write block to file
+			fwrite(EncData, sizeof(uint8_t), Size, FileOut);
 		}
 
-		//! Flush cache
-		fwrite(CacheMem, sizeof(uint8_t), CacheIdx, OutFile);
-
-		//! Show statistics
+		//! Show statistics and store RateKbps to header
 		size_t nEncodedSamples = BlockSize * nBlk;
+		double TotalSizeKiB  = TotalSize               * 1.0 / 1024;
+		double AvgKbps       = TotalSize               * 8.0 * FileHeader.RateHz/1000.0 / nEncodedSamples;
+		double AvgBitsPerSmp = TotalSize               * 1.0 / nEncodedSamples;
+		double MaxKbps       = FileHeader.MaxBlockSize * 8.0 * FileHeader.RateHz/1000.0 / BlockSize;
+		double MaxBitsPerSmp = FileHeader.MaxBlockSize * 8.0 / BlockSize;
+		double Complexity    = ComplexitySum / nBlk;
 		printf(
-			"\e[2K\r" //! Clear line before CR
+			"\n"
 			"Total size = %.2fKiB\n"
 			"Avg rate = %.5fkbps (%.5f bits/sample)\n"
 			"Max rate = %.5fkbps (%.5f bits/sample)\n"
 			"Avg complexity = %.5f\n",
-			TotalSize/8.0 / 1024,
-			TotalSize               * 1.0 * RateHz/1000.0 / nEncodedSamples,
-			TotalSize               * 1.0 / nEncodedSamples,
-			FileHeader.MaxBlockSize * 8.0 * RateHz/1000.0 / BlockSize,
-			FileHeader.MaxBlockSize * 8.0 / BlockSize,
-			ActualAvgComplexity/nBlk
+			TotalSizeKiB,
+			AvgKbps, AvgBitsPerSmp,
+			MaxKbps, MaxBitsPerSmp,
+			Complexity
 		);
-
-		//! Destroy encoder
-		ULC_EncoderState_Destroy(&Encoder);
-	} else printf("ERROR: Unable to initialize encoder.\n");
+		FileHeader.RateKbps = lrint(AvgKbps);
+	}
 
 	//! Write file header
-	fseek(OutFile, FileHeaderOffs, SEEK_SET);
-	fwrite(&FileHeader, sizeof(FileHeader), 1, OutFile);
+	fseek(FileOut, FileHeaderOffs, SEEK_SET);
+	fwrite(&FileHeader, sizeof(FileHeader), 1, FileOut);
 
-	//! Clean up
-	fclose(OutFile);
-	fclose(InFile);
-	free(_BlockBuffer);
-	free(BlockFetch);
-	return 0;
+	//! Exit points
+	fclose(FileOut);
+Exit_FailOpenFileOut:
+	ULC_EncoderState_Destroy(&Encoder);
+Exit_FailCreateEncoder:
+	free(AllocBuffer);
+Exit_FailCreateAllocBuffer:
+Exit_FailInFileValidation:
+	WAV_Close(&FileIn);
+Exit_FailOpenInFile:
+Exit_BadArgs:
+	return ExitCode;
 }
 
 /**************************************/

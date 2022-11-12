@@ -7,162 +7,129 @@
 #include <string.h>
 #include <time.h>
 /**************************************/
+#include "ulc_Helper.h"
 #include "ulcDecoder.h"
-/**************************************/
-#define BUFFER_ALIGNMENT 64u //! __mm256
-/**************************************/
-
-#define HEADER_MAGIC (uint32_t)('U' | 'L'<<8 | 'C'<<16 | '2'<<24)
-
+#include "WavIO.h"
 /**************************************/
 
-//! Clip to 16bit range
-static inline float Clip16(float x) {
-	if(x < -0x8000) return -0x8000;
-	if(x > +0x7FFF) return +0x7FFF;
-	return x;
-}
-
-/**************************************/
-
-//! File header
-struct FileHeader_t {
-	uint32_t Magic;        //! [00h] Magic value/signature
-	uint16_t BlockSize   ; //! [04h] Transform block size
-	uint16_t MaxBlockSize; //! [06h] Largest block size (in bytes; 0 = Unknown)
-	uint32_t nBlocks;      //! [08h] Number of blocks
-	uint32_t RateHz;       //! [0Ch] Playback rate
-	uint16_t nChan;        //! [10h] Channels in stream
-	uint16_t RateKbps;     //! [12h] Nominal coding rate
-	uint32_t StreamOffs;   //! [14h] Offset of data stream
-};
-
-//! Decoding state
-#define MAX_BLOCK_SIZE 8192
-#define MAX_CHANS         4
-static const int CacheSize = 512*1024;
-struct DecodeState_t {
-	//! These need to be cleared to NULL
-	FILE *FileIn;
-	FILE *FileOut;
-	char *AllocBuffer;
-
-	float   *BlockBuffer;
-	int16_t *BlockOutput;
-	uint8_t *CacheBuffer;
-	uint8_t *CacheNext;
-};
-
-//! Clean up decode state and exit
-static void StateCleanupExit(const struct DecodeState_t *State, int ExitCode) {
-	free(State->AllocBuffer);
-	fclose(State->FileOut);
-	fclose(State->FileIn);
-	exit(ExitCode);
-}
-
-//! Initialize state
-static void StateInit(struct DecodeState_t *State, const struct FileHeader_t *Header) {
-	//! Allocate memory
-	int BlockBuffer_Size = sizeof(float)   * Header->nChan*Header->BlockSize;
-	int BlockOutput_Size = sizeof(int16_t) * Header->nChan*Header->BlockSize;
-	int CacheBuffer_Size = CacheSize;
-	int BlockBuffer_Offs = 0;
-	int BlockOutput_Offs = BlockBuffer_Offs + BlockBuffer_Size;
-	int CacheBuffer_Offs = BlockOutput_Offs + BlockOutput_Size;
-	int AllocSize = CacheBuffer_Offs + CacheBuffer_Size;
-	char *Buf = State->AllocBuffer = malloc(BUFFER_ALIGNMENT-1 + AllocSize);
-	if(!Buf) {
-		printf("ERROR: Out of memory.\n");
-		StateCleanupExit(State, -1);
-	}
-
-	//! Set pointers
-	Buf += -(uintptr_t)Buf % BUFFER_ALIGNMENT;
-	State->BlockBuffer = (float   *)(Buf + BlockBuffer_Offs);
-	State->BlockOutput = (int16_t *)(Buf + BlockOutput_Offs);
-	State->CacheBuffer = (uint8_t *)(Buf + CacheBuffer_Offs);
-	State->CacheNext   = State->CacheBuffer;
-
-	//! Seek to start of stream and fill cache
-	fseek(State->FileIn, Header->StreamOffs, SEEK_SET);
-	fread(State->CacheNext, sizeof(uint8_t), CacheSize, State->FileIn);
-}
-
-//! Advance cached data
-static void StateCacheAdvance(struct DecodeState_t *State, int nBytes, int MinSize) {
-	State->CacheNext += nBytes;
-	int Rem = State->CacheBuffer + CacheSize - State->CacheNext;
-	if(Rem < MinSize) {
-		memcpy(State->CacheBuffer, State->CacheNext, Rem);
-		fread(State->CacheBuffer + Rem, sizeof(uint8_t), CacheSize-Rem, State->FileIn);
-		State->CacheNext = State->CacheBuffer;
-	}
-}
+//! Possible output formats
+#define FORMAT_PCM8    0
+#define FORMAT_PCM16   1
+#define FORMAT_PCM24   2
+#define FORMAT_FLOAT32 3
 
 /**************************************/
 
 int main(int argc, const char *argv[]) {
+	int   ExitCode = 0;
+	FILE *FileIn;
+	char *AllocBuffer;
+	struct WAV_State_t FileOut;
+	struct ULC_DecoderState_t Decoder;
+	struct FileHeader_t FileHeader;
+
 	//! Check arguments
-	if(argc != 3) {
+	if(argc < 3) {
 		printf(
 			"ulcDecodeTool - Ultra-Low Complexity Codec Decoding Tool\n"
-			"Usage: ulcdecodetool Input.ulc Output.sw\n"
-			"Multi-channel data will be interleaved.\n"
+			"Usage: ulcdecodetool Input.ulc Output.wav [Opt]\n"
+			"Options:\n"
+			" -format:PCM16 - Set output format (PCM8, PCM16, PCM24, FLOAT32).\n"
 		);
 		return 1;
 	}
 
-	//! Create decoding state
-	struct DecodeState_t State = {
-		.FileIn      = NULL,
-		.FileOut     = NULL,
-		.AllocBuffer = NULL,
-	};
+	//! Parse arguments
+	int FormatType = FORMAT_PCM16;
+	{
+		int n;
+		for(n=3;n<argc;n++) {
+			if(!memcmp(argv[n], "-format:", 8)) {
+				const char *FmtStr = argv[n] + 8;
+				     if(!strcmp(FmtStr, "PCM8")    || !strcmp(FmtStr, "pcm8"))
+					FormatType = FORMAT_PCM8;
+				else if(!strcmp(FmtStr, "PCM16")   || !strcmp(FmtStr, "pcm16"))
+					FormatType = FORMAT_PCM16;
+				else if(!strcmp(FmtStr, "PCM24")   || !strcmp(FmtStr, "pcm24"))
+					FormatType = FORMAT_PCM24;
+				else if(!strcmp(FmtStr, "FLOAT32") || !strcmp(FmtStr, "float32"))
+					FormatType = FORMAT_FLOAT32;
+				else {
+					printf("ERROR: Ignoring invalid output format (%s).\n", FmtStr);
+					ExitCode = -1; goto Exit_BadArgs;
+				}
+			}
 
-	//! Open input file
-	State.FileIn = fopen(argv[1], "rb");
-	if(!State.FileIn) {
-		printf("ERROR: Unable to open input file.\n");
-		StateCleanupExit(&State, -1);
+			else printf("WARNING: Ignoring unknown argument (%s).\n", argv[n]);
+		}
 	}
 
-	//! Open output file
-	State.FileOut = fopen(argv[2], "wb");
-	if(!State.FileOut) {
-		printf("ERROR: Unable to open output file.\n");
-		StateCleanupExit(&State, -1);
+	//! Open input file and verify
+	FileIn = fopen(argv[1], "rb");
+	if(!FileIn) {
+		printf("ERROR: Unable to open input file (%s).\n", argv[1]);
+		ExitCode = -1; goto Exit_FailOpenInFile;
+	}
+	if(fread(&FileHeader, sizeof(FileHeader), 1, FileIn) != 1 || FileHeader.Magic != HEADER_MAGIC) {
+		printf("ERROR: Input file is not a valid ULC container.\n");
+		ExitCode = -1; goto Exit_FailVerifyInFile;
 	}
 
-	//! Read header
-	struct FileHeader_t Header; fread(&Header, sizeof(Header), 1, State.FileIn);
-	if(Header.Magic != HEADER_MAGIC) {
-		printf("ERROR: Invalid file.\n");
-		StateCleanupExit(&State, -1);
-	}
-	if(Header.BlockSize > MAX_BLOCK_SIZE || Header.nChan > MAX_CHANS) {
-		printf("ERROR: Unsupported specification.\n");
-		StateCleanupExit(&State, -1);
-	}
+	//! Define the stream buffer size
+	int StreamBufferSize = (16*1024);
+	if((int)FileHeader.MaxBlockSize > StreamBufferSize) StreamBufferSize = FileHeader.MaxBlockSize;
 
-	//! Initialize state
-	StateInit(&State, &Header);
+	//! Allocate decoding buffer and stream buffer
+	AllocBuffer = malloc(BUFFER_ALIGNMENT-1 + sizeof(float)*2*FileHeader.BlockSize*FileHeader.nChan + StreamBufferSize);
+	if(!AllocBuffer) {
+		printf("ERROR: Couldn't allocate decoding buffer.\n");
+		ExitCode = -1; goto Exit_FailCreateAllocBuffer;
+	}
+	float   *DecodeBuffer = (float  *)(AllocBuffer + (-(uintptr_t)AllocBuffer % BUFFER_ALIGNMENT));
+	uint8_t *StreamBuffer = (uint8_t*)(DecodeBuffer + FileHeader.BlockSize*FileHeader.nChan);
 
 	//! Create decoder
-	struct ULC_DecoderState_t Decoder = {
-		.nChan      = Header.nChan,
-		.BlockSize  = Header.BlockSize,
-	};
-	if(ULC_DecoderState_Init(&Decoder) > 0) {
-		const clock_t DISPLAY_UPDATE_RATE = CLOCKS_PER_SEC/2; //! Update every 0.5 seconds
+	Decoder.nChan      = FileHeader.nChan;
+	Decoder.BlockSize  = FileHeader.BlockSize;
+	if(ULC_DecoderState_Init(&Decoder) <= 0) {
+		printf("ERROR: Unable to initialize decoder.\n");
+		ExitCode = -1; goto Exit_FailCreateDecoder;
+	}
+
+	//! Create output file
+	{
+		int BytesPerSmp = 0;
+		switch(FormatType) {
+			case FORMAT_PCM8:    BytesPerSmp =  8 / 8; break;
+			case FORMAT_PCM16:   BytesPerSmp = 16 / 8; break;
+			case FORMAT_PCM24:   BytesPerSmp = 24 / 8; break;
+			case FORMAT_FLOAT32: BytesPerSmp = 32 / 8; break;
+		}
+		struct WAVE_fmt_t fmt;
+		fmt.wFormatTag      = (FormatType == FORMAT_FLOAT32) ? WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM;
+		fmt.nChannels       = FileHeader.nChan;
+		fmt.nSamplesPerSec  = FileHeader.RateHz;
+		fmt.nAvgBytesPerSec = BytesPerSmp * FileHeader.nChan * FileHeader.RateHz;
+		fmt.nBlockAlign     = BytesPerSmp * FileHeader.nChan;
+		fmt.wBitsPerSample  = BytesPerSmp * 8;
+		int Error = WAV_OpenW(&FileOut, argv[2], &fmt);
+		if(Error < 0) {
+			printf("ERROR: Unable to create output file (%s); error %s.", argv[1], WAV_ErrorCodeToString(Error));
+			ExitCode = -1; goto Exit_FailCreateOutFile;
+		}
+	}
+
+	//! Begin decoding
+	{
+		const clock_t DISPLAY_UPDATE_RATE = (clock_t)(CLOCKS_PER_SEC * 0.5); //! Update every 0.5 seconds
+
+		//! Pre-fill the streaming buffer
+		fseek(FileIn, FileHeader.StreamOffs, SEEK_SET);
+		fread(StreamBuffer, StreamBufferSize, 1, FileIn);
 
 		//! Process blocks
-		int      n, Chan;
-		int      nChan       = Header.nChan;
-		int      BlockSize   = Header.BlockSize;
-		float   *BlockBuffer = State.BlockBuffer;
-		int16_t *BlockOutput = State.BlockOutput;
-		uint32_t Blk, nBlk = Header.nBlocks;
+		int      BlockSize   = FileHeader.BlockSize;
+		uint32_t Blk, nBlk = FileHeader.nBlocks;
 		size_t BlkLastUpdate = 0;
 		clock_t LastUpdateTime = clock() - DISPLAY_UPDATE_RATE;
 		for(Blk=0;Blk<nBlk;Blk++) {
@@ -175,7 +142,7 @@ int main(int argc, const char *argv[]) {
 				printf(
 					"\rBlock %u/%u (%.2f%% | %.2f X rt)",
 					Blk, nBlk, Blk*100.0/nBlk,
-					nBlkProcessed*BlockSize / (double)Header.RateHz
+					nBlkProcessed*BlockSize / (double)FileHeader.RateHz
 				);
 				fflush(stdout);
 				LastUpdateTime += DISPLAY_UPDATE_RATE;
@@ -183,23 +150,35 @@ int main(int argc, const char *argv[]) {
 			}
 
 			//! Decode block
-			int Size = ULC_DecodeBlock(&Decoder, BlockBuffer, State.CacheNext);
-			StateCacheAdvance(&State, (Size + 7) / 8u, Header.MaxBlockSize);
-
-			//! Interleave to output buffer
-			for(Chan=0;Chan<nChan;Chan++) for(n=0;n<BlockSize;n++) {
-				BlockOutput[n*nChan+Chan] = (int16_t)Clip16(lrintf(32768.0f * BlockBuffer[Chan*BlockSize+n]));
+			int Size = (ULC_DecodeBlock(&Decoder, DecodeBuffer, StreamBuffer) + 7) / 8u;
+			if(!Size) {
+				printf("ERROR: Corrupted stream.\n");
+				ExitCode = -1; goto Exit_FailCorruptStream;
 			}
 
-			//! Write to file
-			fwrite(BlockOutput, nChan*sizeof(int16_t), BlockSize, State.FileOut);
-		}
-	} else printf("ERROR: Unable to initialize decoder.\n");
+			//! Write samples
+			WAV_WriteFromFloat(&FileOut, DecodeBuffer, BlockSize);
 
-	//! Done
-	printf("\e[2K\rOk\n");
-	StateCleanupExit(&State, 0);
-	return 0;
+			//! Slide stream buffer
+			memcpy(StreamBuffer, StreamBuffer+Size, StreamBufferSize-Size);
+			fread(StreamBuffer + StreamBufferSize-Size, Size, 1, FileIn);
+		}
+	}
+
+	//! Exit points
+	printf("\nOk\n");
+Exit_FailCorruptStream:
+	WAV_Close(&FileOut);
+Exit_FailCreateOutFile:
+	ULC_DecoderState_Destroy(&Decoder);
+Exit_FailCreateDecoder:
+	free(AllocBuffer);
+Exit_FailCreateAllocBuffer:
+Exit_FailVerifyInFile:
+	fclose(FileIn);
+Exit_FailOpenInFile:
+Exit_BadArgs:
+	return ExitCode;
 }
 
 /**************************************/
