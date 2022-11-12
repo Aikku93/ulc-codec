@@ -172,7 +172,7 @@ int main(int argc, const char *argv[]) {
 		size_t nEncodedSamples = BlockSize * nBlk;
 		double TotalSizeKiB  = TotalSize               * 1.0 / 1024;
 		double AvgKbps       = TotalSize               * 8.0 * FileHeader.RateHz/1000.0 / nEncodedSamples;
-		double AvgBitsPerSmp = TotalSize               * 1.0 / nEncodedSamples;
+		double AvgBitsPerSmp = TotalSize               * 8.0 / nEncodedSamples;
 		double MaxKbps       = FileHeader.MaxBlockSize * 8.0 * FileHeader.RateHz/1000.0 / BlockSize;
 		double MaxBitsPerSmp = FileHeader.MaxBlockSize * 8.0 / BlockSize;
 		double Complexity    = ComplexitySum / nBlk;
