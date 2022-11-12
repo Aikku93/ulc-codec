@@ -63,8 +63,7 @@
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
-	const float *ThisBlockData,
-	const float *LastBlockData,
+	const float *BlockData,
 	struct ULC_TransientData_t *TransientBuffer,
 	      float *TransientFilter,
 	      float *TmpBuffer,
@@ -92,8 +91,8 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 #define DOFILTER(XzM1,Xz0,Xz1) *Dst++ += SQR(-XzM1+2*Xz0-Xz1), *Dst++ += SQR(Xz1-XzM1)
 			      int    Lag    = BlockSize/2; //! MDCT alignment
 			      float *Dst    = BufEnergy;
-			const float *SrcOld = LastBlockData + Chan*BlockSize + BlockSize-Lag;
-			const float *SrcNew = ThisBlockData + Chan*BlockSize;
+			const float *SrcOld = BlockData + Chan*BlockSize + BlockSize-Lag;
+			const float *SrcNew = BlockData + Chan*BlockSize + nChan*BlockSize;
 			n = Lag-1; do {
 				DOFILTER(SrcOld[-1], SrcOld[0], SrcOld[+1]), SrcOld++;
 			} while(--n);
@@ -136,11 +135,10 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! NOTE: Envelope attack (fade-in) is proportional to
 				//! the signal level, whereas envelope decay (fade-out)
 				//! follows a constant falloff.
-				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
-				EnvRel *= RelRate; if(v < 0.0f) EnvRel -= v*(1.0f-RelRate);
-				float w = 0x1.0p-32f + ABS(EnvAtt-EnvRel); //! <- Small bias to avoid false "to/from silence" transients
-				Dst->Att += SQR(EnvAtt)*w, Dst->AttW += EnvAtt*EnvGain;
-				Dst->Rel += SQR(EnvRel)*w, Dst->RelW += EnvRel*EnvGain;
+				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-RelRate);
+				EnvRel *= RelRate; if(v < 0.0f) EnvRel -= v*(1.0f-AttRate);
+				Dst->Att += SQR(EnvAtt), Dst->AttW += EnvAtt*EnvGain;
+				Dst->Rel += SQR(EnvRel), Dst->RelW += EnvRel*EnvGain;
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGain;
@@ -150,8 +148,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 }
 #pragma GCC pop_options
 static inline int Block_Transform_GetWindowCtrl(
-	const float *ThisBlockData,
-	const float *LastBlockData,
+	const float *BlockData,
 	struct ULC_TransientData_t *TransientBuffer,
 	      float *TransientFilter,
 	      float *TmpBuffer,
@@ -163,7 +160,7 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Perform filtering to obtain transient analysis
 	//! then seek to this "new" block's transient data
-	Block_Transform_GetWindowCtrl_TransientFiltering(ThisBlockData, LastBlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan, RateHz);
+	Block_Transform_GetWindowCtrl_TransientFiltering(BlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan, RateHz);
 	TransientBuffer += ULC_MAX_BLOCK_DECIMATION_FACTOR;
 
 	//! Keep trying to increase the window size until the
