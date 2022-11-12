@@ -23,7 +23,7 @@ DECODETOOL_SRCDIR := tools
 ARCHCROSS :=
 ARCHFLAGS := -msse -msse2 -mavx -mavx2 -mfma
 
-CCFLAGS := $(ARCHFLAGS) -fno-math-errno -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
+CCFLAGS := $(ARCHFLAGS) -fno-math-errno -ffast-math -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
 LDFLAGS := -static
 
 #----------------------------#
@@ -38,8 +38,8 @@ LD := $(ARCHCROSS)gcc
 #----------------------------#
 
 COMMON_SRC     := $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/*.c))
-ENCODETOOL_SRC := $(ENCODETOOL_SRCDIR)/ulcEncodeTool.c
-DECODETOOL_SRC := $(ENCODETOOL_SRCDIR)/ulcDecodeTool.c
+ENCODETOOL_SRC := $(filter-out $(ENCODETOOL_SRCDIR)/ulcDecodeTool.c, $(wildcard $(ENCODETOOL_SRCDIR)/*.c))
+DECODETOOL_SRC := $(filter-out $(DECODETOOL_SRCDIR)/ulcEncodeTool.c, $(wildcard $(DECODETOOL_SRCDIR)/*.c))
 COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(notdir $(COMMON_SRC:.c=.o)))
 ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(ENCODETOOL_SRC:.c=.o)))
 DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.c=.o)))
