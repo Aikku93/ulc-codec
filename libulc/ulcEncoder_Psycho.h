@@ -46,16 +46,6 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 	int n;
 	float v;
 
-	//! Ratio of noise-masks-tone masking.
-	//! When set too high (eg. ratio of 1:1), pure and
-	//! combination tones in an otherwise quiet band
-	//! will be culled prematurely, causing excessive
-	//! muffling and/or culling of perceptable tones.
-	//! When set too low (eg. ratio of 1:100), tones
-	//! will not be masked by noise, which may lead to
-	//! encoding of inaudible tones even at low rates.
-	static const int NoiseMasksToneRatio = 1;
-
 	//! DCT+DST -> Pseudo-DFT
 	BlockSize /= 2;
 
@@ -101,12 +91,13 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			for(n=0;n<SubBlockSize;n++) {
 				v = BufferAmp2[n] * Norm;
 				float ve = v;
-				float vw = v + (0x1.FFFFFCp31f-v)*ThisFreqWeightTable[n];
+				float vw = 0x1.0p16f * sqrtf(v);
+				      vw = vw + (0x1.FFFFFCp31f-vw)*ThisFreqWeightTable[n];
 				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
 			float LogNorm     = -logf(Norm); //! Log[1/Norm]
-			float InvLogScale = (0x1.62E430p-28f / NoiseMasksToneRatio)*SubBlockSize; //! Inverse (round up)
+			float InvLogScale = 0x1.62E430p-28f*SubBlockSize; //! Inverse (round up)
 
 			//! Extract the masking levels for each line
 			int      MaskBeg = 0, MaskEnd  = 0;
@@ -143,10 +134,9 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				//! using the actual number of bands in the sum of FloorSum can
 				//! cause strange artifacts at higher frequencies, so we use the
 				//! theoretical number of bands that would be in that bandwidth.
-				int FloorBw = (MaskEnd >> RangeScaleFxp) - (MaskBeg >> RangeScaleFxp);
-				int32_t Mask  = MaskSum / MaskSumW;
-				int32_t Floor = FloorSum / FloorBw;
-				MaskingNp[n] = ((NoiseMasksToneRatio+1)*Mask - Floor)*InvLogScale + LogNorm;
+				int64_t Mask  = MaskSum / MaskSumW;
+				int64_t Floor = (int32_t)((((int64_t)FloorSum) << RangeScaleFxp) / (MaskEnd - MaskBeg));
+				MaskingNp[n] = (2*Mask - Floor)*InvLogScale + LogNorm;
 			}
 		}
 
