@@ -33,8 +33,12 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 		__m256 y = _mm256_add_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(x, _mm256_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm256_mul_ps(y, y);
 		x = _mm256_mul_ps(x, y);
-		_mm256_store_ps(Dst+0, _mm256_unpacklo_ps(y, x));
-		_mm256_store_ps(Dst+8, _mm256_unpackhi_ps(y, x)); Dst += 16;
+		__m256 l = _mm256_unpacklo_ps(y, x);
+		__m256 h = _mm256_unpackhi_ps(y, x);
+		       x = _mm256_permute2f128_ps(l, h, 0x20);
+		       y = _mm256_permute2f128_ps(l, h, 0x31);
+		_mm256_store_ps(Dst+0, x);
+		_mm256_store_ps(Dst+8, y); Dst += 16;
 	}
 #elif defined(__SSE__)
 	for(n=0;n<N;n+=4) {
