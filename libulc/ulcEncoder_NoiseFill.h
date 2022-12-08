@@ -159,10 +159,20 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		//! NOTE: Do NOT compute Floor like in psychoacoustics. In here, we do
 		//! NOT want to increase the floor level when there isn't enough bands
 		//! to analyze, and just quantize it.
+		//! NOTE: We need at least 3 bands to extract the noise level from
+		//! or trying to form the average becomes ill-defined; a bandwidth
+		//! of a single frequency line does not contain enough information
+		//! to extract any meaningful "noise level" from, and having two
+		//! lines isn't much better (we could arguably use the minimum of
+		//! the two, but this adds complexity for very little improvement).
+		float NoiseLevel = LogNorm;
 		int FloorBw = (NoiseEnd >> RangeScaleFxp) - (NoiseBeg >> RangeScaleFxp);
-		int32_t Mask  = MaskSum / MaskSumW;
-		int32_t Floor = FloorSum / FloorBw;
-		LogNoiseFloor[n] = ((1+FloorToMaskRatio)*Floor - Mask)*InvLogScale + LogNorm;
+		if(FloorBw >= 3) {
+			int32_t Mask  = MaskSum  / MaskSumW;
+			int32_t Floor = FloorSum / FloorBw;
+			NoiseLevel += ((1+FloorToMaskRatio)*Floor - Mask) * InvLogScale;
+		}
+		LogNoiseFloor[n] = NoiseLevel;
 	}
 
 	//! Save the (approximate) exponent to use as a weight during noise calculations.
