@@ -135,7 +135,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				//! cause strange artifacts at higher frequencies, so we use the
 				//! theoretical number of bands that would be in that bandwidth.
 				int64_t Mask  = MaskSum / MaskSumW;
-				int64_t Floor = (int32_t)((((int64_t)FloorSum) << RangeScaleFxp) / (MaskEnd - MaskBeg));
+				int64_t Floor = ((int64_t)FloorSum << RangeScaleFxp) / (MaskEnd - MaskBeg);
 				MaskingNp[n] = (2*Mask - Floor)*InvLogScale + LogNorm;
 			}
 		}
