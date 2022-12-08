@@ -23,7 +23,7 @@
 //! The main difference is that we're extracting the noise
 //! level after masking with the tone level, rather than
 //! the other way around.
-static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *Dst, float *Src, int N) {
+static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *Dst, const float *Src, int N) {
 	//! Hopefully compilers apply loop peeling to the inner loops...
 	int i, n;
 	static const int Log2M = 8;
@@ -52,12 +52,16 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 #else
 	for(n=0;n<N;n++) {
 		//! Target:
-		//!  y = E^(0.5*x)
+		//!  y = Sqrt[E^x] = E^(0.5*x)
 		//! E^x = (1+x/m)^m | m->inf
 		//! We use an approximation here, since this value is only
 		//! used as a weight; hyper-exactness isn't important.
 		//! NOTE: The log value is pre-scaled by the weight, as we
 		//! only ever use the data this way.
+		//! NOTE: We use Sqrt[x] as the weight. Ideally, we would
+		//! use x^2, but because noise fill can span very wide bands
+		//! and isn't particularly precise, we are forced to use a
+		//! more 'diffuse' weighting method to smooth things over.
 		float x = *Src++;
 		float y = 1.0f + x*(0.5f / (1 << Log2M));
 		for(i=0;i<Log2M;i++) y *= y;
@@ -69,6 +73,16 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz, const float *FreqWeightTable) {
 	int n;
 	float v;
+
+	//! Ratio of noise-masks-tone masking.
+	//! In basic terms: This controls how much we rely on the floor
+	//! calculation, relative to the "tone" (peak) calculation.
+	//! Setting this too high (ie. relying too much on the noise
+	//! floor) can give bad results, as this won't correctly counter
+	//! for tones in the masking band, but setting it too low will
+	//! pick up too many artifacts and will require manipulation of
+	//! the energy below 1kHz.
+	static const int FloorToMaskRatio = 2;
 
 	//! DCT+DST -> Pseudo-DFT
 	N /= 2;
@@ -92,8 +106,6 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	}
 
 	//! Normalize the energy and convert to fixed-point
-	//! NOTE: Protect everything below 1kHz by setting the noise amplitude to the minimum.
-	//! Having noise there is a VERY bad idea, and WILL lead to very objectionable distortion.
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
 	float LogScale = 0x1.715476p27f / N;
 	uint32_t *Weight   = (uint32_t*)Data;
@@ -101,12 +113,17 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	for(n=0;n<N;n++) {
 		v = Data[n] * Norm;
 		float vw = v;
-		float ve = v * (1.0f-FreqWeightTable[n]);
+		float ve = v;
+#if 0 //! Setting to 1 will disable noise fill below 1kHz. Not actually used anymore, though.
+		      ve = ve - ve*FreqWeightTable[n]; //! <- Should turn into a FMA variant on supported systems
+#else
+		(void)FreqWeightTable;
+#endif
 		Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 		EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 	}
 	float LogNorm     = 0x1.62E430p-1f - 0.5f*logf(Norm); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale])
-	float InvLogScale = 0x1.62E430p-29f * N;
+	float InvLogScale = 0x1.62E430p-29f * N * (1.0f / FloorToMaskRatio);
 
 	//! Extract the noise floor level in each line's noise bandwidth
 	//! NOTE: We write to Data+N, because we then need to store 2*N
@@ -139,10 +156,13 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		Bw = New - Bw;
 
 		//! Extract level
+		//! NOTE: Do NOT compute Floor like in psychoacoustics. In here, we do
+		//! NOT want to increase the floor level when there isn't enough bands
+		//! to analyze, and just quantize it.
 		int FloorBw = (NoiseEnd >> RangeScaleFxp) - (NoiseBeg >> RangeScaleFxp);
 		int32_t Mask  = MaskSum / MaskSumW;
 		int32_t Floor = FloorSum / FloorBw;
-		LogNoiseFloor[n] = (2*Floor - Mask)*InvLogScale + LogNorm;
+		LogNoiseFloor[n] = ((1+FloorToMaskRatio)*Floor - Mask)*InvLogScale + LogNorm;
 	}
 
 	//! Save the (approximate) exponent to use as a weight during noise calculations.
@@ -218,8 +238,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Data, int Band, 
 
 		//! Convert to linear units
 		Amplitude = expf(Amplitude);
-		Decay     = expf(Decay);
-		if(Decay > 1.0f) Decay = 1.0f; //! <- Safety
+		Decay     = (Decay < 0.0f) ? expf(Decay) : 1.0f; //! <- Ensure E^LogDecay is <= 1.0
 	}
 
 	//! Quantize amplitude and decay
@@ -228,6 +247,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Data, int Band, 
 	//! a 4bit amplitude instead of 3bit like "normal" noise fill does
 	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*4.0f, 1 + 0xF);
 	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p19f); //! (1-Decay) * 2^19
+	if(!NoiseDecay) return; //! <- On immediate falloff, disable fill
 	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
