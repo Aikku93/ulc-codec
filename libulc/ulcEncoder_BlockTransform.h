@@ -258,7 +258,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					float Abs2 = Re2 + Im2;
 #endif
 					if(AbsRe < 0.5f*ULC_COEF_EPS) {
-						BufferIndex[n] = -0x1.0p126f;
+						BufferIndex[n] = -INFINITY;
 					} else {
 						//! We use Re*Abs^2 here, not as a tradeoff, but because
 						//! both weights are important: Re is needed to select
@@ -340,12 +340,14 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		//! NOTE: No need to split this section into subblock handling.
 		//! All the coefficients and their levels are in order relative
 		//! to that of the output of psychoacoustics.
+		//! NOTE: Because we stored out-of-range values as -INFINITY,
+		//! we can do simple arithmetic on them without affecting things.
 		for(Chan=0;Chan<nChan;Chan++) {
 			for(n=0;n<BlockSize;n++) {
 				float ValNp = BufferIndex[n];
-				if(ValNp != -0x1.0p126f) {
-					BufferIndex[n] = ValNp - MaskingNp[n/2] - 0x1.62E430p0f*Chan; //! 0x1.62E430p0 = Log[0.5^2]
-				}
+				//if(ValNp != -INFINITY) {
+					BufferIndex[n] = ValNp - (MaskingNp[n/2] + 0x1.62E430p0f*(Chan&1)); //! -0x1.62E430p0 = Log[0.5^2]
+				//}
 			}
 			BufferIndex += BlockSize;
 		}
