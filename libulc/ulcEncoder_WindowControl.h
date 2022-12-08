@@ -111,7 +111,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! integrate them separately over each segment.
 	{
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.0A2B24p3f / BlockSize); //! -72dB/block (Log[2^-12])
+		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D6p7f / RateHz); //! -1.51dB/ms (1000 * Log[2^-0.25])
 		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D6p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
 		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D6p5f / RateHz); //! -0.38dB/ms (1000 * Log[2^-0.0625])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
