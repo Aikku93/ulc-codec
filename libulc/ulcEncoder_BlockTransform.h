@@ -235,6 +235,16 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					OverlapSize
 				);
 
+				//! Get the total energy of this subblock, so as to normalize
+				//! the final weight. This reduces dropouts on transients.
+				//! NOTE: Because the MDCT/MDST spectrum has not been normalized
+				//! yet, the coefficients should be divided by SubBlockSize.
+				float LogSubBlockEnergy = 0.0f;
+				for(n=0;n<SubBlockSize;n++) {
+					LogSubBlockEnergy += SQR(BufferMDCT[n]) + SQR(BufferMDST[n]);
+				}
+				LogSubBlockEnergy = logf(0x1.0p-127f + LogSubBlockEnergy/SQR(SubBlockSize));
+
 				//! Normalize the spectra, and then accumulate the
 				//! coefficients for psychoacoustic analysis.
 				//! MDCT is treated as the Real part of a DFT,
@@ -269,7 +279,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_PSYCHOACOUSTICS
 						Level *= Abs2;
 #endif
-						BufferIndex[n] = logf(Level);
+						BufferIndex[n] = logf(Level) - LogSubBlockEnergy;
 						nNzCoef++;
 					}
 #if ULC_USE_NOISE_CODING
