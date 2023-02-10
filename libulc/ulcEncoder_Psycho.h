@@ -30,7 +30,7 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 			//! NOTE: We "protect" everything below 1kHz by forcing the
 			//! masking calculations to rely only on the floor level.
 			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
-			*Dst++ = (x > 0.0f) ? expf(-SQR(x)) : 1.0f; //! If below 1kHz (x < 0), clip (E^0 == 1.0)
+			*Dst++ = (x > 0.0f) ? expf(-2.0f*SQR(x)) : 1.0f; //! If below 1kHz (x < 0), clip (E^0 == 1.0)
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
 }
@@ -61,12 +61,12 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			//! Get the window bandwidth scaling constants
 			int RangeScaleFxp = 16;
 			int LoRangeScale; {
-				float s = (2*21000.0f) / RateHz;
+				float s = (2*20000.0f) / RateHz;
 				if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
 				LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
 			}
 			int HiRangeScale; {
-				float s = RateHz / (2*16000.0f);
+				float s = RateHz / (2*15000.0f);
 				if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
 				HiRangeScale = (int)ceilf((1<<RangeScaleFxp) * s);
 			}
