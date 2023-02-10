@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -54,8 +54,8 @@ ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
 	//! the MDCT matrix. Therefore, we use a bias of 5
 	//! in the syntax to allow for a full range (that is
 	//! to say: 7^2 * 2^-5 = 1.53125, 1.53125 >= 4/Pi).
-	//! We then round this off to the nearest integer.
-	int q = (int)lrintf(5.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	//! We then round this up to the nearest integer.
+	int q = (int)ceilf(5.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5;
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -230,8 +230,8 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 		}
 
 		//! Level out of range in this quantizer zone?
-		const float MaxRange = 7.0f / 2.0f;
-		if(NewMax >= NewMin*MaxRange) {
+		const float MaxRange = 7.0f;
+		if(NewMax > NewMin*MaxRange) {
 			//! Write/update the quantizer
 			int qi = Block_Encode_BuildQuantizer(QuantMax);
 			if(qi != PrevQuant) {
