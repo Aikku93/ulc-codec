@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -55,9 +55,9 @@
 //!  -TransientFilter[] must be 3 elements in size. Initialize with 0.
 //!   Internal layout is:
 //!   {
-//!     float EnvGain; //! Gain envelope tap
-//!     float EnvAtt;  //! Attack envelope tap
-//!     float EnvRel;  //! Release envelope tap
+//!     float EnvGainHP; //! Gain envelope tap for HP filter
+//!     float EnvGainBP; //! Gain envelope tap for BP filter
+//!     float EnvPost;   //! Post-echo-compensated gain tap
 //!   }
 //!  -TmpBuffer[] must be BlockSize*2 elements in size.
 #pragma GCC push_options
@@ -73,13 +73,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 ) {
 	int n, Chan;
 
-	//! Extract the energy of a highpass and bandpass filter,
-	//! which will later be combined as a geometric mean.
-	//! The filters are 90deg out of phase w.r.t. one another
-	//! such that multiplying them together should not result
-	//! in beating artifacts, allowing cleaner extraction of
-	//! the transient signal ("mid" band modulated by the
-	//! higher-energy/high-frequency band).
+	//! Extract the energy of a highpass and bandpass filter
 	//! Transfer functions:
 	//!  H(z) = -z^-1 + 2 - z^1 (Highpass; Gain = 4.0)
 	//!  H(z) = z^1 - z^-1      (Bandpass; Gain = 2.0)
@@ -107,45 +101,42 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		}
 	}
 
-	//! Model the attack and release envelopes, then
-	//! integrate them separately over each segment.
+	//! Model the energy curve and integrate it over each segment
 	{
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGain = TransientFilter[0], GainRate = expf(-0x1.5A92D6p2f / RateHz); //! -1.51dB/ms (1000 * Log[2^-0.25])
-		float EnvAtt  = TransientFilter[1], AttRate  = expf(-0x1.5A92D6p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
-		float EnvRel  = TransientFilter[2], RelRate  = expf(-0x1.5A92D6p5f / RateHz); //! -0.38dB/ms (1000 * Log[2^-0.0625])
+		float EnvGainHP = TransientFilter[0], GainHPRate = expf(-0x1.5A92D6p2f / RateHz); //! -1.51dB/ms (1000 * Log[2^-0.25])
+		float EnvGainBP = TransientFilter[1], GainBPRate = expf(-0x1.5A92D6p2f / RateHz); //! -1.51dB/ms (1000 * Log[2^-0.25])
+		float EnvPost   = TransientFilter[2], PostRate   = expf(-0x1.5A92D6p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
 			//! Swap out the old "new" data, and clear the new "new" data
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
-			*Dst = (struct ULC_TransientData_t){.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
+			*Dst = (struct ULC_TransientData_t){.Sum = 0.0f, .SumW = 0.0f};
 			n = BinSize; do {
-				//! Accumulate and subtract the "drift" bias
-				//! (ie. the amplitude at which everything is
-				//! happening around) to "unbias" the signal
-				//! and center it about 0 for attack/release.
+				//! Accumulate and subtract 'drift' from the HP and BP
+				//! signals to "unbias" the data for the next steps.
+				//! This essentially 'enhances' energy differences.
 				//! NOTE: This calculation must be done in the amplitude
 				//! domain, as the power domain behaves too erratically.
-				float v = (sqrtf(Src[0]) + sqrtf(Src[1])) - EnvGain;
-				EnvGain += v * (1.0f-GainRate);
-				v = SQR(v);
+				float vHP = sqrtf(Src[0] * SQR(1.0f / 4.0f)) - EnvGainHP;
+				float vBP = sqrtf(Src[1] * SQR(1.0f / 2.0f)) - EnvGainBP;
+				EnvGainHP += vHP * (1.0f-GainHPRate);
+				EnvGainBP += vBP * (1.0f-GainBPRate);
 				Src += 2;
 
-				//! Update attack/release envelopes and integrate,
-				//! NOTE: The difference between Attack/Release is used as an extra weight.
-				//! NOTE: Envelope attack (fade-in) is proportional to
-				//! the signal level, whereas envelope decay (fade-out)
-				//! follows a constant falloff.
-				EnvAtt *= AttRate; if(v > 0.0f) EnvAtt += v*(1.0f-AttRate);
-				EnvRel *= RelRate; if(v < 0.0f) EnvRel -= v*(1.0f-RelRate);
-				Dst->Att += SQR(EnvAtt), Dst->AttW += EnvAtt*EnvGain;
-				Dst->Rel += SQR(EnvRel), Dst->RelW += EnvRel*EnvGain;
+				//! Update the post-echo-compensating energy curve, and
+				//! store the updated sum for this segment. Note that
+				//! the weight is multiplied by the current gain level;
+				//! this ensures that sharp transitions are captured.
+				float v = SQR(vHP + vBP) - EnvPost;
+				EnvPost += v * (1.0f-PostRate);
+				Dst->Sum += SQR(EnvPost), Dst->SumW += EnvPost*(EnvGainHP + EnvGainBP);
 			} while(--n);
 		} while(Dst++, --i);
-		TransientFilter[0] = EnvGain;
-		TransientFilter[1] = EnvAtt;
-		TransientFilter[2] = EnvRel;
+		TransientFilter[0] = EnvGainHP;
+		TransientFilter[1] = EnvGainBP;
+		TransientFilter[2] = EnvPost;
 	}
 }
 #pragma GCC pop_options
@@ -194,31 +185,20 @@ static inline int Block_Transform_GetWindowCtrl(
 			int MaxSegment = 0;
 			float AvgRatio = 0.0f, MaxRatio = -1000.0f;
 			for(Segment=0;Segment<nSegments;Segment++) {
-				struct ULC_TransientData_t L = {.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
-				struct ULC_TransientData_t R = {.Att = 0.0f, .AttW = 0.0f, .Rel = 0.0f, .RelW = 0.0f};
+				struct ULC_TransientData_t L = {.Sum = 0.0f, .SumW = 0.0f};
+				struct ULC_TransientData_t R = {.Sum = 0.0f, .SumW = 0.0f};
 				const struct ULC_TransientData_t *Src = TransientBuffer + Segment*SegmentSize;
 				for(n=0;n<SegmentSize;n++) {
-#define ADDSEGMENT(Dst, Src) Dst.Att += Src.Att, Dst.AttW += Src.AttW, Dst.Rel += Src.Rel, Dst.RelW += Src.RelW
+#define ADDSEGMENT(Dst, Src) Dst.Sum += Src.Sum, Dst.SumW += Src.SumW
 					ADDSEGMENT(L, Src[n-SegmentSize]);
 					ADDSEGMENT(R, Src[n]);
 #undef ADDSEGMENT
 				}
-				L.Att = L.Att ? logf(L.Att/L.AttW) : (-100.0f); //! -100 = Placeholder for Log[0]
-				L.Rel = L.Rel ? logf(L.Rel/L.RelW) : (-100.0f);
-				R.Att = R.Att ? logf(R.Att/R.AttW) : (-100.0f);
-				R.Rel = R.Rel ? logf(R.Rel/R.RelW) : (-100.0f);
+				L.Sum = L.Sum ? logf(L.Sum / L.SumW) : (-100.0f); //! -100 = Placeholder for Log[0]
+				R.Sum = R.Sum ? logf(R.Sum / R.SumW) : (-100.0f);
 
 				//! Get final energy ratio
-				//! Note that:
-				//!   (R.Att-R.Rel) - (L.Att-L.Rel) (Eq 1)
-				//!  =(R.Att-L.Att) - (R.Rel-L.Rel) (Eq 2)
-				//! This allows two mathematically-equivalent
-				//! interpretations, depending on the viewpoint:
-				//!  Eq 1: Treat "Release" as a sort of 'mask', and apply it
-				//!        to "Attack" prior to the energy ratio calculation.
-				//!  Eq 2: The energy ratio is equal to the jump in "Attack"
-				//!        energy, relative to the jump in "Release" energy.
-				float Ratio = ABS((R.Att - R.Rel) - (L.Att - L.Rel));
+				float Ratio = ABS(R.Sum - L.Sum);
 				AvgRatio += Ratio;
 				if(Ratio > MaxRatio) MaxSegment = Segment, MaxRatio = Ratio;
 			}
@@ -254,7 +234,7 @@ static inline int Block_Transform_GetWindowCtrl(
 	//! Determine overlap size from the ratio
 	//! NOTE: Log2SubBlockSize was pre-incremented earlier, so account for this here.
 	TransientRatio *= 0x1.715476p0f; //! 0x1.715476p0 = 1/Log[2] for change of base
-	int OverlapScale = (TransientRatio < 0.5f) ? 0 : (TransientRatio >= 6.5f) ? 7 : (int)(TransientRatio+0.5f);
+	int OverlapScale = (TransientRatio < 0.5f) ? 0 : (TransientRatio >= 6.5f) ? 7 : lrintf(TransientRatio);
 	if(Log2SubBlockSize-OverlapScale < 5+1) OverlapScale = Log2SubBlockSize - (5+1); //! Minimum 32-sample overlap
 
 	//! Return the combined overlap+window switching parameters

@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -42,7 +42,7 @@
 //!  -The global state data must be set before calling ULC_EncoderState_Init()
 //!  -{RateHz, nChan, BlockSize, ModulationWindow} must not change after calling ULC_EncoderState_Init()
 struct ULC_TransientData_t {
-	float Att, AttW, Rel, RelW;
+	float Sum, SumW;
 };
 struct ULC_EncoderState_t {
 	//! Global state (do not change after initialization)
