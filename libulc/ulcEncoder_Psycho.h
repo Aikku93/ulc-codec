@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -18,6 +18,9 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 
 	//! Compute window for all subblock sizes in a sequential window
 	//! This should improve cache locality vs a single large window.
+	//! NOTE: This table is calculated in square root format, because
+	//! that is used by some other weight metrics; psychoacoustics
+	//! here will square the values prior to using them.
 	int n, SubBlockSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
 	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.BA18AAp2f; //! -0x1.BA18AAp2 = Log[1/1000]
 	do {
@@ -30,7 +33,7 @@ static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(
 			//! NOTE: We "protect" everything below 1kHz by forcing the
 			//! masking calculations to rely only on the floor level.
 			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
-			*Dst++ = (x > 0.0f) ? expf(-SQR(x)) : 1.0f; //! If below 1kHz (x < 0), clip (E^0 == 1.0)
+			*Dst++ = (x > 0.0f) ? expf(-0.5f*SQR(x)) : 1.0f; //! If below 1kHz (x < 0), clip (E^0 == 1.0)
 		}
 	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
 }
@@ -92,7 +95,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				v = BufferAmp2[n] * Norm;
 				float ve = v;
 				float vw = 0x1.0p16f * sqrtf(v);
-				      vw = vw + (0x1.FFFFFCp31f-vw)*ThisFreqWeightTable[n];
+				      vw = vw + (0x1.FFFFFCp31f-vw)*SQR(ThisFreqWeightTable[n]);
 				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
