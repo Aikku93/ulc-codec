@@ -23,7 +23,19 @@
 //! The main difference is that we're extracting the noise
 //! level after masking with the tone level, rather than
 //! the other way around.
-static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *Dst, const float *Src, int N) {
+//! NOTE: The purpose of applying an extra weight here is
+//! so that noise will be less likely to generate in the
+//! lower frequencies if it shouldn't be there (eg. when
+//! using extremely low bit rates, if there is noise in
+//! the higher frequencies but a noise run starts at a
+//! low frequency, then the lower frequencies will take
+//! priority, rather than flooding the spectrum).
+static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
+	      float *Dst,
+	const float *Src,
+	const float *Weights,
+	int N
+) {
 	//! Hopefully compilers apply loop peeling to the inner loops...
 	int i, n;
 	static const int Log2M = 8;
@@ -32,6 +44,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 		__m256 x = _mm256_load_ps(Src); Src += 8;
 		__m256 y = _mm256_add_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(x, _mm256_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm256_mul_ps(y, y);
+		y = _mm256_mul_ps(y, _mm256_load_ps(Weights)); Weights += 8;
 		x = _mm256_mul_ps(x, y);
 		__m256 l = _mm256_unpacklo_ps(y, x);
 		__m256 h = _mm256_unpackhi_ps(y, x);
@@ -45,6 +58,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 		__m128 x = _mm_load_ps(Src); Src += 4;
 		__m128 y = _mm_add_ps(_mm_set1_ps(1.0f), _mm_mul_ps(x, _mm_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm_mul_ps(y, y);
+		y = _mm_mul_ps(y, _mm_load_ps(Weights)); Weights += 4;
 		x = _mm_mul_ps(x, y);
 		_mm_store_ps(Dst+0, _mm_unpacklo_ps(y, x));
 		_mm_store_ps(Dst+4, _mm_unpackhi_ps(y, x)); Dst += 8;
@@ -65,6 +79,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(float *D
 		float x = *Src++;
 		float y = 1.0f + x*(0.5f / (1 << Log2M));
 		for(i=0;i<Log2M;i++) y *= y;
+		y *= Weights[n];
 		*Dst++ = y;
 		*Dst++ = x * y;
 	}
@@ -114,11 +129,6 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		v = Data[n] * Norm;
 		float vw = v;
 		float ve = v;
-#if 0 //! Setting to 1 will disable noise fill below 1kHz. Not actually used anymore, though.
-		      ve = ve - ve*FreqWeightTable[n]; //! <- Should turn into a FMA variant on supported systems
-#else
-		(void)FreqWeightTable;
-#endif
 		Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 		EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 	}
@@ -178,7 +188,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	//! Save the (approximate) exponent to use as a weight during noise calculations.
 	//! This operation is factored out so that it can be efficiently vectorized.
 	//! Note that this function also interleaves {Weight,Weight*Data} as output.
-	Block_Transform_CalculateNoiseLogSpectrumWithWeights(Data, LogNoiseFloor, N);
+	Block_Transform_CalculateNoiseLogSpectrumWithWeights(Data, LogNoiseFloor, FreqWeightTable, N);
 }
 
 /**************************************/
