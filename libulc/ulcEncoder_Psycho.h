@@ -92,10 +92,13 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			float LogScale = 0x1.715476p27f / SubBlockSize; //! 2^32/Log[2^32] / N
 			const float *ThisFreqWeightTable = FreqWeightTable + SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
 			for(n=0;n<SubBlockSize;n++) {
+				//! NOTE: At ~1kHz, we decrease the masking level by up to ~6dB.
+				//! Also note that it is VERY important to use the amplitude as
+				//! the weight rather than the power, or the masking estimates
+				//! become way too low, and brightness degrades.
 				v = BufferAmp2[n] * Norm;
-				float ve = v;
-				float vw = 0x1.0p16f * sqrtf(v);
-				      vw = vw + (0x1.FFFFFCp31f-vw)*SQR(ThisFreqWeightTable[n]);
+				float ve = v * (1.0f - 0.5f*ThisFreqWeightTable[n]);
+				float vw = 0x1.0p16f * sqrtf(ve);
 				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
