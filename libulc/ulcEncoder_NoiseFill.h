@@ -42,7 +42,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 #if defined(__AVX__)
 	for(n=0;n<N;n+=8) {
 		__m256 x = _mm256_load_ps(Src); Src += 8;
-		__m256 y = _mm256_add_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(x, _mm256_set1_ps(2.0f / (1 << Log2M))));
+		__m256 y = _mm256_add_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(x, _mm256_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm256_mul_ps(y, y);
 		y = _mm256_mul_ps(y, _mm256_add_ps(_mm256_set1_ps(0.1f), _mm256_load_ps(Weights))); Weights += 8;
 		x = _mm256_mul_ps(x, y);
@@ -56,7 +56,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 #elif defined(__SSE__)
 	for(n=0;n<N;n+=4) {
 		__m128 x = _mm_load_ps(Src); Src += 4;
-		__m128 y = _mm_add_ps(_mm_set1_ps(1.0f), _mm_mul_ps(x, _mm_set1_ps(2.0f / (1 << Log2M))));
+		__m128 y = _mm_add_ps(_mm_set1_ps(1.0f), _mm_mul_ps(x, _mm_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm_mul_ps(y, y);
 		y = _mm_mul_ps(y, _mm_add_ps(_mm_set1_ps(0.1f), _mm_load_ps(Weights))); Weights += 4;
 		x = _mm_mul_ps(x, y);
@@ -66,14 +66,18 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 #else
 	for(n=0;n<N;n++) {
 		//! Target:
-		//!  y = (E^x)^2 = E^(2.0*x)
+		//!  y = (E^x)^2 = E^(0.5*x)
 		//! E^x = (1+x/m)^m | m->inf
 		//! We use an approximation here, since this value is only
 		//! used as a weight; hyper-exactness isn't important.
 		//! NOTE: The log value is pre-scaled by the weight, as we
 		//! only ever use the data this way.
+		//! NOTE: We use Sqrt[x] as the weight. Ideally, we would
+		//! use x^2, but because noise fill can span very wide bands
+		//! and isn't particularly precise, we are forced to use a
+		//! more 'diffuse' weighting method to smooth things over.
 		float x = *Src++;
-		float y = 1.0f + x*(2.0f / (1 << Log2M));
+		float y = 1.0f + x*(0.5f / (1 << Log2M));
 		for(i=0;i<Log2M;i++) y *= y;
 		y *= 0.1f + Weights[n];
 		*Dst++ = y;
