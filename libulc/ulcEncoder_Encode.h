@@ -100,7 +100,12 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		if(ABS(Qn) < 2) Qn = (Coef[CurIdx] < 0) ? (-2) : (+2);
 #endif
 
-		//! Code the zero runs
+		//! Code the zero runs, and get coefficient energy loss.
+		//! The re-shaping basically accounts for how much energy we
+		//! lose when coding zeros and/or noise, and adjusts the
+		//! coefficient we code accordingly.
+		float LossSum  = 0.0f;
+		float LossSumW = 0.0f;
 		int n, v, zR = CurIdx - NextCodedIdx;
 		while(zR) {
 			//! If we plan to skip two or less coefficients, try to encode
@@ -174,6 +179,14 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
 					Block_Encode_WriteNybble(v>>0, DstBuffer, Size);
 				}
+
+				//! Finally, accumulate this run's energy loss
+				int k;
+				for(k=0;k<n;k++) {
+					float v = Coef[NextCodedIdx+k];
+					LossSum  += SQR(v);
+					LossSumW += ABS(v);
+				}
 #if ULC_USE_NOISE_CODING
 			}
 #endif
@@ -183,6 +196,14 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		}
 
 		//! -7h..-2h, +2h..+7h: Normal coefficient
+		{
+			//! Sometimes, the math fails and we get an invalid coefficient.
+			//! In these cases, just go with the original value.
+			float Value = Coef[CurIdx];
+			if(LossSum) Value += (LossSum/LossSumW) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
+			int TestQn = ULC_CompandedQuantizeCoefficient(Value*Quant, 0x7);
+			if(ABS(TestQn) > 1) Qn = TestQn;
+		}
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
 
