@@ -24,7 +24,7 @@ ARCHCROSS :=
 ARCHFLAGS := -msse -msse2 -mavx -mavx2 -mfma
 
 CCFLAGS := $(ARCHFLAGS) -fno-math-errno -ffast-math -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
-LDFLAGS := -static
+LDFLAGS := -static -s
 
 #----------------------------#
 # Tools
@@ -43,8 +43,8 @@ DECODETOOL_SRC := $(filter-out $(DECODETOOL_SRCDIR)/ulcEncodeTool.c, $(wildcard 
 COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(notdir $(COMMON_SRC:.c=.o)))
 ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(ENCODETOOL_SRC:.c=.o)))
 DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.c=.o)))
-ENCODETOOL_EXE := ulcencodetool.exe # Change this for other platforms
-DECODETOOL_EXE := ulcdecodetool.exe # Change this for other platforms
+ENCODETOOL_EXE := ulcencodetool
+DECODETOOL_EXE := ulcdecodetool
 
 DFILES := $(wildcard $(OBJDIR)/*.d)
 
