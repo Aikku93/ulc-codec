@@ -129,7 +129,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! store the updated sum for this segment. Note that
 				//! the weight is multiplied by the current gain level;
 				//! this ensures that sharp transitions are captured.
-				float v = SQR(vHP + vBP) - EnvPost;
+				float v = SQR(vHP) + SQR(vBP) - EnvPost;
 				EnvPost += v * (1.0f-PostRate);
 				Dst->Sum += SQR(EnvPost), Dst->SumW += EnvPost*(EnvGainHP + EnvGainBP);
 			} while(--n);
