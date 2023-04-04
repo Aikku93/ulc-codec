@@ -196,13 +196,14 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		}
 
 		//! -7h..-2h, +2h..+7h: Normal coefficient
-		{
-			//! Sometimes, the math fails and we get an invalid coefficient.
-			//! In these cases, just go with the original value.
+		if(LossSum) {
+			//! If we had any energy loss, account for it now.
+			//! Because we can only ever /increase/ the energy, then
+			//! the new coefficient will always be valid if the old
+			//! one was valid, too.
 			float Value = Coef[CurIdx];
-			if(LossSum) Value += (LossSum/LossSumW) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
-			int TestQn = ULC_CompandedQuantizeCoefficient(Value*Quant, 0x7);
-			if(ABS(TestQn) > 1) Qn = TestQn;
+			Value += (LossSum/LossSumW) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
+			Qn = ULC_CompandedQuantizeCoefficient(Value*Quant, 0x7);
 		}
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
