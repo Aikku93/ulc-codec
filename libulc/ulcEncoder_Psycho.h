@@ -64,12 +64,13 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			//! Get the window bandwidth scaling constants
 			int RangeScaleFxp = 16;
 			int LoRangeScale; {
-				float s = (2*20000.0f) / RateHz;
+				//! This magic number makes no sense, but sounds fine...
+				float s = RateHz * (1.0f / (2*24000.0f));
 				if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
 				LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
 			}
 			int HiRangeScale; {
-				float s = RateHz / (2*15000.0f);
+				float s = RateHz *(1.0f / (2*18000.0f));
 				if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
 				HiRangeScale = (int)ceilf((1<<RangeScaleFxp) * s);
 			}
