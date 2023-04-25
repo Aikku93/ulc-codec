@@ -79,6 +79,17 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	int          *Size
 ) {
 	//! Write the coefficients
+	//! The re-shaping basically accounts for how much energy we
+	//! lose when coding zeros, and adjusts the coefficients we
+	//! code accordingly. This isn't too important for larger
+	//! [sub-]block sizes, but greatly improves quality when used
+	//! on smaller sizes (eg. BlockSize = 512).
+	//! I've tested keeping the running some going throughout the
+	//! entire subblock being encoded, but this resulted in slightly
+	//! worse output quality, so we only keep a running sum going
+	//! for each quantizer zone instead.
+	float LossSum  = 0.0f;
+	float LossSumW = 0.0f;
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
@@ -101,11 +112,6 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 #endif
 
 		//! Code the zero runs, and get coefficient energy loss.
-		//! The re-shaping basically accounts for how much energy we
-		//! lose when coding zeros and/or noise, and adjusts the
-		//! coefficient we code accordingly.
-		float LossSum  = 0.0f;
-		float LossSumW = 0.0f;
 		int n, v, zR = CurIdx - NextCodedIdx;
 		while(zR) {
 			//! If we plan to skip two or less coefficients, try to encode
@@ -204,6 +210,15 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			float Value = Coef[CurIdx];
 			Value += (LossSum/LossSumW) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
 			Qn = ULC_CompandedQuantizeCoefficient(Value*Quant, 0x7);
+
+			//! Now that we've coded a coefficient, re-set the energy loss sum.
+			//! NOTE: If we overshot in the prior calculation of Qn, then the sum
+			//! will start at that amount of overshoot. This is intentional; when
+			//! testing a negative sum, this resulted in poorer output quality,
+			//! even if the coefficient wasn't amplified when the sum was < 0.0.
+			float v = Qn*ABS(Qn)/Quant;
+			LossSum  = SQR(Value - v);
+			LossSumW = ABS(Value - v);
 		}
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
