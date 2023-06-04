@@ -108,15 +108,19 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	if(Norm == 0.0f) return;
 
 	//! Get the window bandwidth scaling constants
+	//! NOTE: These constants seem to be independent of RateHz, unlike in the psymodel.
+	(void)RateHz;
 	int RangeScaleFxp = 16;
 	int LoRangeScale; {
-		float s = RateHz * (1.0f / (2*32000.0f));
-		if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
+		//float s = RateHz * (1.0f / (2*32000.0f));
+		//if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
+		float s = 0.6890625f;
 		LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
 	}
 	int HiRangeScale; {
-		float s = RateHz * (1.0f / (2*20000.0f));
-		if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
+		//float s = RateHz * (1.0f / (2*20000.0f));
+		//if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
+		float s = 1.1025f;
 		HiRangeScale = (int)ceilf((1<<RangeScaleFxp) * s);
 	}
 
