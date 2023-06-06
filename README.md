@@ -17,9 +17,9 @@ The encoding/decoding tools work with WAV files for simplicity, and to avoid ext
 Additionally, the core encoding/decoding routines can theoretically work with any data they are fed, allowing for easier integration with non-file-based blocks of audio in the future.
 
 ### Encoding
-```ulcencodetool Input.wav Output.ulc RateKbps[,AvgComplexity]|-Quality [-nc:1] [-blocksize:2048]```
+```ulcencodetool Input.wav Output.ulc RateKbps[,AvgComplexity]|-Quality [-blocksize:2048]```
 
-This will take ```Input.wav``` and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps``` (with ```AvgComplexity``` being passed, this uses ABR mode); alternatively, passing a negative value between -1 and -100 will encode in VBR mode (```-1``` corresponds to Quality=1, ```-100``` corresponds to Quality=100). ```-nc:X``` sets the number of channels, ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block). The input file must be 8-bit, 16-bit, 24-bit, or 32-bit float.
+This will take ```Input.wav``` and encode it into the output file ```Output.ulc```, at a coding rate of ```RateKbps``` (with ```AvgComplexity``` being passed, this uses ABR mode); alternatively, passing a negative value between -1 and -100 will encode in VBR mode (```-1``` corresponds to Quality=1, ```-100``` corresponds to Quality=100). ```-blocksize:X``` sets the size of each block (ie. the number of coefficients per block). The input file must be 8-bit, 16-bit, 24-bit, or 32-bit float.
 
 Encoding in any mode will display the actual average bitrate, maximum bitrate, and an 'average complexity' parameter. The latter doesn't have much real meaning (perhaps 'how difficult the file is to encode', or 'Quality parameter needed to achieve full transparency'), but can be passed to the encoder in ABR mode to achieve a desired average bitrate.
 
