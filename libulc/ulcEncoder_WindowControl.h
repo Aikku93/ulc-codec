@@ -104,9 +104,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	//! Model the energy curve and integrate it over each segment
 	{
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGainHP = TransientFilter[0], GainHPRate = expf(-0x1.5A92D6p2f / RateHz); //! -1.51dB/ms (1000 * Log[2^-0.25])
-		float EnvGainBP = TransientFilter[1], GainBPRate = expf(-0x1.5A92D6p2f / RateHz); //! -1.51dB/ms (1000 * Log[2^-0.25])
-		float EnvPost   = TransientFilter[2], PostRate   = expf(-0x1.5A92D6p6f / RateHz); //! -0.75dB/ms (1000 * Log[2^-0.125])
+		float EnvGainHP = TransientFilter[0], GainHPRate = expf(-0x1.5A92D6p2f / RateHz); //! -0.047dB/ms (1000 * Log[2^-(1/128)])
+		float EnvGainBP = TransientFilter[1], GainBPRate = expf(-0x1.5A92D6p2f / RateHz); //! -0.047dB/ms (1000 * Log[2^-(1/128)])
+		float EnvPost   = TransientFilter[2], PostRate   = expf(-0x1.5A92D6p6f / RateHz); //! -0.753dB/ms (1000 * Log[2^-(1/8)])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
 		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
@@ -119,23 +119,21 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 				//! This essentially 'enhances' energy differences.
 				//! NOTE: This calculation must be done in the amplitude
 				//! domain, as the power domain behaves too erratically.
-				float vHP = sqrtf(Src[0] * SQR(1.0f / 4.0f)) - EnvGainHP;
-				float vBP = sqrtf(Src[1] * SQR(1.0f / 2.0f)) - EnvGainBP;
+				float vHP = sqrtf(Src[0]) - EnvGainHP;
+				float vBP = sqrtf(Src[1]) - EnvGainBP;
 				EnvGainHP += vHP * (1.0f-GainHPRate);
 				EnvGainBP += vBP * (1.0f-GainBPRate);
 				Src += 2;
 
 				//! Update the post-echo-compensating energy curve, and
-				//! store the updated sum for this segment. Note that
-				//! the energy level is weighted by the delta level;
-				//! this ensures that sharp transitions are captured.
+				//! store the updated sum for this segment.
 				//! NOTE: Delta HP and delta BP are cross-multiplied by
 				//! their respective gains to sort of 'normalize' with
 				//! respect to one another. This balances out their
 				//! weaknesses somewhat.
-				float v = SQR(vHP)*EnvGainBP + SQR(vBP)*EnvGainHP - EnvPost;
-				EnvPost += v * (1.0f-PostRate);
-				Dst->Sum += SQR(EnvPost), Dst->SumW += EnvPost*ABS(v);
+				float vPost = SQR(vHP*EnvGainBP) + SQR(vBP*EnvGainHP) - EnvPost;
+				EnvPost += vPost * (1.0f-PostRate);
+				Dst->Sum += EnvPost, Dst->SumW += (SQR(EnvGainBP) + SQR(EnvGainHP));
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGainHP;
