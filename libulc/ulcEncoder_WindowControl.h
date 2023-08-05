@@ -127,11 +127,15 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 
 				//! Update the post-echo-compensating energy curve, and
 				//! store the updated sum for this segment. Note that
-				//! the weight is multiplied by the current gain level;
+				//! the energy level is weighted by the delta level;
 				//! this ensures that sharp transitions are captured.
-				float v = SQR(vHP) + SQR(vBP) - EnvPost;
+				//! NOTE: Delta HP and delta BP are cross-multiplied by
+				//! their respective gains to sort of 'normalize' with
+				//! respect to one another. This balances out their
+				//! weaknesses somewhat.
+				float v = SQR(vHP)*EnvGainBP + SQR(vBP)*EnvGainHP - EnvPost;
 				EnvPost += v * (1.0f-PostRate);
-				Dst->Sum += SQR(EnvPost), Dst->SumW += EnvPost*(EnvGainHP + EnvGainBP);
+				Dst->Sum += SQR(EnvPost), Dst->SumW += EnvPost*ABS(v);
 			} while(--n);
 		} while(Dst++, --i);
 		TransientFilter[0] = EnvGainHP;
@@ -213,7 +217,7 @@ static inline int Block_Transform_GetWindowCtrl(
 			//! only do this if the transient is significant enough - when
 			//! it's not, increasing the window size will cause 'metallic'
 			//! artifacts around the transient, as well as post-echo.
-			if(MaxRatio-TransientRatio < 0x1.62E430p-2f) break; //! 0x1.62E430p-2 = Log[Sqrt[2]]
+			if(MaxRatio-TransientRatio < 0x1.62E430p-1f) break; //! 0x1.62E430p-1 = Log[2]
 
 			//! Set new decimation pattern + transient ratio, and continue
 			//! NOTE: Only try larger subblocks if the transient isn't too powerful,
