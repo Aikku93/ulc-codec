@@ -55,9 +55,9 @@
 //!  -TransientFilter[] must be 3 elements in size. Initialize with 0.
 //!   Internal layout is:
 //!   {
-//!     float EnvGainHP; //! Gain envelope tap for HP filter
-//!     float EnvGainBP; //! Gain envelope tap for BP filter
-//!     float EnvPost;   //! Post-echo-compensated gain tap
+//!     float EnvPostMaskHP;
+//!     float EnvPostMaskBP;
+//!     float EnvBlockMask;
 //!   }
 //!  -TmpBuffer[] must be BlockSize*2 elements in size.
 #pragma GCC push_options
@@ -102,43 +102,69 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	}
 
 	//! Model the energy curve and integrate it over each segment
+	//! NOTE: All rates were determined experimentally, based on what
+	//! resulted in the best sensitivity without excessive glitching.
 	{
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-		float EnvGainHP = TransientFilter[0], GainHPRate = expf(-0x1.5A92D6p2f / RateHz); //! -0.047dB/ms (1000 * Log[2^-(1/128)])
-		float EnvGainBP = TransientFilter[1], GainBPRate = expf(-0x1.5A92D6p2f / RateHz); //! -0.047dB/ms (1000 * Log[2^-(1/128)])
-		float EnvPost   = TransientFilter[2], PostRate   = expf(-0x1.5A92D6p6f / RateHz); //! -0.753dB/ms (1000 * Log[2^-(1/8)])
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
-		const float *Src = BufEnergy;
 		i = ULC_MAX_BLOCK_DECIMATION_FACTOR; do {
 			//! Swap out the old "new" data, and clear the new "new" data
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
 			*Dst = (struct ULC_TransientData_t){.Sum = 0.0f, .SumW = 0.0f};
-			n = BinSize; do {
-				//! Accumulate and subtract 'drift' from the HP and BP
-				//! signals to "unbias" the data for the next steps.
-				//! This essentially 'enhances' energy differences.
+
+			//! Smear the energy forwards in time to account for post-masking
+			//! Dev note: Closer to 0dB = Less sensitive
+			float EnvPostMaskHP = TransientFilter[0];
+			float EnvPostMaskBP = TransientFilter[1];
+			float EnvPostMaskHP_Rate = expf(-0x1.CC845Cp6f / RateHz); //! -1.0dB/ms (1000 * Log[10^(-0.2/20))])
+			float EnvPostMaskBP_Rate = expf(-0x1.9E771Ep6f / RateHz); //! -0.9dB/ms (1000 * Log[10^(-0.5/20))])
+			for(n=0;n<BinSize;n++) {
 				//! NOTE: This calculation must be done in the amplitude
 				//! domain, as the power domain behaves too erratically.
-				float vHP = sqrtf(Src[0]) - EnvGainHP;
-				float vBP = sqrtf(Src[1]) - EnvGainBP;
-				EnvGainHP += vHP * (1.0f-GainHPRate);
-				EnvGainBP += vBP * (1.0f-GainBPRate);
-				Src += 2;
+				float vHP = sqrtf(BufEnergy[n*2+0]), dHP = vHP - EnvPostMaskHP;
+				float vBP = sqrtf(BufEnergy[n*2+1]), dBP = vBP - EnvPostMaskBP;
+				EnvPostMaskHP += dHP * (1.0f-EnvPostMaskHP_Rate);
+				EnvPostMaskBP += dBP * (1.0f-EnvPostMaskBP_Rate);
+				BufEnergy[n*2+0] = EnvPostMaskHP;
+				BufEnergy[n*2+1] = EnvPostMaskBP;
 
-				//! Update the post-echo-compensating energy curve, and
-				//! store the updated sum for this segment.
-				//! NOTE: Delta HP and delta BP are cross-multiplied by
-				//! their respective gains to sort of 'normalize' with
-				//! respect to one another. This balances out their
-				//! weaknesses somewhat.
-				float vPost = SQR(vHP*EnvGainBP) + SQR(vBP*EnvGainHP) - EnvPost;
-				EnvPost += vPost * (1.0f-PostRate);
-				Dst->Sum += EnvPost, Dst->SumW += (SQR(EnvGainBP) + SQR(EnvGainHP));
-			} while(--n);
+			}
+			TransientFilter[0] = EnvPostMaskHP;
+			TransientFilter[1] = EnvPostMaskBP;
+
+			//! Now smear backwards to account for pre-masking, but take the
+			//! difference between post- and pre-masking to form the 'error'
+			//! Dev note: Closer to 0dB = More sensitive
+			float EnvPreMaskHP = EnvPostMaskHP;
+			float EnvPreMaskBP = EnvPostMaskBP;
+			float EnvPreMaskHP_Rate = expf(-0x1.CC845Cp7f / RateHz); //! -2.0dB/ms (1000 * Log[10^(-1.0/20)])
+			float EnvPreMaskBP_Rate = expf(-0x1.144F6Ap5f / RateHz); //! -0.3dB/ms (1000 * Log[10^(-1.0/20)])
+			for(n=BinSize-1;n>=0;n--) {
+				//! NOTE: Cross-multiply HP with BP energy and vice-versa
+				//! to normalize the levels with respect to one another
+				float vHP = BufEnergy[n*2+0], dHP = vHP - EnvPreMaskHP;
+				float vBP = BufEnergy[n*2+1], dBP = vBP - EnvPreMaskBP;
+				EnvPreMaskHP += dHP * (1.0f-EnvPreMaskHP_Rate);
+				EnvPreMaskBP += dBP * (1.0f-EnvPreMaskBP_Rate);
+				BufEnergy[n*2+0] = SQR(dHP*EnvPreMaskBP) + SQR(dBP*EnvPreMaskHP);
+			}
+
+			//! Finally, smooth the signal to account for the block size.
+			//! Larger blocks get less smoothing to capture changes more
+			//! easily, smaller blocks get more smoothing because they
+			//! don't need to capture smooth-ish changes.
+			float EnvBlockMask = TransientFilter[2];
+			float EnvBlockMask_Rate = expf(-0x1.1AF110p-6f * BlockSize / RateHz); //! -0.00015dB/ms*BlockSize (1000 * Log[10^(-0.00015/20)])
+			for(n=0;n<BinSize;n++) {
+				float vEnergy = BufEnergy[n*2+0], dEnergy = vEnergy - EnvBlockMask;
+				EnvBlockMask += dEnergy * (1.0f-EnvBlockMask_Rate);
+				Dst->Sum += SQR(EnvBlockMask), Dst->SumW += EnvBlockMask;
+			}
+			TransientFilter[2] = EnvBlockMask;
+
+			//! Move to next segment
+			BufEnergy += BinSize*2;
 		} while(Dst++, --i);
-		TransientFilter[0] = EnvGainHP;
-		TransientFilter[1] = EnvGainBP;
-		TransientFilter[2] = EnvPost;
 	}
 }
 #pragma GCC pop_options
