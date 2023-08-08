@@ -95,7 +95,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				//! become way too low, and brightness degrades.
 				v = BufferAmp2[n] * Norm;
 				float ve = v * (1.0f - 0x1.6B5434p-2f*ThisFreqWeightTable[n]); //! 0x1.6B5434p-2 = 10^(-9/20)
-				float vw = 0x1.0p16f * sqrtf(v) * (1.0f - ThisFreqWeightTable[n]);
+				float vw = 0x1.0p16f * sqrtf(ve);
 				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
 				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 			}
