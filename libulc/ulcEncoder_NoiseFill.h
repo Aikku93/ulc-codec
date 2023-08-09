@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -33,7 +33,6 @@
 static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 	      float *Dst,
 	const float *Src,
-	const float *Weights,
 	int N
 ) {
 	//! Hopefully compilers apply loop peeling to the inner loops...
@@ -44,7 +43,6 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 		__m256 x = _mm256_load_ps(Src); Src += 8;
 		__m256 y = _mm256_add_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(x, _mm256_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm256_mul_ps(y, y);
-		y = _mm256_mul_ps(y, _mm256_add_ps(_mm256_set1_ps(0.1f), _mm256_load_ps(Weights))); Weights += 8;
 		x = _mm256_mul_ps(x, y);
 		__m256 l = _mm256_unpacklo_ps(y, x);
 		__m256 h = _mm256_unpackhi_ps(y, x);
@@ -58,7 +56,6 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 		__m128 x = _mm_load_ps(Src); Src += 4;
 		__m128 y = _mm_add_ps(_mm_set1_ps(1.0f), _mm_mul_ps(x, _mm_set1_ps(0.5f / (1 << Log2M))));
 		for(i=0;i<Log2M;i++) y = _mm_mul_ps(y, y);
-		y = _mm_mul_ps(y, _mm_add_ps(_mm_set1_ps(0.1f), _mm_load_ps(Weights))); Weights += 4;
 		x = _mm_mul_ps(x, y);
 		_mm_store_ps(Dst+0, _mm_unpacklo_ps(y, x));
 		_mm_store_ps(Dst+4, _mm_unpackhi_ps(y, x)); Dst += 8;
@@ -66,7 +63,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 #else
 	for(n=0;n<N;n++) {
 		//! Target:
-		//!  y = (E^x)^2 = E^(0.5*x)
+		//!  y = (E^x)^0.5 = E^(0.5*x)
 		//! E^x = (1+x/m)^m | m->inf
 		//! We use an approximation here, since this value is only
 		//! used as a weight; hyper-exactness isn't important.
@@ -79,7 +76,6 @@ static inline void Block_Transform_CalculateNoiseLogSpectrumWithWeights(
 		float x = *Src++;
 		float y = 1.0f + x*(0.5f / (1 << Log2M));
 		for(i=0;i<Log2M;i++) y *= y;
-		y *= 0.1f + Weights[n];
 		*Dst++ = y;
 		*Dst++ = x * y;
 	}
@@ -97,7 +93,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	//! for tones in the masking band, but setting it too low will
 	//! pick up too many artifacts and will require manipulation of
 	//! the energy below 1kHz.
-	static const int FloorToMaskRatio = 2;
+	static const int FloorToMaskRatio = 1;
 
 	//! DCT+DST -> Pseudo-DFT
 	N /= 2;
@@ -125,13 +121,15 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	}
 
 	//! Normalize the energy and convert to fixed-point
+	//! NOTE: Reduce amplitude at <=1kHz to reduce issues in
+	//! this relatively important band.
 	Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f;
 	float LogScale = 0x1.715476p27f / N;
 	uint32_t *Weight   = (uint32_t*)Data;
 	uint32_t *EnergyNp = (uint32_t*)Temp;
 	for(n=0;n<N;n++) {
 		v = Data[n] * Norm;
-		float ve = v;
+		float ve = v * (1.0f - 0x1.6B5434p-2f*FreqWeightTable[n]); //! 0x1.6B5434p-2 = 10^(-9/20)
 		float vw = 0x1.0p16f * sqrtf(ve);
 		Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
 		EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
@@ -142,7 +140,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	//! Extract the noise floor level in each line's noise bandwidth
 	//! NOTE: We write to Data+N, because we then need to store 2*N
 	//! data points at Data[] when we calculate the weights next.
-	int NoiseBeg = 0, NoiseEnd = 0;
+	int NoiseBeg = 0, NoiseEnd = (1<<RangeScaleFxp) - 1; //! <- Bias towards Ceiling
 	uint64_t MaskSum  = 0, MaskSumW = 0;
 	uint32_t FloorSum = 0;
 	float *LogNoiseFloor = Data + N;
@@ -192,7 +190,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	//! Save the (approximate) exponent to use as a weight during noise calculations.
 	//! This operation is factored out so that it can be efficiently vectorized.
 	//! Note that this function also interleaves {Weight,Weight*Data} as output.
-	Block_Transform_CalculateNoiseLogSpectrumWithWeights(Data, LogNoiseFloor, FreqWeightTable, N);
+	Block_Transform_CalculateNoiseLogSpectrumWithWeights(Data, LogNoiseFloor, N);
 }
 
 /**************************************/
