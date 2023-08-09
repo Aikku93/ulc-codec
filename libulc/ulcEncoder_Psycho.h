@@ -59,17 +59,13 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		for(n=0;n<SubBlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
 		if(Norm != 0.0f) {
 			//! Get the window bandwidth scaling constants
+			//! NOTE: The tonal masking component (calculated in MaskSum) seems
+			//! to not directly correlate with sampling rate, only the floor
+			//! level estimation, so the former constants are fixed values.
 			int RangeScaleFxp = 16;
-			int LoRangeScale; {
-				float s = (2*20000.0f) / RateHz;
-				if(s >= 1.0f) s = 0x1.FFFFFEp-1f; //! <- Ensure this is always < 1.0
-				LoRangeScale = (int)floorf((1<<RangeScaleFxp) * s);
-			}
-			int HiRangeScale; {
-				float s = RateHz * (1.0f / (2*18000.0f));
-				if(s < 1.0f) s = 1.0f; //! <- Ensure this is always >= 1.0
-				HiRangeScale = (int)ceilf((1<<RangeScaleFxp) * s);
-			}
+			int LoRangeScale = (int)floorf((1<<RangeScaleFxp) * 0.91f);
+			int HiRangeScale = (int)ceilf ((1<<RangeScaleFxp) * 1.23f);
+			int FloorRangePerLine = (int)ceilf((1<<RangeScaleFxp) * (16000.0f / RateHz));
 
 			//! Normalize the energy and convert to fixed-point
 			//! This normalization step forces the sums to be as precise as
@@ -138,7 +134,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 				//! cause strange artifacts at higher frequencies, so we use the
 				//! theoretical number of bands that would be in that bandwidth.
 				int64_t Mask  = MaskSum / MaskSumW;
-				int64_t Floor = ((int64_t)FloorSum << RangeScaleFxp) / (MaskEnd - MaskBeg);
+				int64_t Floor = ((int64_t)FloorSum << RangeScaleFxp) / ((n+1) * FloorRangePerLine);
 				MaskingNp[n] = (2*Mask - Floor)*InvLogScale + LogNorm;
 			}
 		}
