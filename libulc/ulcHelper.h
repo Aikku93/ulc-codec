@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2021, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -82,6 +82,31 @@ ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficientUnsigned(float v, int Limi
 ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficient(float v, int Limit) {
 	int vq = ULC_CompandedQuantizeCoefficientUnsigned(ABS(v), Limit);
 	return (v < 0.0f) ? (-vq) : (+vq);
+}
+
+/**************************************/
+
+//! Convert frequency Hz to line index (assuming centered frequency bins)
+static inline float FreqToLine(float fHz, float NyquistHz, uint32_t N) {
+	return (fHz * (float)N / NyquistHz) - 0.5f;
+}
+
+//! Convert line index to frequency Hz (assuming centered frequency bins)
+static inline float LineToFreq(uint32_t Line, float NyquistHz, uint32_t N) {
+	return ((float)Line + 0.5f) * NyquistHz / (float)N;
+}
+
+//! Convert frequency Hz to Bark band
+//! Wang, Sekey & Gersho, 1992 definition:
+//!  Bark(f) = 6*ArcSinh[f/600]
+static inline float FreqToBark(float fHz) {
+	return 6.0f*asinhf(fHz * (1.0f/600.0f));
+}
+
+//! Convert Bark band to frequency Hz
+//! Inverse of above definition
+static inline float BarkToFreq(float Bark) {
+	return 600.0f * sinhf(Bark * (1.0f/6.0f));
 }
 
 /**************************************/
