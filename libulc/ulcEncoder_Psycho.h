@@ -12,131 +12,83 @@
 #include "ulcHelper.h"
 /**************************************/
 
-static inline void Block_Transform_CalculatePsychoacoustics_CalcFreqWeightTable(float *Dst, int BlockSize, float NyquistHz) {
-	//! DCT+DST -> Pseudo-DFT
-	BlockSize /= 2;
-
-	//! Compute window for all subblock sizes in a sequential window
-	//! This should improve cache locality vs a single large window.
-	int n, SubBlockSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
-	float LogFreqStep = logf(NyquistHz / SubBlockSize) + -0x1.BA18AAp2f; //! -0x1.BA18AAp2 = Log[1/1000]
-	do {
-		for(n=0;n<SubBlockSize;n++) {
-			//! The weight function is a log-normal distribution function,
-			//! which is used to basically apply a perceptual-amplitude
-			//! re-normalization, by protecting sensitive bands <1kHz.
-			//! This greatly improves stability of tones during transient
-			//! passages, as well as with smaller BlockSize.
-			//! NOTE: We "protect" everything below 1kHz by forcing the
-			//! masking calculations to rely only on the floor level.
-			float x = logf(n+0.5f) + LogFreqStep; //! Log[(n+0.5)*NyquistHz/SubBlockSize / 1000]
-			*Dst++ = (x > 0.0f) ? expf(-2.0f*SQR(x)) : 1.0f; //! If below 1kHz (x < 0), clip (E^0 == 1.0)
-		}
-	} while(LogFreqStep += -0x1.62E430p-1f, (SubBlockSize *= 2) <= BlockSize); //! -0x1.62E430p-1 = Log[0.5], ie. FreqStep *= 0.5
-}
 static inline void Block_Transform_CalculatePsychoacoustics(
 	float *MaskingNp,
 	float *BufferAmp2,
 	void  *BufferTemp,
 	int    BlockSize,
 	int    RateHz,
-	const float *FreqWeightTable,
 	uint32_t WindowCtrl
 ) {
-	int n;
-	float v;
+	const int ULC_N_BARK_BANDS = 25;
+	float NyquistHz = (float)RateHz * 0.5f;
 
 	//! DCT+DST -> Pseudo-DFT
 	BlockSize /= 2;
+
+	//! Compute logarithm for all lines to speed up calculations
+	{
+		int Line;
+		for(Line=0;Line<BlockSize;Line++) {
+			MaskingNp[Line] = logf(0x1.0p-127f + BufferAmp2[Line]);
+		}
+	}
 
 	//! Compute masking levels for each [sub-]block
 	ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
 	do {
 		int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 
-		//! Find the subblock's normalization factor
-		float Norm = 0.0f;
-		for(n=0;n<SubBlockSize;n++) if((v = BufferAmp2[n]) > Norm) Norm = v;
-		if(Norm != 0.0f) {
-			//! Get the window bandwidth scaling constants
-			//! NOTE: The tonal masking component (calculated in MaskSum) seems
-			//! to not directly correlate with sampling rate, only the floor
-			//! level estimation, so the former constants are fixed values.
-			int RangeScaleFxp = 16;
-			int LoRangeScale = (int)floorf((1<<RangeScaleFxp) * 0.91f);
-			int HiRangeScale = (int)ceilf ((1<<RangeScaleFxp) * 1.23f);
-			int FloorRangePerLine = (int)ceilf((1<<RangeScaleFxp) * (16000.0f / RateHz));
+		//! Iterate over all Bark bands
+		int BarkBand;
+		float *BarkMask = (float*)BufferTemp;
+		for(BarkBand=0;BarkBand<ULC_N_BARK_BANDS;BarkBand++) {
+			//! Get the lines corresponding to this Bark band
+			float FreqBeg = BarkToFreq(BarkBand+0);
+			float FreqEnd = BarkToFreq(BarkBand+1);
+			int   LineBeg = (int)floorf(FreqToLine(FreqBeg, NyquistHz, SubBlockSize));
+			int   LineEnd = (int)ceilf (FreqToLine(FreqEnd, NyquistHz, SubBlockSize));
+			if(LineBeg < 0) LineBeg = 0;
+			if(LineEnd < 0) LineEnd = 0;
+			if(LineBeg > SubBlockSize-1) LineBeg = SubBlockSize-1;
+			if(LineEnd > SubBlockSize)   LineEnd = SubBlockSize;
 
-			//! Normalize the energy and convert to fixed-point
-			//! This normalization step forces the sums to be as precise as
-			//! possible without overflowing.
-                        //! NOTE: We can't renormalize by taking into account the number
-                        //! of summation terms, as this can vary depending on RateHz. In
-                        //! theory, it's possible, but would require adjusting rounding
-                        //! behaviour so that 1-Lo/Hi rounds up, which makes it nasty.
-			//! NOTE: Ensure that Weight[] is not zero or division by 0 may
-			//! occur if the accumulated sums are all zeros.
-			//! NOTE: If the maximum value will cause overflow to +inf,
-			//! just use the largest possible scaling. This really should
-			//! never happen in practice, but it's here just to be sure.
-			uint32_t *Weight   = (uint32_t*)BufferTemp;
-			uint32_t *EnergyNp = (uint32_t*)BufferAmp2;
-			Norm = (Norm > 0x1.0p-96f) ? (0x1.FFFFFCp31f / Norm) : 0x1.FFFFFCp127f; //! NOTE: 2^32-eps*2 to ensure we don't overflow
-			float LogScale = 0x1.715476p27f / SubBlockSize; //! 2^32/Log[2^32] / N
-			const float *ThisFreqWeightTable = FreqWeightTable + SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR;
-			for(n=0;n<SubBlockSize;n++) {
-				//! NOTE: At ~1kHz, we decrease the masking level by up to ~9dB.
-				//! Also note that it is VERY important to use the amplitude as
-				//! the weight rather than the power, or the masking estimates
-				//! become way too low, and brightness degrades.
-				v = BufferAmp2[n] * Norm;
-				float ve = v * (1.0f - 0x1.6B5434p-2f*ThisFreqWeightTable[n]); //! 0x1.6B5434p-2 = 10^(-9/20)
-				float vw = 0x1.0p16f * sqrtf(ve);
-				EnergyNp[n] = (ve <= 1.0f) ? 0 : (uint32_t)(logf(ve) * LogScale);
-				Weight  [n] = (vw <= 1.0f) ? 1 : (uint32_t)vw;
-			}
-			float LogNorm     = -logf(Norm); //! Log[1/Norm]
-			float InvLogScale = 0x1.62E430p-28f*SubBlockSize; //! Inverse (round up)
-
-			//! Extract the masking levels for each line
-			int      MaskBeg = 0, MaskEnd  = (1<<RangeScaleFxp) - 1; //! <- Bias towards Ceiling
-			uint64_t MaskSum = 0, MaskSumW = 0;
-			uint32_t FloorSum = 0;
-			for(n=0;n<SubBlockSize;n++) {
-				int Old, New;
-
-				//! Remove samples that went out of focus
-				//! NOTE: We skip /at most/ one sample, so don't loop.
-				Old = MaskBeg >> RangeScaleFxp, MaskBeg += LoRangeScale;
-				New = MaskBeg >> RangeScaleFxp;
-				if(Old < New) {
-					MaskSumW -= Weight[Old];
-					MaskSum  -= Weight[Old] * (uint64_t)EnergyNp[Old];
-					FloorSum -= EnergyNp[Old];
+			//! Sum levels for this band
+			double SumFloor = 0.0;
+			double SumPeak  = 0.0;
+			double SumPeakW = 0.0;
+			int nLines = LineEnd - LineBeg;
+			if(nLines > 0) {
+				int Line;
+				const float *Src    = BufferAmp2 + LineBeg;
+				const float *SrcLog = MaskingNp  + LineBeg;
+				for(Line=0;Line<nLines;Line++) {
+					double v    = (double)Src   [Line];
+					double vLog = (double)SrcLog[Line];
+					SumFloor += vLog;
+					SumPeak  += vLog * v;
+					SumPeakW += v;
 				}
-
-				//! Add samples that came into focus
-				//! NOTE: We usually skip /at least/ one sample, but when we
-				//! reach the end of the buffer (ie. x=xMax), we stop adding
-				//! samples, so we can't go straight into a do-while loop.
-				Old = MaskEnd >> RangeScaleFxp, MaskEnd += HiRangeScale;
-				New = MaskEnd >> RangeScaleFxp; if(New > SubBlockSize) New = SubBlockSize;
-				if(Old < New) do {
-					MaskSumW += Weight[Old];
-					MaskSum  += Weight[Old] * (uint64_t)EnergyNp[Old];
-					FloorSum += EnergyNp[Old];
-				} while(++Old < New);
-
-				//! Extract level
-				//! NOTE: FloorBw's computation must be done exactly as written;
-				//! attempting to simplify the maths will go wrong. Additionally,
-				//! using the actual number of bands in the sum of FloorSum can
-				//! cause strange artifacts at higher frequencies, so we use the
-				//! theoretical number of bands that would be in that bandwidth.
-				int64_t Mask  = MaskSum / MaskSumW;
-				int64_t Floor = ((int64_t)FloorSum << RangeScaleFxp) / ((n+1) * FloorRangePerLine);
-				MaskingNp[n] = (2*Mask - Floor)*InvLogScale + LogNorm;
 			}
+
+			//! Get the final masking ratio for this band
+			float MaskRatio = 0.0f;
+			if(SumPeakW != 0.0) {
+				SumPeak   = SumPeak  / SumPeakW;
+				SumFloor  = SumFloor / (float)nLines;
+				MaskRatio = (float)(SumPeak + SumFloor);
+			}
+			BarkMask[BarkBand] = MaskRatio;
+		}
+
+		//! Now generate masking level for each frequency line
+		int Line;
+		for(Line=0;Line<SubBlockSize;Line++) {
+			float BarkBand = FreqToBark(LineToFreq(Line, NyquistHz, SubBlockSize));
+			int   BandIdx  = (int)BarkBand;
+			      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
+			      BandIdx  = (BandIdx < ULC_N_BARK_BANDS) ? BandIdx : (ULC_N_BARK_BANDS-1);
+			MaskingNp[Line] = BarkMask[BandIdx] - MaskingNp[Line];
 		}
 
 		//! Move to next subblock
