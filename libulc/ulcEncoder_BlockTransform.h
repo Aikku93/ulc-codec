@@ -235,16 +235,6 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					OverlapSize
 				);
 
-				//! Get the total energy of this subblock, so as to normalize
-				//! the final weight. This reduces dropouts on transients.
-				//! NOTE: Because the MDCT/MDST spectrum has not been normalized
-				//! yet, the coefficients should be divided by SubBlockSize.
-				float LogSubBlockEnergy = 0.0f;
-				for(n=0;n<SubBlockSize;n++) {
-					LogSubBlockEnergy += SQR(BufferMDCT[n]) + SQR(BufferMDST[n]);
-				}
-				LogSubBlockEnergy = logf(0x1.0p-127f + LogSubBlockEnergy/SQR(SubBlockSize));
-
 				//! Normalize the spectra, and then accumulate the
 				//! coefficients for psychoacoustic analysis.
 				//! MDCT is treated as the Real part of a DFT,
@@ -277,9 +267,9 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 						//! subtract Log[MaskLevel^2])
 						float Level = Re2;
 #if ULC_USE_PSYCHOACOUSTICS
-						Level *= Abs2;
+						Level *= Re2;
 #endif
-						BufferIndex[n] = logf(Level) - LogSubBlockEnergy;
+						BufferIndex[n] = logf(Level);
 						nNzCoef++;
 					}
 #if ULC_USE_NOISE_CODING
@@ -300,8 +290,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! Compute noise spectrum
 				//! NOTE: This outputs 2*(SubBlockSize/2) values into BufferNoise,
 				//! corresponding to {Weight,Weight*LogNoiseLevel} pairs.
-				const float *ThisFreqWeightTable = State->FreqWeightTable + (SubBlockSize-BlockSize/ULC_MAX_BLOCK_DECIMATION_FACTOR)/2;
-				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz, ThisFreqWeightTable);
+				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz);
 #endif
 				//! Move to the next subblock
 				BufferSamples += SubBlockSize;
@@ -344,7 +333,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_PSYCHOACOUSTICS
 		//! Perform psychoacoustics analysis
 		//! NOTE: Trashes BufferAmp2[]
-		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->RateHz, State->FreqWeightTable, WindowCtrl);
+		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->RateHz, WindowCtrl);
 
 		//! Add the psychoacoustics adjustment to the importance levels
 		//! NOTE: No need to split this section into subblock handling.
