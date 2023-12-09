@@ -19,9 +19,8 @@ DECODETOOL_SRCDIR := tools
 # Cross-compilation, compile flags
 #----------------------------#
 
-# Alternatively, try "-march=native" for ARCHFLAGS
 ARCHCROSS :=
-ARCHFLAGS := -msse -msse2 -mavx -mavx2 -mfma
+ARCHFLAGS :=
 
 CCFLAGS := $(ARCHFLAGS) -fno-math-errno -ffast-math -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
 LDFLAGS := -static -s
@@ -40,29 +39,19 @@ LD := $(ARCHCROSS)gcc
 COMMON_SRC     := $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/*.c))
 ENCODETOOL_SRC := $(filter-out $(ENCODETOOL_SRCDIR)/ulcDecodeTool.c, $(wildcard $(ENCODETOOL_SRCDIR)/*.c))
 DECODETOOL_SRC := $(filter-out $(DECODETOOL_SRCDIR)/ulcEncodeTool.c, $(wildcard $(DECODETOOL_SRCDIR)/*.c))
-COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(notdir $(COMMON_SRC:.c=.o)))
-ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(ENCODETOOL_SRC:.c=.o)))
-DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(notdir $(DECODETOOL_SRC:.c=.o)))
-ENCODETOOL_EXE := ulcencodetool
-DECODETOOL_EXE := ulcdecodetool
+COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(COMMON_SRC)))
+ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(ENCODETOOL_SRC)))
+DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(DECODETOOL_SRC)))
+ENCODETOOL_EXE := $(RELDIR)/ulcencodetool
+DECODETOOL_EXE := $(RELDIR)/ulcdecodetool
 
-DFILES := $(wildcard $(OBJDIR)/*.d)
-
-VPATH := $(COMMON_SRCDIR) $(ENCODETOOL_SRCDIR) $(DECODETOOL_SRCDIR)
-
-#----------------------------#
-# General rules
-#----------------------------#
-
-$(OBJDIR)/%.o : %.c
-	@echo $(notdir $<)
-	@$(CC) $(CCFLAGS) -c -o $@ $< -MMD -MP -MF $(OBJDIR)/$*.d
+DFILES := $(COMMON_OBJ:.o=.d) $(ENCODETOOL_OBJ:.o=.d) $(DECODETOOL_OBJ:.o=.d)
 
 #----------------------------#
 # make all
 #----------------------------#
 
-all : common encodetool decodetool
+all : encodetool decodetool common
 
 $(OBJDIR) $(RELDIR) :; mkdir -p $@
 
@@ -80,10 +69,11 @@ $(COMMON_OBJ) : $(COMMON_SRC) | $(OBJDIR)
 
 encodetool : $(ENCODETOOL_EXE)
 
-$(ENCODETOOL_OBJ) : $(ENCODETOOL_SRC) | $(OBJDIR)
-
 $(ENCODETOOL_EXE) : $(COMMON_OBJ) $(ENCODETOOL_OBJ) | $(RELDIR)
-	$(LD) -o $(RELDIR)/$@ $^ $(LDFLAGS)
+	@echo Building encode tool $@...
+	@$(LD) -o $@ $^ $(LDFLAGS)
+
+$(ENCODETOOL_OBJ) : $(ENCODETOOL_SRC) | $(OBJDIR)
 
 #----------------------------#
 # make decodetool
@@ -91,21 +81,47 @@ $(ENCODETOOL_EXE) : $(COMMON_OBJ) $(ENCODETOOL_OBJ) | $(RELDIR)
 
 decodetool : $(DECODETOOL_EXE)
 
+$(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
+	@echo Building decode tool $@...
+	@$(LD) -o $@ $^ $(LDFLAGS)
+
 $(DECODETOOL_OBJ) : $(DECODETOOL_SRC) | $(OBJDIR)
 
-$(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
-	$(LD) -o $(RELDIR)/$@ $^ $(LDFLAGS)
+#----------------------------#
+# Rules
+#----------------------------#
+
+$(OBJDIR)/%_AVX_FMA.c.o : %_AVX_FMA.c | $(OBJDIR)
+	@echo $(notdir $<)
+	@mkdir -p $(dir $@)
+	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -mavx -mfma
+
+$(OBJDIR)/%_AVX.c.o : %_AVX.c | $(OBJDIR)
+	@echo $(notdir $<)
+	@mkdir -p $(dir $@)
+	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -mavx
+
+$(OBJDIR)/%_SSE_FMA.c.o : %_SSE_FMA.c | $(OBJDIR)
+	@echo $(notdir $<)
+	@mkdir -p $(dir $@)
+	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -msse -mfma
+
+$(OBJDIR)/%_SSE.c.o : %_SSE.c | $(OBJDIR)
+	@echo $(notdir $<)
+	@mkdir -p $(dir $@)
+	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -msse
+
+$(OBJDIR)/%.c.o : %.c | $(OBJDIR)
+	@echo $(notdir $<)
+	@mkdir -p $(dir $@)
+	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $<
+
+-include $(DFILES)
 
 #----------------------------#
 # make clean
 #----------------------------#
 
 clean :; rm -rf $(OBJDIR) $(RELDIR)
-
-#----------------------------#
-# Dependencies
-#----------------------------#
-
-include $(wildcard $(DFILES))
 
 #----------------------------#
