@@ -60,6 +60,8 @@
 //!     float EnvBlockMask;
 //!   }
 //!  -TmpBuffer[] must be BlockSize*2 elements in size.
+//! NOTE: All rates were determined experimentally, based on what
+//! resulted in the best sensitivity without excessive glitching.
 #pragma GCC push_options
 #pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
 static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
@@ -101,9 +103,41 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		}
 	}
 
-	//! Model the energy curve and integrate it over each segment
-	//! NOTE: All rates were determined experimentally, based on what
-	//! resulted in the best sensitivity without excessive glitching.
+	//! Smear the energy forwards in time to account for post-masking
+	float EnvPostMaskHP = TransientFilter[0];
+	float EnvPostMaskBP = TransientFilter[1];
+	float EnvPostMaskHP_Rate = expf(-0x1.CC845Cp6f / RateHz); //! -1.0dB/ms (1000 * Log[10^(-1.0/20)])
+	float EnvPostMaskBP_Rate = expf(-0x1.596344p9f / RateHz); //! -6.0dB/ms (1000 * Log[10^(-6.0/20)])
+	for(n=0;n<BlockSize;n++) {
+		//! NOTE: This calculation must be done in the amplitude
+		//! domain, as the power domain behaves too erratically.
+		float vHP = sqrtf(BufEnergy[n*2+0]), dHP = vHP - EnvPostMaskHP;
+		float vBP = sqrtf(BufEnergy[n*2+1]), dBP = vBP - EnvPostMaskBP;
+		EnvPostMaskHP += dHP * (1.0f-EnvPostMaskHP_Rate);
+		EnvPostMaskBP += dBP * (1.0f-EnvPostMaskBP_Rate);
+		BufEnergy[n*2+0] = EnvPostMaskHP;
+		BufEnergy[n*2+1] = EnvPostMaskBP;
+	}
+	TransientFilter[0] = EnvPostMaskHP;
+	TransientFilter[1] = EnvPostMaskBP;
+
+	//! Now smear backwards to account for pre-masking, but take the
+	//! difference between post- and pre-masking to form the 'error'
+	float EnvPreMaskHP = EnvPostMaskHP;
+	float EnvPreMaskBP = EnvPostMaskBP;
+	float EnvPreMaskHP_Rate = expf(-0x1.CC845Cp7f / RateHz); //! -2.0dB/ms (1000 * Log[10^(-2.0/20)])
+	float EnvPreMaskBP_Rate = expf(-0x1.596344p8f / RateHz); //! -3.0dB/ms (1000 * Log[10^(-1.8/20)])
+	for(n=BlockSize-1;n>=0;n--) {
+		//! NOTE: Cross-multiply HP with BP energy and vice-versa
+		//! to normalize the levels with respect to one another
+		float vHP = BufEnergy[n*2+0], dHP = vHP - EnvPreMaskHP;
+		float vBP = BufEnergy[n*2+1], dBP = vBP - EnvPreMaskBP;
+		EnvPreMaskHP += dHP * (1.0f-EnvPreMaskHP_Rate);
+		EnvPreMaskBP += dBP * (1.0f-EnvPreMaskBP_Rate);
+		BufEnergy[n*2+0] = SQR(dHP*EnvPreMaskBP) + SQR(dBP*EnvPreMaskHP);
+	}
+
+	//! Integrate the energy curves over each segment
 	{
 		int i, BinSize = BlockSize / ULC_MAX_BLOCK_DECIMATION_FACTOR;
 		struct ULC_TransientData_t *Dst = TransientBuffer + ULC_MAX_BLOCK_DECIMATION_FACTOR; //! Align to new block
@@ -112,53 +146,19 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 			Dst[-ULC_MAX_BLOCK_DECIMATION_FACTOR] = *Dst;
 			*Dst = (struct ULC_TransientData_t){.Sum = 0.0f, .SumW = 0.0f};
 
-			//! Smear the energy forwards in time to account for post-masking
-			//! Dev note: Closer to 0dB = Less sensitive
-			float EnvPostMaskHP = TransientFilter[0];
-			float EnvPostMaskBP = TransientFilter[1];
-			float EnvPostMaskHP_Rate = expf(-0x1.CC845Cp6f / RateHz); //! -1.0dB/ms (1000 * Log[10^(-0.2/20))])
-			float EnvPostMaskBP_Rate = expf(-0x1.9E771Ep6f / RateHz); //! -0.9dB/ms (1000 * Log[10^(-0.5/20))])
-			for(n=0;n<BinSize;n++) {
-				//! NOTE: This calculation must be done in the amplitude
-				//! domain, as the power domain behaves too erratically.
-				float vHP = sqrtf(BufEnergy[n*2+0]), dHP = vHP - EnvPostMaskHP;
-				float vBP = sqrtf(BufEnergy[n*2+1]), dBP = vBP - EnvPostMaskBP;
-				EnvPostMaskHP += dHP * (1.0f-EnvPostMaskHP_Rate);
-				EnvPostMaskBP += dBP * (1.0f-EnvPostMaskBP_Rate);
-				BufEnergy[n*2+0] = EnvPostMaskHP;
-				BufEnergy[n*2+1] = EnvPostMaskBP;
-
-			}
-			TransientFilter[0] = EnvPostMaskHP;
-			TransientFilter[1] = EnvPostMaskBP;
-
-			//! Now smear backwards to account for pre-masking, but take the
-			//! difference between post- and pre-masking to form the 'error'
-			//! Dev note: Closer to 0dB = More sensitive
-			float EnvPreMaskHP = EnvPostMaskHP;
-			float EnvPreMaskBP = EnvPostMaskBP;
-			float EnvPreMaskHP_Rate = expf(-0x1.CC845Cp7f / RateHz); //! -2.0dB/ms (1000 * Log[10^(-1.0/20)])
-			float EnvPreMaskBP_Rate = expf(-0x1.144F6Ap5f / RateHz); //! -0.3dB/ms (1000 * Log[10^(-1.0/20)])
-			for(n=BinSize-1;n>=0;n--) {
-				//! NOTE: Cross-multiply HP with BP energy and vice-versa
-				//! to normalize the levels with respect to one another
-				float vHP = BufEnergy[n*2+0], dHP = vHP - EnvPreMaskHP;
-				float vBP = BufEnergy[n*2+1], dBP = vBP - EnvPreMaskBP;
-				EnvPreMaskHP += dHP * (1.0f-EnvPreMaskHP_Rate);
-				EnvPreMaskBP += dBP * (1.0f-EnvPreMaskBP_Rate);
-				BufEnergy[n*2+0] = SQR(dHP*EnvPreMaskBP) + SQR(dBP*EnvPreMaskHP);
-			}
-
-			//! Finally, smooth the signal to account for the block size.
+			//! Smooth the signal to account for the block size.
 			//! Larger blocks get less smoothing to capture changes more
 			//! easily, smaller blocks get more smoothing because they
 			//! don't need to capture smooth-ish changes.
 			float EnvBlockMask = TransientFilter[2];
 			float EnvBlockMask_Rate = expf(-0x1.1AF110p-6f * BlockSize / RateHz); //! -0.00015dB/ms*BlockSize (1000 * Log[10^(-0.00015/20)])
 			for(n=0;n<BinSize;n++) {
+				//! NOTE: We don't actually need SumW in the current
+				//! implementation, but I'm leaving it in "just in
+				//! case", if a future revision needs it.
 				float vEnergy = BufEnergy[n*2+0], dEnergy = vEnergy - EnvBlockMask;
 				EnvBlockMask += dEnergy * (1.0f-EnvBlockMask_Rate);
-				Dst->Sum += SQR(EnvBlockMask), Dst->SumW += EnvBlockMask;
+				Dst->Sum += EnvBlockMask, Dst->SumW += 1;
 			}
 			TransientFilter[2] = EnvBlockMask;
 
