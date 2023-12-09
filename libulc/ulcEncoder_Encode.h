@@ -16,7 +16,7 @@
 
 //! The target memory is always aligned to 64 bytes, so just
 //! use whatever is most performant on the target architecture
-typedef uint32_t BitStream_t; //! <- MUST BE UNSIGNED
+typedef uint8_t BitStream_t; //! <- MUST BE UNSIGNED
 #define BISTREAM_NBITS (8u*sizeof(BitStream_t))
 
 /**************************************/
@@ -54,8 +54,8 @@ ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
 	//! the MDCT matrix. Therefore, we use a bias of 5
 	//! in the syntax to allow for a full range (that is
 	//! to say: 7^2 * 2^-5 = 1.53125, 1.53125 >= 4/Pi).
-	//! We then round this up to the nearest integer.
-	int q = (int)ceilf(5.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	//! We then round this off to the nearest integer.
+	int q = (int)lrintf(5.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5;
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
@@ -216,9 +216,9 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			//! will start at that amount of overshoot. This is intentional; when
 			//! testing a negative sum, this resulted in poorer output quality,
 			//! even if the coefficient wasn't amplified when the sum was < 0.0.
-			float v = Qn*ABS(Qn)/Quant;
-			LossSum  = SQR(Value - v);
-			LossSumW = ABS(Value - v);
+			float v = Value - Qn*ABS(Qn)/Quant;
+			LossSum  = SQR(v);
+			LossSumW = ABS(v);
 		}
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
