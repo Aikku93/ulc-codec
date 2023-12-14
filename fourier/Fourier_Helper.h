@@ -3,18 +3,23 @@
 /************************************************/
 #include <stdint.h>
 /************************************************/
-#if defined(_M_IX86) || defined(_M_X64) || defined(__i386__)
-# define FOURIER_IS_X86
+#if (defined(_M_IX86) || defined(_M_X64) || defined(__i386__))
 # if defined(_MSC_VER)
+#  define FOURIER_IS_X86
 #  include <intrin.h>
 # elif defined(__GNUC__)
+#  define FOURIER_IS_X86
 #  include <cpuid.h>
+# else
+#  warning "Unknown compiler. Disabling x86-specific code."
 # endif
-# if (defined(__AVX__) && defined(FOURIER_ALLOW_AVX)) || (defined(__FMA__) && defined(FOURIER_ALLOW_FMA))
-#  include <immintrin.h>
-# endif
-# if (defined(__SSE__) && defined(FOURIER_ALLOW_SSE))
-#  include <xmmintrin.h>
+# if defined(FOURIER_IS_X86)
+#  if (defined(__AVX__) && defined(FOURIER_ALLOW_AVX)) || (defined(__FMA__) && defined(FOURIER_ALLOW_FMA))
+#   include <immintrin.h>
+#  endif
+#  if (defined(__SSE__) && defined(FOURIER_ALLOW_SSE))
+#   include <xmmintrin.h>
+#  endif
 # endif
 #endif
 /************************************************/
@@ -33,7 +38,7 @@
 #endif
 /************************************************/
 
-#if (defined(__AVX__) && defined(FOURIER_ALLOW_AVX))
+#if (defined(FOURIER_IS_X86) && defined(__AVX__) && defined(FOURIER_ALLOW_AVX))
   typedef __m256 Fourier_Vec_t;
 # define FOURIER_VSTRIDE            8
 # define FOURIER_ALIGNMENT          32
@@ -77,7 +82,7 @@
 	b     = _mm256_shuffle_ps(b, a, 0x77);
 	*Odd  = _mm256_permute2f128_ps(b, b, 0x01);
   }
-#elif (defined(__SSE__) && defined(FOURIER_ALLOW_SSE))
+#elif (defined(FOURIER_IS_X86) && defined(__SSE__) && defined(FOURIER_ALLOW_SSE))
   typedef __m128 Fourier_Vec_t;
 # define FOURIER_VSTRIDE            4
 # define FOURIER_ALIGNMENT          16

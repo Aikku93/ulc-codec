@@ -16,6 +16,28 @@ ENCODETOOL_SRCDIR := tools
 DECODETOOL_SRCDIR := tools
 
 #----------------------------#
+# Tools
+#----------------------------#
+
+CC := $(ARCHCROSS)gcc
+LD := $(ARCHCROSS)gcc
+
+#----------------------------#
+# Platform detection
+#----------------------------#
+
+ifeq ($(strip $(PLATFORM)),)
+	DUMPMACHINE := $(shell $(CC) -dumpmachine)
+	ifneq ($(filter x86%,$(DUMPMACHINE)),)
+		PLATFORM := x86
+	endif
+	ifneq ($(filter arm%,$(DUMPMACHINE)),)
+		PLATFORM := arm
+	endif
+	# etc.
+endif
+
+#----------------------------#
 # Cross-compilation, compile flags
 #----------------------------#
 
@@ -26,19 +48,25 @@ CCFLAGS := $(ARCHFLAGS) -fno-math-errno -ffast-math -O2 -Wall -Wextra $(foreach 
 LDFLAGS := -static -s
 
 #----------------------------#
-# Tools
-#----------------------------#
-
-CC := $(ARCHCROSS)gcc
-LD := $(ARCHCROSS)gcc
-
-#----------------------------#
-# Files
+# Source files
 #----------------------------#
 
 COMMON_SRC     := $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/*.c))
 ENCODETOOL_SRC := $(filter-out $(ENCODETOOL_SRCDIR)/ulcDecodeTool.c, $(wildcard $(ENCODETOOL_SRCDIR)/*.c))
 DECODETOOL_SRC := $(filter-out $(DECODETOOL_SRCDIR)/ulcEncodeTool.c, $(wildcard $(DECODETOOL_SRCDIR)/*.c))
+
+#----------------------------#
+# Add platform-specific files
+#----------------------------#
+
+ifeq ($(PLATFORM), x86)
+	COMMON_SRC += $(foreach dir, $(COMMON_SRCDIR), $(wildcard $(dir)/x86/*.c))
+endif
+
+#----------------------------#
+# Output files
+#----------------------------#
+
 COMMON_OBJ     := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(COMMON_SRC)))
 ENCODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(ENCODETOOL_SRC)))
 DECODETOOL_OBJ := $(addprefix $(OBJDIR)/, $(addsuffix .o, $(DECODETOOL_SRC)))
@@ -88,9 +116,10 @@ $(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
 $(DECODETOOL_OBJ) : $(DECODETOOL_SRC) | $(OBJDIR)
 
 #----------------------------#
-# Rules
+# x86-specific rules
 #----------------------------#
 
+ifeq ($(PLATFORM), x86)
 $(OBJDIR)/%_AVX_FMA.c.o : %_AVX_FMA.c | $(OBJDIR)
 	@echo $(notdir $<)
 	@mkdir -p $(dir $@)
@@ -110,11 +139,20 @@ $(OBJDIR)/%_SSE.c.o : %_SSE.c | $(OBJDIR)
 	@echo $(notdir $<)
 	@mkdir -p $(dir $@)
 	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -msse
+endif
+
+#----------------------------#
+# Generic rules
+#----------------------------#
 
 $(OBJDIR)/%.c.o : %.c | $(OBJDIR)
 	@echo $(notdir $<)
 	@mkdir -p $(dir $@)
 	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $<
+
+#----------------------------#
+# Dependencies
+#----------------------------#
 
 -include $(DFILES)
 
