@@ -40,7 +40,11 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 
 		//! Iterate over all Bark bands
+		//! If any band is silent, then we use the ratio of the
+		//! prior band, since we will later interpolate using
+		//! these values.
 		int BarkBand;
+		float MaskRatio = 0.0f;
 		float *BarkMask = (float*)BufferTemp;
 		for(BarkBand=0;BarkBand<ULC_N_BARK_BANDS;BarkBand++) {
 			//! Get the lines corresponding to this Bark band
@@ -72,11 +76,14 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			}
 
 			//! Get the final masking ratio for this band
-			float MaskRatio = 0.0f;
+			//! This basically amounts to how much CANNOT be
+			//! masked by this band, and then applies a
+			//! scaling to this Bark band so as to normalize
+			//! by the amount of energy present.
 			if(SumPeakW != 0.0) {
 				SumPeak   = SumPeak  / SumPeakW;
-				SumFloor  = SumFloor / (float)nLines;
-				MaskRatio = (float)(SumPeak + SumFloor);
+				SumFloor  = SumFloor / (double)nLines;
+				MaskRatio = (float)(SumPeak - SumFloor - log(SumPeakW / (double)nLines));
 			}
 			BarkMask[BarkBand] = MaskRatio;
 		}
@@ -86,9 +93,12 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		for(Line=0;Line<SubBlockSize;Line++) {
 			float BarkBand = FreqToBark(LineToFreq(Line, NyquistHz, SubBlockSize));
 			int   BandIdx  = (int)BarkBand;
+			float BarkFrac = BarkBand - (float)BandIdx;
 			      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
 			      BandIdx  = (BandIdx < ULC_N_BARK_BANDS) ? BandIdx : (ULC_N_BARK_BANDS-1);
-			MaskingNp[Line] = BarkMask[BandIdx] - MaskingNp[Line];
+			float BarkL = BarkMask[BandIdx];
+			float BarkR = (BandIdx+1 < ULC_N_BARK_BANDS) ? BarkMask[BandIdx+1] : BarkL;
+			MaskingNp[Line] = BarkL*(1.0f-BarkFrac) + BarkR*BarkFrac;
 		}
 
 		//! Move to next subblock

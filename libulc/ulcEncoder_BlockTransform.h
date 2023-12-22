@@ -260,15 +260,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 					if(AbsRe < 0.5f*ULC_COEF_EPS) {
 						BufferIndex[n] = -INFINITY;
 					} else {
-						//! We use Re*Abs^2 here, not as a tradeoff, but because
-						//! both weights are important: Re is needed to select
-						//! frequency bands that actually encode meaningful data
-						//! while Abs^2 is used for psychoacoustics (we will later
-						//! subtract Log[MaskLevel^2])
 						float Level = Re2;
-#if ULC_USE_PSYCHOACOUSTICS
-						Level *= Re2;
-#endif
 						BufferIndex[n] = logf(Level);
 						nNzCoef++;
 					}
@@ -345,7 +337,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			for(n=0;n<BlockSize;n++) {
 				float ValNp = BufferIndex[n];
 				//if(ValNp != -INFINITY) {
-					BufferIndex[n] = ValNp - (MaskingNp[n/2] + 0x1.62E430p0f*(Chan&1)); //! -0x1.62E430p0 = Log[0.5^2]
+					BufferIndex[n] = 2*ValNp + MaskingNp[n/2] + -0x1.62E430p0f*(Chan&1); //! -0x1.62E430p0 = Log[0.5^2]
 				//}
 			}
 			BufferIndex += BlockSize;
