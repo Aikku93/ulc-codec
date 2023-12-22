@@ -54,8 +54,34 @@ ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
 	//! the MDCT matrix. Therefore, we use a bias of 5
 	//! in the syntax to allow for a full range (that is
 	//! to say: 7^2 * 2^-5 = 1.53125, 1.53125 >= 4/Pi).
-	//! We then round this off to the nearest integer.
-	int q = (int)lrintf(5.0f - 0x1.715476p0f*logf(MaxVal)); //! 0x1.715476p0 == 1/Ln[2] for change of base
+	//! As for rounding, we want to minimize the error
+	//! of e = |2^-q - MaxVal|:
+	//!  We start with qm = IntegerPart[-Log2[MaxVal]].
+	//!  We then choose q = qm, or qm+1, whichever has
+	//!  smaller error.
+	//!  Some identities:
+	//!   MaxVal <= 2^-qm
+	//!   MaxVal >= 2^-(qm+1)
+	//!  Now we can say:
+	//!   q = qm,   |2^-qm - MaxVal| < |2^-(qm+1) - MaxVal|
+	//!       qm+1, |2^-(qm+1) - MaxVal| < |2^-qm - MaxVal|
+	//!  In other words, we add 1 to qm if the latter
+	//!  condition is met. Now simplification:
+	//!    |2^-(qm+1) - MaxVal| < |2^-qm - MaxVal|
+	//!  We know that 2^-(qm+1) <= MaxVal, so we can remove
+	//!  the first absolute after negation:
+	//!    (MaxVal - 2^-(qm+1)) < |2^-qm - MaxVal|
+	//!  And we know that 2^-qm <= MaxVal:
+	//!    (MaxVal - 2^-(qm+1)) < (2^-qm - MaxVal)
+	//!  Now some algebraic manipulation leads to:
+	//!    2^-qm/MaxVal > (4/3)
+	//!  Putting it all together, we can finally state:
+	//!   q = IntegerPart[-Log2[MaxVal*2/3]]
+	//!  And since we have a bias of 5:
+	//!   q = IntegerPart[5 - Log2[MaxVal*2/3]]
+	//!     = IntegerPart[5 - (Log2[MaxVal] + Log2[2/3])]
+	//!     = IntegerPart[(5 - Log2[2/3]) - Log2[MaxVal]]
+	int q = (int)(0x1.657006p2f + -0x1.715476p0f*logf(MaxVal)); //! 0x1.657006p2 = 5-Log2[2/3], 0x1.715476p0 == 1/Ln[2] for change of base
 	if(q < 5) q = 5;
 	if(q > 5 + 0xE + 0xC) q = 5 + 0xE + 0xC; //! 5+Eh+Ch = Maximum extended-precision quantizer value (including a bias of 5)
 	return q;
