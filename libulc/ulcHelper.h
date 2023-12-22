@@ -65,7 +65,7 @@ ULC_FORCED_INLINE int ULC_CompandedQuantizeUnsigned(float v) {
 	//!  xq = Sqrt[x - 0.25] + 0.5 | x > 0.25,
 	//!  xq = 0                    | otherwise
 	//! Which gives the smallest coefficient that returns xq>0 as 0.5.
-	return (v >= 0.5f) ? (int)lrintf(sqrtf(v - 0.25f)) : 0;
+	return (v >= 0.5f) ? (int)(0.5f + sqrtf(v - 0.25f)) : 0;
 }
 ULC_FORCED_INLINE int ULC_CompandedQuantize(float v) {
 	int vq = ULC_CompandedQuantizeUnsigned(ABS(v));
