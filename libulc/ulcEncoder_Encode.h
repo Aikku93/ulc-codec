@@ -23,8 +23,9 @@ typedef uint8_t BitStream_t; //! <- MUST BE UNSIGNED
 
 ULC_FORCED_INLINE void Block_Encode_WriteNybble(BitStream_t x, BitStream_t **Dst, int *Size) {
 	//! Push nybble
-	*(*Dst) >>= 4;
-	*(*Dst)  |= x << (BISTREAM_NBITS - 4);
+	BitStream_t *p = *Dst;
+	*p >>= 4;
+	*p  |= x << (BISTREAM_NBITS - 4);
 	*Size += 4;
 
 	//! Next byte?
@@ -90,7 +91,7 @@ ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
 /**************************************/
 
 //! Encode a range of coefficients
-static inline int Block_Encode_EncodePass_WriteQuantizerZone(
+ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
 	int           CurIdx,
 	int           EndIdx,
 	float         Quant,
