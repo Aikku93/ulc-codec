@@ -101,6 +101,8 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	const int    *CoefIdx,
 	int           NextCodedIdx,
 	int           nOutCoef,
+	float        *LossSumPtr,
+	float        *LossSumWPtr,
 	BitStream_t **DstBuffer,
 	int          *Size
 ) {
@@ -110,12 +112,8 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 	//! code accordingly. This isn't too important for larger
 	//! [sub-]block sizes, but greatly improves quality when used
 	//! on smaller sizes (eg. BlockSize = 512).
-	//! I've tested keeping the running some going throughout the
-	//! entire subblock being encoded, but this resulted in slightly
-	//! worse output quality, so we only keep a running sum going
-	//! for each quantizer zone instead.
-	float LossSum  = 0.0f;
-	float LossSumW = 0.0f;
+	float LossSum  = *LossSumPtr;
+	float LossSumW = *LossSumWPtr;
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
@@ -216,8 +214,8 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 				int k;
 				for(k=0;k<n;k++) {
 					float v = Coef[NextCodedIdx+k];
-					LossSum  += SQR(v);
-					LossSumW += ABS(v);
+					LossSum  += ABS(v);
+					LossSumW += 1;
 				}
 #if ULC_USE_NOISE_CODING
 			}
@@ -234,7 +232,7 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			//! the new coefficient will always be valid if the old
 			//! one was valid, too.
 			float Value = Coef[CurIdx];
-			Value += (LossSum/LossSumW) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
+			Value += (LossSum / sqrtf(LossSumW)) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
 			Qn = ULC_CompandedQuantizeCoefficient(Value*Quant, 0x7);
 
 			//! Now that we've coded a coefficient, re-set the energy loss sum.
@@ -243,8 +241,8 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 			//! testing a negative sum, this resulted in poorer output quality,
 			//! even if the coefficient wasn't amplified when the sum was < 0.0.
 			float v = Value - Qn*ABS(Qn)/Quant;
-			LossSum  = SQR(v);
-			LossSumW = ABS(v);
+			LossSum  = ABS(v);
+			LossSumW = 1;
 		}
 		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
@@ -252,6 +250,8 @@ static inline int Block_Encode_EncodePass_WriteQuantizerZone(
 		//! Move to the next coefficient
 		do CurIdx++; while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef);
 	} while(CurIdx < EndIdx);
+	*LossSumPtr  = LossSum;
+	*LossSumWPtr = LossSumW;
 	return NextCodedIdx;
 }
 
@@ -273,6 +273,7 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int NextCodedIdx  = Idx;
 	int PrevQuant     = -1;
 	int QuantStartIdx = -1;
+	float LossSum = 0.0f, LossSumW = 0.0f;
 	float QuantMin = 1000.0f, QuantMax = -1000.0f;
 	do {
 		//! Seek the next coefficient
@@ -315,6 +316,8 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 				CoefIdx,
 				NextCodedIdx,
 				nOutCoef,
+				&LossSum,
+				&LossSumW,
 				DstBuffer,
 				Size
 			);
