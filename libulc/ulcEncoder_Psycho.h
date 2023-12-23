@@ -83,7 +83,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 			if(SumPeakW != 0.0) {
 				SumPeak   = SumPeak  / SumPeakW;
 				SumFloor  = SumFloor / (double)nLines;
-				MaskRatio = (float)(SumPeak - SumFloor - log(SumPeakW / (double)nLines));
+				MaskRatio = (float)(SumFloor - SumPeak - log(SumPeakW));
 			}
 			BarkMask[BarkBand] = MaskRatio;
 		}
