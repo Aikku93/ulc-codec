@@ -7,7 +7,8 @@
 # Directories
 #----------------------------#
 
-LIBFOURIERDIR := libfourier
+LIBFOURIERDIR  := libfourier
+LIBFOURIERFILE := $(LIBFOURIERDIR)/release/libfourier.a
 
 OBJDIR := build
 RELDIR := release
@@ -86,20 +87,9 @@ DFILES := $(COMMON_OBJ:.o=.d) $(ENCODETOOL_OBJ:.o=.d) $(DECODETOOL_OBJ:.o=.d)
 # make all
 #----------------------------#
 
-all : common encodetool decodetool
+all : $(ENCODETOOL_EXE) $(DECODETOOL_EXE)
 
 $(OBJDIR) $(RELDIR) :; mkdir -p $@
-
-#----------------------------#
-# make common
-#----------------------------#
-
-common : $(COMMON_OBJ) $(LIBFOURIERDIR)/release/libfourier.a
-
-$(COMMON_OBJ) : $(COMMON_SRC) | $(OBJDIR)
-
-$(LIBFOURIERDIR)/release/libfourier.a:
-	$(MAKE) -C libfourier
 
 #----------------------------#
 # make encodetool
@@ -107,11 +97,9 @@ $(LIBFOURIERDIR)/release/libfourier.a:
 
 encodetool : $(ENCODETOOL_EXE)
 
-$(ENCODETOOL_EXE) : $(COMMON_OBJ) $(ENCODETOOL_OBJ) | $(RELDIR)
+$(ENCODETOOL_EXE) : $(COMMON_OBJ) $(ENCODETOOL_OBJ) $(LIBFOURIERFILE) | $(RELDIR)
 	@echo Building encode tool $@...
 	@$(LD) -o $@ $^ $(LDFLAGS)
-
-$(ENCODETOOL_OBJ) : $(ENCODETOOL_SRC) | $(OBJDIR)
 
 #----------------------------#
 # make decodetool
@@ -119,11 +107,16 @@ $(ENCODETOOL_OBJ) : $(ENCODETOOL_SRC) | $(OBJDIR)
 
 decodetool : $(DECODETOOL_EXE)
 
-$(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) | $(RELDIR)
+$(DECODETOOL_EXE) : $(COMMON_OBJ) $(DECODETOOL_OBJ) $(LIBFOURIERFILE) | $(RELDIR)
 	@echo Building decode tool $@...
 	@$(LD) -o $@ $^ $(LDFLAGS)
 
-$(DECODETOOL_OBJ) : $(DECODETOOL_SRC) | $(OBJDIR)
+#----------------------------#
+# libfourier
+#----------------------------#
+
+$(LIBFOURIERFILE):
+	$(MAKE) -C libfourier
 
 #----------------------------#
 # x86-specific rules
