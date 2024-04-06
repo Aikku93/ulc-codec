@@ -222,7 +222,7 @@ int ULC_DecodeBlock(struct ULC_DecoderState_t *State, float *DstData, const void
 		float *Dst = DstData + Chan*BlockSize;
 		float *Src = TransformBuffer;
 		float *Lap = TransformInvLap;
-		ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+		ULC_SubBlockDecimationPattern_t DecimationPattern = ULCi_SubBlockDecimationPattern(WindowCtrl);
 		do {
 			int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 			if(!Block_Decode_DecodeSubBlockCoefs(Src, SubBlockSize, &SrcBuffer, &Size)) {

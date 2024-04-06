@@ -1,13 +1,14 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
-/**************************************/
-#pragma once
 /**************************************/
 #include <math.h>
 /**************************************/
+#include "ulcEncoder.h"
 #include "ulcHelper.h"
+/**************************************/
+#if ULC_USE_NOISE_CODING
 /**************************************/
 
 //! Compute noise spectrum (logarithmic output)
@@ -16,7 +17,7 @@
 //! The main difference is that we're extracting the noise
 //! level after masking with the tone level, rather than
 //! the other way around.
-static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) {
+void ULCi_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) {
 	const int ULC_N_BARK_BANDS = 25;
 	float NyquistHz = (float)RateHz * 0.5f;
 
@@ -36,10 +37,10 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	float *BarkMask = LogData + N;
 	for(BarkBand=0;BarkBand<ULC_N_BARK_BANDS;BarkBand++) {
 		//! Get the lines corresponding to this Bark band
-		float FreqBeg = BarkToFreq(BarkBand+0);
-		float FreqEnd = BarkToFreq(BarkBand+1);
-		int   LineBeg = (int)floorf(FreqToLine(FreqBeg, NyquistHz, N));
-		int   LineEnd = (int)ceilf (FreqToLine(FreqEnd, NyquistHz, N));
+		float FreqBeg = ULCi_BarkToFreq(BarkBand+0);
+		float FreqEnd = ULCi_BarkToFreq(BarkBand+1);
+		int   LineBeg = (int)floorf(ULCi_FreqToLine(FreqBeg, NyquistHz, N));
+		int   LineEnd = (int)ceilf (ULCi_FreqToLine(FreqEnd, NyquistHz, N));
 		if(LineBeg < 0) LineBeg = 0;
 		if(LineEnd < 0) LineEnd = 0;
 		if(LineBeg > N-1) LineBeg = N-1;
@@ -67,7 +68,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 		float MaskRatio = 0.0f;
 		if(SumPeakW != 0.0) {
 			SumPeak   = SumPeak  / SumPeakW;
-			SumFloor  = SumFloor / (float)nLines;
+			SumFloor  = SumFloor / (double)nLines;
 			MaskRatio = (float)(SumFloor - SumPeak);
 		}
 		BarkMask[BarkBand] = MaskRatio;
@@ -81,12 +82,12 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 	//! to use it.
 	int Line;
 	for(Line=0;Line<N;Line++) {
-		float BarkBand = FreqToBark(LineToFreq(Line, NyquistHz, N));
+		float BarkBand = ULCi_FreqToBark(ULCi_LineToFreq(Line, NyquistHz, N));
 		int   BandIdx  = (int)BarkBand;
 		      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
 		      BandIdx  = (BandIdx < ULC_N_BARK_BANDS) ? BandIdx : (ULC_N_BARK_BANDS-1);
 		float w     = expf(BarkMask[BandIdx]);
-		float Noise = ((w < (float)M_SQRT1_2) ? (LogData[Line] + BarkMask[BandIdx]) : -100.0f);
+		float Noise = LogData[Line] + BarkMask[BandIdx];
 		Data[Line*2+0] = w;
 		Data[Line*2+1] = w * (Noise*0.5f + 0x1.62E430p-1f); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale]));
 	}
@@ -96,7 +97,7 @@ static inline void Block_Transform_CalculateNoiseLogSpectrum(float *Data, void *
 /**************************************/
 
 //! Get the quantized noise amplitude for encoding
-static int Block_Encode_EncodePass_GetNoiseQ(const float *Data, int Band, int N, float q) {
+int ULCi_GetNoiseQ(const float *Data, int Band, int N, float q) {
 	//! Fixup for DCT+DST -> Pseudo-DFT
 	Data += Band / 2 * 2;
 	N = (N + (Band & 1) + 1) / 2;
@@ -115,12 +116,14 @@ static int Block_Encode_EncodePass_GetNoiseQ(const float *Data, int Band, int N,
 	}
 
 	//! Quantize the noise amplitude into final code
-	int NoiseQ = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0x7);
+	int NoiseQ = ULCi_CompandedQuantizeCoefficientUnsigned(Amplitude*q, 1 + 0x7);
 	return NoiseQ;
 }
 
+/**************************************/
+
 //! Compute quantized HF extension parameters for encoding
-static int Block_Encode_EncodePass_GetHFExtParams_LeastSquares(const float *Data, int N, float *Amplitude, float *Decay) {
+static int GetHFExtParams_LeastSquares(const float *Data, int N, float *Amplitude, float *Decay) {
 	//! Assumes Data[] is {Weight,Value} pairs
 	int n;
 	float SumX  = 0.0f;
@@ -145,7 +148,7 @@ static int Block_Encode_EncodePass_GetHFExtParams_LeastSquares(const float *Data
 	*Decay     = (SumW *SumXY - SumX*SumY ) / Det;
 	return 1;
 }
-static void Block_Encode_EncodePass_GetHFExtParams(const float *Data, int Band, int N, float q, int *_NoiseQ, int *_NoiseDecay) {
+void ULCi_GetHFExtParams(const float *Data, int Band, int N, float q, int *_NoiseQ, int *_NoiseDecay) {
 	//! Fixup for DCT+DST -> Pseudo-DFT
 	Data += Band / 2 * 2;
 	N = (N + (Band & 1) + 1) / 2;
@@ -153,7 +156,7 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Data, int Band, 
 	//! Solve for least-squares (in the log domain, for exponential fitting)
 	float Amplitude, Decay; {
 		//! If couldn't solve, disable noise fill
-		if(!Block_Encode_EncodePass_GetHFExtParams_LeastSquares(Data, N, &Amplitude, &Decay)) {
+		if(!GetHFExtParams_LeastSquares(Data, N, &Amplitude, &Decay)) {
 			*_NoiseQ = *_NoiseDecay = 0;
 			return;
 		}
@@ -167,14 +170,16 @@ static void Block_Encode_EncodePass_GetHFExtParams(const float *Data, int Band, 
 	//! Amplitude has already been scaled by 4.0 (plus normalization),
 	//! but we need to scale to 16.0 here because HF extension uses
 	//! a 4bit amplitude instead of 3bit like "normal" noise fill does
-	int NoiseQ     = ULC_CompandedQuantizeCoefficientUnsigned(Amplitude*q*4.0f, 1 + 0xF);
-	int NoiseDecay = ULC_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p19f); //! (1-Decay) * 2^19
+	int NoiseQ     = ULCi_CompandedQuantizeCoefficientUnsigned(Amplitude*q*4.0f, 1 + 0xF);
+	int NoiseDecay = ULCi_CompandedQuantizeUnsigned((Decay-1.0f) * -0x1.0p19f); //! (1-Decay) * 2^19
 	if(!NoiseDecay) return; //! <- On immediate falloff, disable fill
 	if(NoiseDecay > 0xFF) NoiseDecay = 0xFF;
 	*_NoiseQ     = NoiseQ;
 	*_NoiseDecay = NoiseDecay;
 }
 
+/**************************************/
+#endif
 /**************************************/
 //! EOF
 /**************************************/

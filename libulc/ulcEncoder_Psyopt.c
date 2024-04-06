@@ -1,18 +1,20 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
-/**************************************/
-#pragma once
 /**************************************/
 #include <math.h>
 #include <stdint.h>
 /**************************************/
 #include "ulcEncoder.h"
 #include "ulcHelper.h"
+#include "ulcEncoder_Internals.h"
+/**************************************/
+#if ULC_USE_PSYCHOACOUSTICS
 /**************************************/
 
-static inline void Block_Transform_CalculatePsychoacoustics(
+//! Calculate masking levels for each frequency line
+void ULCi_CalculatePsychoacoustics(
 	float *MaskingNp,
 	float *BufferAmp2,
 	void  *BufferTemp,
@@ -35,7 +37,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 	}
 
 	//! Compute masking levels for each [sub-]block
-	ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+	ULC_SubBlockDecimationPattern_t DecimationPattern = ULCi_SubBlockDecimationPattern(WindowCtrl);
 	do {
 		int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
 
@@ -48,10 +50,10 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		float *BarkMask = (float*)BufferTemp;
 		for(BarkBand=0;BarkBand<ULC_N_BARK_BANDS;BarkBand++) {
 			//! Get the lines corresponding to this Bark band
-			float FreqBeg = BarkToFreq(BarkBand+0);
-			float FreqEnd = BarkToFreq(BarkBand+1);
-			int   LineBeg = (int)floorf(FreqToLine(FreqBeg, NyquistHz, SubBlockSize));
-			int   LineEnd = (int)ceilf (FreqToLine(FreqEnd, NyquistHz, SubBlockSize));
+			float FreqBeg = ULCi_BarkToFreq(BarkBand+0);
+			float FreqEnd = ULCi_BarkToFreq(BarkBand+1);
+			int   LineBeg = (int)floorf(ULCi_FreqToLine(FreqBeg, NyquistHz, SubBlockSize));
+			int   LineEnd = (int)ceilf (ULCi_FreqToLine(FreqEnd, NyquistHz, SubBlockSize));
 			if(LineBeg < 0) LineBeg = 0;
 			if(LineEnd < 0) LineEnd = 0;
 			if(LineBeg > SubBlockSize-1) LineBeg = SubBlockSize-1;
@@ -91,7 +93,7 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 		//! Now generate masking level for each frequency line
 		int Line;
 		for(Line=0;Line<SubBlockSize;Line++) {
-			float BarkBand = FreqToBark(LineToFreq(Line, NyquistHz, SubBlockSize));
+			float BarkBand = ULCi_FreqToBark(ULCi_LineToFreq(Line, NyquistHz, SubBlockSize));
 			int   BandIdx  = (int)BarkBand;
 			float BarkFrac = BarkBand - (float)BandIdx;
 			      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
@@ -107,6 +109,8 @@ static inline void Block_Transform_CalculatePsychoacoustics(
 	} while(DecimationPattern >>= 4);
 }
 
+/**************************************/
+#endif
 /**************************************/
 //! EOF
 /**************************************/

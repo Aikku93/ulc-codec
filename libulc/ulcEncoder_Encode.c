@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -8,10 +8,8 @@
 /**************************************/
 #include "Fourier.h"
 #include "ulcEncoder.h"
-/**************************************/
-#if ULC_USE_NOISE_CODING
-# include "ulcEncoder_NoiseFill.h"
-#endif
+#include "ulcHelper.h"
+#include "ulcEncoder_Internals.h"
 /**************************************/
 
 //! The target memory is always aligned to 64 bytes, so just
@@ -21,7 +19,8 @@ typedef uint8_t BitStream_t; //! <- MUST BE UNSIGNED
 
 /**************************************/
 
-ULC_FORCED_INLINE void Block_Encode_WriteNybble(BitStream_t x, BitStream_t **Dst, int *Size) {
+//! Write nybble to output
+static void WriteNybble(BitStream_t x, BitStream_t **Dst, int *Size) {
 	//! Push nybble
 	BitStream_t *p = *Dst;
 	*p >>= 4;
@@ -31,25 +30,27 @@ ULC_FORCED_INLINE void Block_Encode_WriteNybble(BitStream_t x, BitStream_t **Dst
 	//! Next byte?
 	if((*Size)%BISTREAM_NBITS == 0) (*Dst)++;
 }
-ULC_FORCED_INLINE void Block_Encode_WriteQuantizer(int qi, BitStream_t **DstBuffer, int *Size, int Lead) {
+
+//! Write quantizer to output
+static void WriteQuantizer(int qi, BitStream_t **DstBuffer, int *Size, int Lead) {
 	int s = qi - 5;
 	if(Lead) {
-		Block_Encode_WriteNybble(0xF, DstBuffer, Size);
+		WriteNybble(0xF, DstBuffer, Size);
 	}
 	if(s < 0xE) {
 		//! Fh,0h..Dh: Quantizer change
-		Block_Encode_WriteNybble(s, DstBuffer, Size);
+		WriteNybble(s, DstBuffer, Size);
 	} else {
 		//! Fh,Eh,0h..Ch: Quantizer change (extended precision)
-		Block_Encode_WriteNybble(  0xE, DstBuffer, Size);
-		Block_Encode_WriteNybble(s-0xE, DstBuffer, Size);
+		WriteNybble(  0xE, DstBuffer, Size);
+		WriteNybble(s-0xE, DstBuffer, Size);
 	}
 }
 
 /**************************************/
 
 //! Build quantizer from weighted average
-ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
+static int BuildQuantizer(float MaxVal) {
 	//! NOTE: `MaxVal` approaches (4/Pi)^2 as BlockSize
 	//! approaches infinity, due to the p=1 norm of
 	//! the MDCT matrix. Therefore, we use a bias of 5
@@ -91,7 +92,7 @@ ULC_FORCED_INLINE int Block_Encode_BuildQuantizer(float MaxVal) {
 /**************************************/
 
 //! Encode a range of coefficients
-ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
+static int WriteQuantizerZone(
 	int           CurIdx,
 	int           EndIdx,
 	float         Quant,
@@ -103,7 +104,6 @@ ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
 	int           NextCodedIdx,
 	int           nOutCoef,
 	float        *LossSumPtr,
-	float        *LossSumWPtr,
 	BitStream_t **DstBuffer,
 	int          *Size
 ) {
@@ -113,50 +113,39 @@ ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
 	//! code accordingly. This isn't too important for larger
 	//! [sub-]block sizes, but greatly improves quality when used
 	//! on smaller sizes (eg. BlockSize = 512).
-	float LossSum  = *LossSumPtr;
-	float LossSumW = *LossSumWPtr;
+	float LossSum = *LossSumPtr;
 	do {
 		//! Seek the next viable coefficient
 		int Qn;
-#if 1
 		do if(CoefIdx[CurIdx] < nOutCoef) {
 			//! We can only code +/-2..+/-7, so we
 			//! check that Qn is inside this range
-			Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
+			Qn = ULCi_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
 			if(ABS(Qn) > 1) break;
 		} while(++CurIdx < EndIdx);
 		if(CurIdx >= EndIdx) break;
-#else //! This code path can result in really bad noise when quantization gets extreme
-		//! If the psymodel says we /need/ this coefficient,
-		//! make sure we encode it rather than skip it, even
-		//! if we have more distortion than if we skipped it
-		while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef) CurIdx++;
-		if(CurIdx >= EndIdx) break;
-		Qn = ULC_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
-		if(ABS(Qn) < 2) Qn = (Coef[CurIdx] < 0) ? (-2) : (+2);
-#endif
 
-		//! Code the zero runs, and get coefficient energy loss.
+		//! Code the zero runs, and update coefficient energy loss
 		int n, v, zR = CurIdx - NextCodedIdx;
 		while(zR) {
 			//! If we plan to skip two or less coefficients, try to encode
 			//! them instead, as this is cheaper+better than filling with zero
 			if(zR == 1) {
-				int Qn1 = ULC_CompandedQuantizeCoefficient(Coef[NextCodedIdx]*Quant, 0x7);
+				int Qn1 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx]*Quant, 0x7);
 				if(ABS(Qn1) > 1) {
 					//! -7h..-2h, +2h..+7h: Normal coefficient
-					Block_Encode_WriteNybble(Qn1, DstBuffer, Size);
+					WriteNybble(Qn1, DstBuffer, Size);
 					NextCodedIdx += 1;
 					break;
 				}
 			}
 			if(zR == 2) {
-				int Qn1 = ULC_CompandedQuantizeCoefficient(Coef[NextCodedIdx+0]*Quant, 0x7);
-				int Qn2 = ULC_CompandedQuantizeCoefficient(Coef[NextCodedIdx+1]*Quant, 0x7);
+				int Qn1 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx+0]*Quant, 0x7);
+				int Qn2 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx+1]*Quant, 0x7);
 				if(ABS(Qn1) > 1 && ABS(Qn2) > 1) {
 					//! -7h..-2h, +2h..+7h: Normal coefficient
-					Block_Encode_WriteNybble(Qn1, DstBuffer, Size);
-					Block_Encode_WriteNybble(Qn2, DstBuffer, Size);
+					WriteNybble(Qn1, DstBuffer, Size);
+					WriteNybble(Qn2, DstBuffer, Size);
 					NextCodedIdx += 2;
 					break;
 				}
@@ -181,14 +170,14 @@ ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
 			if(zR >= 16) {
 				v = zR - 16; if(v > 0x01FF) v = 0x01FF;
 				n = v  + 16;
-				NoiseQ = Block_Encode_EncodePass_GetNoiseQ(CoefNoise, NextCodedIdx, n, Quant);
+				NoiseQ = ULCi_GetNoiseQ(CoefNoise, NextCodedIdx, n, Quant);
 			}
 			if(NoiseQ) {
 				//! 8h,Zh,Yh,Xh: 16 .. 527 noise fill (Xh != 0)
-				Block_Encode_WriteNybble(0x8,  DstBuffer, Size);
-				Block_Encode_WriteNybble(v>>5, DstBuffer, Size);
-				Block_Encode_WriteNybble(v>>1, DstBuffer, Size);
-				Block_Encode_WriteNybble((v&1) | ((NoiseQ-1)<<1), DstBuffer, Size);
+				WriteNybble(0x8,  DstBuffer, Size);
+				WriteNybble(v>>5, DstBuffer, Size);
+				WriteNybble(v>>1, DstBuffer, Size);
+				WriteNybble((v&1) | ((NoiseQ-1)<<1), DstBuffer, Size);
 			} else {
 #endif
 				//! Determine which run type to use and get the number of zeros coded
@@ -200,23 +189,22 @@ ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
 					//! 0h,0h..Fh: Zeros fill (1 .. 16 coefficients)
 					v = zR - 1; if(v > 0xF) v = 0xF;
 					n = v  + 1;
-					Block_Encode_WriteNybble(0x0, DstBuffer, Size);
-					Block_Encode_WriteNybble(v,   DstBuffer, Size);
+					WriteNybble(0x0, DstBuffer, Size);
+					WriteNybble(v,   DstBuffer, Size);
 				} else {
 					//! 1h,Yh,Xh: 33 .. 542 zeros fill (Xh == 0)
 					v = zR - 33; if(v > 0xFF) v = 0xFF;
 					n = v  + 33;
-					Block_Encode_WriteNybble(0x1,  DstBuffer, Size);
-					Block_Encode_WriteNybble(v>>4, DstBuffer, Size);
-					Block_Encode_WriteNybble(v>>0, DstBuffer, Size);
+					WriteNybble(0x1,  DstBuffer, Size);
+					WriteNybble(v>>4, DstBuffer, Size);
+					WriteNybble(v>>0, DstBuffer, Size);
 				}
 
 				//! Finally, accumulate this run's energy loss
 				int k;
 				for(k=0;k<n;k++) {
 					float v = Coef[NextCodedIdx+k];
-					LossSum  += ABS(v);
-					LossSumW += 1;
+					LossSum  += SQR(v);
 				}
 #if ULC_USE_NOISE_CODING
 			}
@@ -233,31 +221,22 @@ ULC_FORCED_INLINE int Block_Encode_EncodePass_WriteQuantizerZone(
 			//! the new coefficient will always be valid if the old
 			//! one was valid, too.
 			float Value = Coef[CurIdx];
-			Value += (LossSum / sqrtf(LossSumW)) * ((Value < 0.0f) ? (-1.0f) : (+1.0f));
-			Qn = ULC_CompandedQuantizeCoefficient(Value*Quant, 0x7);
-
-			//! Now that we've coded a coefficient, re-set the energy loss sum.
-			//! NOTE: If we overshot in the prior calculation of Qn, then the sum
-			//! will start at that amount of overshoot. This is intentional; when
-			//! testing a negative sum, this resulted in poorer output quality,
-			//! even if the coefficient wasn't amplified when the sum was < 0.0.
-			float v = Value - Qn*ABS(Qn)/Quant;
-			LossSum  = ABS(v);
-			LossSumW = 1;
+			Value += sqrtf(LossSum) * ((Value < 0.0f) ? (-0.5f) : (+0.5f));
+			Qn = ULCi_CompandedQuantizeCoefficient(Value*Quant, 0x7);
+			LossSum  = 0.0f;
 		}
-		Block_Encode_WriteNybble(Qn, DstBuffer, Size);
+		WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
 
 		//! Move to the next coefficient
 		do CurIdx++; while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef);
 	} while(CurIdx < EndIdx);
 	*LossSumPtr  = LossSum;
-	*LossSumWPtr = LossSumW;
 	return NextCodedIdx;
 }
 
 //! Encode a [sub]block
-static inline void Block_Encode_EncodePass_WriteSubBlock(
+static void WriteSubBlock(
 	int           Idx,
 	int           SubBlockSize,
 	const float  *Coef,
@@ -274,7 +253,7 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	int NextCodedIdx  = Idx;
 	int PrevQuant     = -1;
 	int QuantStartIdx = -1;
-	float LossSum = 0.0f, LossSumW = 0.0f;
+	float LossSum = 0.0f;
 	float QuantMin = 1000.0f, QuantMax = -1000.0f;
 	do {
 		//! Seek the next coefficient
@@ -298,15 +277,15 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 		const float MaxRange = 7.0f;
 		if(NewMax > NewMin*MaxRange) {
 			//! Write/update the quantizer
-			int qi = Block_Encode_BuildQuantizer(QuantMax);
+			int qi = BuildQuantizer(QuantMax);
 			if(qi != PrevQuant) {
-				Block_Encode_WriteQuantizer(qi, DstBuffer, Size, PrevQuant != -1);
+				WriteQuantizer(qi, DstBuffer, Size, PrevQuant != -1);
 				PrevQuant = qi;
 			}
 
 			//! Write the quantizer zone we just searched through
 			//! and start a new one from this coefficient
-			NextCodedIdx = Block_Encode_EncodePass_WriteQuantizerZone(
+			NextCodedIdx = WriteQuantizerZone(
 				QuantStartIdx,
 				Idx,
 				(float)(1u << qi),
@@ -318,7 +297,6 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 				NextCodedIdx,
 				nOutCoef,
 				&LossSum,
-				&LossSumW,
 				DstBuffer,
 				Size
 			);
@@ -337,14 +315,14 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 	if(n > 4) {
 		//! If we coded anything, then we must specify the lead sequence
 		if(PrevQuant != -1) {
-			Block_Encode_WriteNybble(0xF, DstBuffer, Size);
+			WriteNybble(0xF, DstBuffer, Size);
 		}
 
 		//! Analyze the remaining data for noise-fill mode
 #if ULC_USE_NOISE_CODING
 		int NoiseQ = 0, NoiseDecay = 0;
 		if(PrevQuant != -1 && n >= 16) { //! Don't use noise-fill for ultra-short tails
-			Block_Encode_EncodePass_GetHFExtParams(
+			ULCi_GetHFExtParams(
 				CoefNoise,
 				NextCodedIdx,
 				n,
@@ -355,30 +333,31 @@ static inline void Block_Encode_EncodePass_WriteSubBlock(
 		}
 		if(NoiseQ) {
 			//! Fh,Fh,Zh,Yh,Xh: Noise fill (to end; exp-decay)
-			Block_Encode_WriteNybble(0xF,           DstBuffer, Size);
-			Block_Encode_WriteNybble(NoiseQ-1,      DstBuffer, Size);
-			Block_Encode_WriteNybble(NoiseDecay>>4, DstBuffer, Size);
-			Block_Encode_WriteNybble(NoiseDecay,    DstBuffer, Size);
+			WriteNybble(0xF,           DstBuffer, Size);
+			WriteNybble(NoiseQ-1,      DstBuffer, Size);
+			WriteNybble(NoiseDecay>>4, DstBuffer, Size);
+			WriteNybble(NoiseDecay,    DstBuffer, Size);
 		} else {
 #endif
 			//! Fh,Eh,Fh: Stop
-			Block_Encode_WriteNybble(0xE, DstBuffer, Size);
-			Block_Encode_WriteNybble(0xF, DstBuffer, Size);
+			WriteNybble(0xE, DstBuffer, Size);
+			WriteNybble(0xF, DstBuffer, Size);
 #if ULC_USE_NOISE_CODING
 		}
 #endif
 	} else if(n > 0) {
 		//! If we have less than 4 coefficients, it's cheaper to
 		//! store a zero run than to do anything else.
-		Block_Encode_WriteNybble(0x0, DstBuffer, Size);
-		Block_Encode_WriteNybble(n-1, DstBuffer, Size);
+		WriteNybble(0x0, DstBuffer, Size);
+		WriteNybble(n-1, DstBuffer, Size);
 	}
 }
 
 /**************************************/
 
+//! Encode block to target buffer
 //! Returns the block size (in bits) and the number of coded (non-zero) coefficients
-static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State, void *_DstBuffer, int nOutCoef) {
+int ULCi_EncodePass(const struct ULC_EncoderState_t *State, void *_DstBuffer, int nOutCoef) {
 	int BlockSize   = State->BlockSize;
 	int Chan, nChan = State->nChan;
 	const float *Coef      = State->TransformBuffer;
@@ -392,14 +371,14 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 	int Idx  = 0;
 	int Size = 0; //! Block size (in bits)
 	int WindowCtrl = State->WindowCtrl; {
-		Block_Encode_WriteNybble(WindowCtrl, &DstBuffer, &Size);
-		if(WindowCtrl & 0x8) Block_Encode_WriteNybble(WindowCtrl >> 4, &DstBuffer, &Size);
+		WriteNybble(WindowCtrl, &DstBuffer, &Size);
+		if(WindowCtrl & 0x8) WriteNybble(WindowCtrl >> 4, &DstBuffer, &Size);
 	}
 	for(Chan=0;Chan<nChan;Chan++) {
-		ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+		ULC_SubBlockDecimationPattern_t DecimationPattern = ULCi_SubBlockDecimationPattern(WindowCtrl);
 		do {
 			int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
-			Block_Encode_EncodePass_WriteSubBlock(
+			WriteSubBlock(
 				Idx,
 				SubBlockSize,
 				Coef,
@@ -420,10 +399,6 @@ static inline int Block_Encode_EncodePass(const struct ULC_EncoderState_t *State
 	Size = (Size+7) &~ 7;
 	return Size;
 }
-
-/**************************************/
-
-#undef BISTREAM_NBITS
 
 /**************************************/
 //! EOF

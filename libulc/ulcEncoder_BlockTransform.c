@@ -1,26 +1,23 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2022, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
-/**************************************/
-#pragma once
 /**************************************/
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 /**************************************/
 #include "Fourier.h"
-#include "ulcEncoder_Psycho.h"
-#include "ulcEncoder_WindowControl.h"
 #include "ulcHelper.h"
-/**************************************/
-#if ULC_USE_NOISE_CODING
-#include "ulcEncoder_NoiseFill.h"
-#endif
+#include "ulcEncoder_Internals.h"
 /**************************************/
 
-//! Transform a block and prepare its coefficients
-ULC_FORCED_INLINE void Block_Transform_SortIndices_SiftDown(const float *SortValues, int *Order, int Root, int N) {
+//! Implementation for heapsort
+//! This is used because qsort() tends to use quicksort, which
+//! has some nasty pathological cases, so I'd rather have a
+//! sort method that has more consistent timing, even if it's
+//! very slightly slower for the average case.
+static void Heapsort_SiftDown(const float *SortValues, int *Order, int Root, int N) {
 	//! NOTE: Most of the sorting time is spent in this function,
 	//! so I've tried to optimize it as best as I could. The
 	//! code below is what performed best on my Intel i7 CPU,
@@ -52,7 +49,7 @@ ULC_FORCED_INLINE void Block_Transform_SortIndices_SiftDown(const float *SortVal
 		if(Child >= N) return;
 	}
 }
-static inline void Block_Transform_SortIndices(int *SortedIndices, const float *SortValues, int *Temp, int N) {
+static void SortIndices(int *SortedIndices, const float *SortValues, int *Temp, int N) {
 	int n;
 
 	//! Start with mapping the indices directly
@@ -66,19 +63,23 @@ static inline void Block_Transform_SortIndices(int *SortedIndices, const float *
 	{
 		//! Heapify the array
 		n = N/2u - 1;
-		do Block_Transform_SortIndices_SiftDown(SortValues, Order, n, N); while(--n >= 0);
+		do Heapsort_SiftDown(SortValues, Order, n, N); while(--n >= 0);
 
 		//! Pop all elements off the heap one at a time
 		n = N-1;
 		do {
 			SortedIndices[Order[0]] = n;
 			Order[0] = Order[n];
-			Block_Transform_SortIndices_SiftDown(SortValues, Order, 0, n);
+			Heapsort_SiftDown(SortValues, Order, 0, n);
 		} while(--n);
 		SortedIndices[Order[0]] = n;
 	}
 }
-static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) {
+
+/**************************************/
+
+//! Transform a block and prepare its coefficients
+int ULCi_TransformBlock(struct ULC_EncoderState_t *State, const float *Data) {
 	int nChan     = State->nChan;
 	int BlockSize = State->BlockSize;
 
@@ -111,7 +112,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 
 	//! Get the window control parameters for this block and the next
 	int WindowCtrl     = State->WindowCtrl     = State->NextWindowCtrl;
-	int NextWindowCtrl = State->NextWindowCtrl = Block_Transform_GetWindowCtrl(
+	int NextWindowCtrl = State->NextWindowCtrl = ULCi_GetWindowCtrl(
 		State->SampleBuffer,
 		State->TransientBuffer,
 		State->TransientFilter,
@@ -121,7 +122,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		State->RateHz
 	);
 	int NextBlockOverlap; {
-		int Pattern = ULC_SubBlockDecimationPattern(NextWindowCtrl);
+		int Pattern = ULCi_SubBlockDecimationPattern(NextWindowCtrl);
 		NextBlockOverlap = BlockSize >> (Pattern&0x7);
 		if(Pattern&0x8) NextBlockOverlap >>= (NextWindowCtrl&0x7);
 	}
@@ -153,7 +154,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 		//! Transform the input data and get complexity measure (ABR, VBR modes)
 		float Complexity = 0.0f, ComplexityW = 0.0f;
 		for(Chan=0;Chan<nChan;Chan++) {
-			ULC_SubBlockDecimationPattern_t DecimationPattern = ULC_SubBlockDecimationPattern(WindowCtrl);
+			ULC_SubBlockDecimationPattern_t DecimationPattern = ULCi_SubBlockDecimationPattern(WindowCtrl);
 			do {
 				//! Get the size of this subblock and the overlap at the next
 				int SubBlockSize = BlockSize >> (DecimationPattern&0x7);
@@ -282,7 +283,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 				//! Compute noise spectrum
 				//! NOTE: This outputs 2*(SubBlockSize/2) values into BufferNoise,
 				//! corresponding to {Weight,Weight*LogNoiseLevel} pairs.
-				Block_Transform_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz);
+				ULCi_CalculateNoiseLogSpectrum(BufferNoise, BufferTemp, SubBlockSize, State->RateHz);
 #endif
 				//! Move to the next subblock
 				BufferSamples += SubBlockSize;
@@ -302,8 +303,8 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 			BufferAmp2   -= BlockSize/2; //! <- Accumulated across all channels - rewind
 #endif
 		}
-		BufferMDCT    -= BlockSize*nChan; //! Rewind to start of buffer
-		BufferIndex   -= BlockSize*nChan;
+		BufferMDCT  -= BlockSize*nChan; //! Rewind to start of buffer
+		BufferIndex -= BlockSize*nChan;
 
 		//! Finalize and store block complexity
 		if(Complexity) {
@@ -325,7 +326,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 #if ULC_USE_PSYCHOACOUSTICS
 		//! Perform psychoacoustics analysis
 		//! NOTE: Trashes BufferAmp2[]
-		Block_Transform_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->RateHz, WindowCtrl);
+		ULCi_CalculatePsychoacoustics(MaskingNp, BufferAmp2, BufferTemp, BlockSize, State->RateHz, WindowCtrl);
 
 		//! Add the psychoacoustics adjustment to the importance levels
 		//! NOTE: No need to split this section into subblock handling.
@@ -349,7 +350,7 @@ static int Block_Transform(struct ULC_EncoderState_t *State, const float *Data) 
 	{
 		int *BufferTmp = (int*)State->TransformTemp;
 		int *BufferIdx = State->TransformIndex;
-		Block_Transform_SortIndices(BufferIdx, (float*)BufferIdx, BufferTmp, nChan * BlockSize);
+		SortIndices(BufferIdx, (float*)BufferIdx, BufferTmp, nChan * BlockSize);
 	}
 	return nNzCoef;
 }

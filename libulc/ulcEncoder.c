@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -10,12 +10,7 @@
 #include "Fourier.h"
 #include "ulcEncoder.h"
 #include "ulcHelper.h"
-/**************************************/
-#include "ulcEncoder_BlockTransform.h"
-#include "ulcEncoder_Encode.h"
-#if ULC_USE_PSYCHOACOUSTICS
-# include "ulcEncoder_Psycho.h"
-#endif
+#include "ulcEncoder_Internals.h"
 /**************************************/
 #define BUFFER_ALIGNMENT 64u //! Always align memory to 64-byte boundaries (preparation for AVX-512)
 /**************************************/
@@ -104,7 +99,7 @@ int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, void *DstBuffer, 
 	int Lo = 0, Hi = MaxCoef;
 	if(Lo < Hi) do {
 		nOutCoef = (Lo + Hi) / 2u;
-		Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef);
+		Size = ULCi_EncodePass(State, DstBuffer, nOutCoef);
 		     if(Size < BitBudget) Lo = nOutCoef;
 		else if(Size > BitBudget) Hi = nOutCoef-1;
 		else {
@@ -116,12 +111,12 @@ int ULC_EncodeBlock_CBR_Core(struct ULC_EncoderState_t *State, void *DstBuffer, 
 
 	//! Avoid going over budget
 	int nOutCoefFinal = Lo;
-	if(nOutCoefFinal != nOutCoef) Size = Block_Encode_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
+	if(nOutCoefFinal != nOutCoef) Size = ULCi_EncodePass(State, DstBuffer, nOutCoef = nOutCoefFinal);
 	return Size;
 }
 const void *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps) {
 	void *Buf = (void*)State->TransformTemp;
-	int MaxCoef = Block_Transform(State, SrcData);
+	int MaxCoef = ULCi_TransformBlock(State, SrcData);
 	int Sz = ULC_EncodeBlock_CBR_Core(State, Buf, RateKbps, MaxCoef);
 	if(Size) *Size = Sz;
 	return Buf;
@@ -132,7 +127,7 @@ const void *ULC_EncodeBlock_CBR(struct ULC_EncoderState_t *State, const float *S
 //! Encode block (ABR mode)
 const void *ULC_EncodeBlock_ABR(struct ULC_EncoderState_t *State, const float *SrcData, int *Size, float RateKbps, float AvgComplexity) {
 	void *Buf = (void*)State->TransformTemp;
-	int MaxCoef = Block_Transform(State, SrcData);
+	int MaxCoef = ULCi_TransformBlock(State, SrcData);
 	float TargetKbps = RateKbps * State->BlockComplexity / AvgComplexity;
 	int Sz = ULC_EncodeBlock_CBR_Core(State, Buf, TargetKbps, MaxCoef);
 	if(Size) *Size = Sz;
@@ -147,7 +142,7 @@ const void *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *S
 	//! dervied; I have no idea what relation it bears to actual encoding.
 	void *Buf = (void*)State->TransformTemp;
 	float TargetComplexity = 0x1.E4EFB7p3f*logf(100.0f / Quality); //! 0x1.E4EFB7p3 = E^E. This seems to closely match ABR mode's peak rates
-	int MaxCoef  = Block_Transform(State, SrcData);
+	int MaxCoef  = ULCi_TransformBlock(State, SrcData);
 	int nTargetCoef = MaxCoef; {
 		//! TargetComplexity == 0 which would result in a
 		//! divide-by-zero error. So instead we just leave
@@ -157,7 +152,7 @@ const void *ULC_EncodeBlock_VBR(struct ULC_EncoderState_t *State, const float *S
 			if(fTarget < MaxCoef) nTargetCoef = (int)fTarget;
 		}
 	}
-	int Sz = Block_Encode_EncodePass(State, Buf, nTargetCoef);
+	int Sz = ULCi_EncodePass(State, Buf, nTargetCoef);
 	if(Size) *Size = Sz;
 	return Buf;
 }

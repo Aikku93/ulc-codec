@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
@@ -21,7 +21,8 @@
 //!  Bit0..2: Subblock shift (ie. BlockSize >> Shift)
 //!  Bit3:    Transient flag (ie. apply overlap scaling to that subblock)
 typedef uint_least16_t ULC_SubBlockDecimationPattern_t;
-ULC_FORCED_INLINE ULC_SubBlockDecimationPattern_t ULC_SubBlockDecimationPattern(int WindowCtrl) {
+ULC_FORCED_INLINE
+ULC_SubBlockDecimationPattern_t ULCi_SubBlockDecimationPattern(int WindowCtrl) {
 	static const ULC_SubBlockDecimationPattern_t Pattern[] = {
 		0x0000 | 0x0000, //! 0000: N/1 (Unused)
 		0x0000 | 0x0008, //! 0001: N/1*
@@ -46,7 +47,8 @@ ULC_FORCED_INLINE ULC_SubBlockDecimationPattern_t ULC_SubBlockDecimationPattern(
 /**************************************/
 
 //! Quantize value (mathematically optimal)
-ULC_FORCED_INLINE int ULC_CompandedQuantizeUnsigned(float v) {
+ULC_FORCED_INLINE
+int ULCi_CompandedQuantizeUnsigned(float v) {
 	//! Given x pre-scaled by the quantizer, and x' being companded x:
 	//!  xq = Floor[x'] + (x - Floor[x']^2 >= (Floor[x']+1)^2 - x)
 	//! ie. We round up when (x'+1)^2 has less error; note the signs,
@@ -67,45 +69,52 @@ ULC_FORCED_INLINE int ULC_CompandedQuantizeUnsigned(float v) {
 	//! Which gives the smallest coefficient that returns xq>0 as 0.5.
 	return (v >= 0.5f) ? (int)(0.5f + sqrtf(v - 0.25f)) : 0;
 }
-ULC_FORCED_INLINE int ULC_CompandedQuantize(float v) {
-	int vq = ULC_CompandedQuantizeUnsigned(ABS(v));
+ULC_FORCED_INLINE
+int ULCi_CompandedQuantize(float v) {
+	int vq = ULCi_CompandedQuantizeUnsigned(ABS(v));
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 
 //! Quantize coefficient
 //! This is its own function in case we need to change the rounding
 //! behaviour for coefficients, relative to simply minimizing RMSE.
-ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficientUnsigned(float v, int Limit) {
-	int vq = ULC_CompandedQuantizeUnsigned(v);
+ULC_FORCED_INLINE
+int ULCi_CompandedQuantizeCoefficientUnsigned(float v, int Limit) {
+	int vq = ULCi_CompandedQuantizeUnsigned(v);
 	return (vq < Limit) ? vq : Limit;
 }
-ULC_FORCED_INLINE int ULC_CompandedQuantizeCoefficient(float v, int Limit) {
-	int vq = ULC_CompandedQuantizeCoefficientUnsigned(ABS(v), Limit);
+ULC_FORCED_INLINE
+int ULCi_CompandedQuantizeCoefficient(float v, int Limit) {
+	int vq = ULCi_CompandedQuantizeCoefficientUnsigned(ABS(v), Limit);
 	return (v < 0.0f) ? (-vq) : (+vq);
 }
 
 /**************************************/
 
 //! Convert frequency Hz to line index (assuming centered frequency bins)
-static inline float FreqToLine(float fHz, float NyquistHz, uint32_t N) {
+ULC_FORCED_INLINE
+float ULCi_FreqToLine(float fHz, float NyquistHz, uint32_t N) {
 	return (fHz * (float)N / NyquistHz) - 0.5f;
 }
 
 //! Convert line index to frequency Hz (assuming centered frequency bins)
-static inline float LineToFreq(uint32_t Line, float NyquistHz, uint32_t N) {
+ULC_FORCED_INLINE
+float ULCi_LineToFreq(uint32_t Line, float NyquistHz, uint32_t N) {
 	return ((float)Line + 0.5f) * NyquistHz / (float)N;
 }
 
 //! Convert frequency Hz to Bark band
 //! Wang, Sekey & Gersho, 1992 definition:
 //!  Bark(f) = 6*ArcSinh[f/600]
-static inline float FreqToBark(float fHz) {
+ULC_FORCED_INLINE
+float ULCi_FreqToBark(float fHz) {
 	return 6.0f*asinhf(fHz * (1.0f/600.0f));
 }
 
 //! Convert Bark band to frequency Hz
 //! Inverse of above definition
-static inline float BarkToFreq(float Bark) {
+ULC_FORCED_INLINE
+float ULCi_BarkToFreq(float Bark) {
 	return 600.0f * sinhf(Bark * (1.0f/6.0f));
 }
 

@@ -1,9 +1,7 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2023, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
-/**************************************/
-#pragma once
 /**************************************/
 #include <math.h>
 /**************************************/
@@ -11,39 +9,7 @@
 #include "ulcHelper.h"
 /**************************************/
 
-//! Get optimal log base-2 overlap and window scalings for transients
-//! The idea is that if a transient is relatively centered with the
-//! transition region of a subblock, then we can just set the overlap
-//! amount to account for it and avoid reducing the window size too
-//! much, preserving the quality gains of a larger transform. At the
-//! same time, we also need to /make/ the transient sit within a
-//! transition region to take advantage of this, and so we combine
-//! the overlap scaling and window-switching strategies.
-//! NOTE: Bit codes for transient region coding, and their window sizes:
-//!  First nybble:
-//!   0xxx: No decimation. xxx = Overlap scaling
-//!   1xxx: Decimate. xxx = Overlap scaling for the transient subblock
-//!  Second nybble (when first nybble is 1xxx; otherwise, this is implicitly 0001):
-//!   1xxx: Decimation by 1/8: Position = 0~7
-//!    1000: N/8*,N/8,N/4,N/2
-//!    1001: N/8,N/8*,N/4,N/2
-//!    1010: N/4,N/8*,N/8,N/2
-//!    1011: N/4,N/8,N/8*,N/2
-//!    1100: N/2,N/8*,N/8,N/4
-//!    1101: N/2,N/8,N/8*,N/4
-//!    1110: N/2,N/4,N/8*,N/8
-//!    1111: N/2,N/4,N/8,N/8*
-//!   01xx: Decimation by 1/4: Position = 0~3
-//!    0100: N/4*,N/4,N/2
-//!    0101: N/4,N/4*,N/2
-//!    0110: N/2,N/4*,N/4
-//!    0111: N/2,N/4,N/4*
-//!   001x: Decimation by 1/2: Position = 0~1
-//!    0010: N/2*,N/2
-//!    0011: N/2,N/2*
-//!   0001: No decimation (not coded in the bitstream)
-//!    0001: N/1*
-//!  The starred subblocks set overlap scaling with regards to the last [sub]block.
+//! Filter input data into transient pulses
 //! NOTE:
 //!  -TransientBuffer[] must be ULC_MAX_BLOCK_DECIMATION_FACTOR*2 in size
 //!   and will be updated as (L = R_Old, R = New). Initialize with 0.
@@ -62,9 +28,7 @@
 //!  -TmpBuffer[] must be BlockSize*2 elements in size.
 //! NOTE: All rates were determined experimentally, based on what
 //! resulted in the best sensitivity without excessive glitching.
-#pragma GCC push_options
-#pragma GCC optimize("fast-math") //! Should improve things, hopefully, maybe
-static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
+static void TransientFiltering(
 	const float *BlockData,
 	struct ULC_TransientData_t *TransientBuffer,
 	      float *TransientFilter,
@@ -75,7 +39,9 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 ) {
 	int n, Chan;
 
-	//! Extract the energy of a highpass and bandpass filter
+	//! Extract the energy of a highpass and bandpass filter,
+	//! as changes in the low frequencies aren't important
+	//! for transients (they happen too slowly to be audible).
 	//! Transfer functions:
 	//!  H(z) = -z^-1 + 2 - z^1 (Highpass; Gain = 4.0)
 	//!  H(z) = z^1 - z^-1      (Bandpass; Gain = 2.0)
@@ -126,7 +92,7 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 	float EnvPreMaskHP = EnvPostMaskHP;
 	float EnvPreMaskBP = EnvPostMaskBP;
 	float EnvPreMaskHP_Rate = expf(-0x1.CC845Cp7f / RateHz); //! -2.0dB/ms (1000 * Log[10^(-2.0/20)])
-	float EnvPreMaskBP_Rate = expf(-0x1.596344p8f / RateHz); //! -3.0dB/ms (1000 * Log[10^(-1.8/20)])
+	float EnvPreMaskBP_Rate = expf(-0x1.596344p8f / RateHz); //! -3.0dB/ms (1000 * Log[10^(-3.0/20)])
 	for(n=BlockSize-1;n>=0;n--) {
 		//! NOTE: Cross-multiply HP with BP energy and vice-versa
 		//! to normalize the levels with respect to one another
@@ -167,8 +133,11 @@ static inline void Block_Transform_GetWindowCtrl_TransientFiltering(
 		} while(Dst++, --i);
 	}
 }
-#pragma GCC pop_options
-static inline int Block_Transform_GetWindowCtrl(
+
+/**************************************/
+
+//! Get optimal log base-2 overlap and window scalings for transients
+int ULCi_GetWindowCtrl(
 	const float *BlockData,
 	struct ULC_TransientData_t *TransientBuffer,
 	      float *TransientFilter,
@@ -181,7 +150,7 @@ static inline int Block_Transform_GetWindowCtrl(
 
 	//! Perform filtering to obtain transient analysis
 	//! then seek to this "new" block's transient data
-	Block_Transform_GetWindowCtrl_TransientFiltering(BlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan, RateHz);
+	TransientFiltering(BlockData, TransientBuffer, TransientFilter, TmpBuffer, BlockSize, nChan, RateHz);
 	TransientBuffer += ULC_MAX_BLOCK_DECIMATION_FACTOR;
 
 	//! Keep trying to increase the window size until the
