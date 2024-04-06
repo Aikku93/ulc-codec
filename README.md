@@ -52,7 +52,7 @@ This will take ```Input.ulc``` and output ```Output.wav``` in the specified form
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
 
 ## License
-ulc-codec is released under the GPLv3 license. See the LICENSE file for full terms.
+ulc-codec is released under the Unlicense terms - do whatever you want with it.
 
 ## Acknowledgements
 * Huge thanks to Dennis K (`DekuTree64`) and `musicalman` for listening to (and for playing programming-rubber-ducky to) all my rants and thought processes as I worked through understanding audio codec design, as well as testing out experimental builds and offering immensely helpful critiques. Without them, this codec would never have gotten as far as it has.
