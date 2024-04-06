@@ -1,0 +1,3 @@
+[submodule "libfourier"]
+	path = libfourier
+	url = https://github.com/Aikku93/libfourier

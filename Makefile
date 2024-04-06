@@ -7,13 +7,30 @@
 # Directories
 #----------------------------#
 
+LIBFOURIERDIR := libfourier
+
 OBJDIR := build
 RELDIR := release
+LIBDIR := $(LIBFOURIERDIR)/release
 
-INCDIR := include
-COMMON_SRCDIR := fourier libulc
+INCDIR := include $(LIBFOURIERDIR)/include
+COMMON_SRCDIR := libulc
 ENCODETOOL_SRCDIR := tools
 DECODETOOL_SRCDIR := tools
+
+#----------------------------#
+# Cross-compilation, compile flags
+#----------------------------#
+
+ifeq ($(strip $(ARCHCROSS)),)
+	ARCHCROSS :=
+endif
+ifeq ($(strip $(ARCHFLAGS)),)
+	ARCHFLAGS :=
+endif
+
+CCFLAGS := $(ARCHFLAGS) -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
+LDFLAGS := -static -s $(foreach dir, $(LIBDIR), -L$(dir)) -lfourier
 
 #----------------------------#
 # Tools
@@ -36,16 +53,6 @@ ifeq ($(strip $(PLATFORM)),)
 	endif
 	# etc.
 endif
-
-#----------------------------#
-# Cross-compilation, compile flags
-#----------------------------#
-
-ARCHCROSS :=
-ARCHFLAGS :=
-
-CCFLAGS := $(ARCHFLAGS) -fno-math-errno -ffast-math -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
-LDFLAGS := -static -s
 
 #----------------------------#
 # Source files
@@ -79,7 +86,7 @@ DFILES := $(COMMON_OBJ:.o=.d) $(ENCODETOOL_OBJ:.o=.d) $(DECODETOOL_OBJ:.o=.d)
 # make all
 #----------------------------#
 
-all : encodetool decodetool common
+all : common encodetool decodetool
 
 $(OBJDIR) $(RELDIR) :; mkdir -p $@
 
@@ -87,9 +94,12 @@ $(OBJDIR) $(RELDIR) :; mkdir -p $@
 # make common
 #----------------------------#
 
-common : $(COMMON_OBJ)
+common : $(COMMON_OBJ) $(LIBFOURIERDIR)/release/libfourier.a
 
 $(COMMON_OBJ) : $(COMMON_SRC) | $(OBJDIR)
+
+$(LIBFOURIERDIR)/release/libfourier.a:
+	$(MAKE) -C libfourier
 
 #----------------------------#
 # make encodetool
@@ -121,22 +131,22 @@ $(DECODETOOL_OBJ) : $(DECODETOOL_SRC) | $(OBJDIR)
 
 ifeq ($(PLATFORM), x86)
 $(OBJDIR)/%_AVX_FMA.c.o : %_AVX_FMA.c | $(OBJDIR)
-	@echo $(notdir $<)
+	@echo [x86] $(notdir $<)
 	@mkdir -p $(dir $@)
 	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -mavx -mfma
 
 $(OBJDIR)/%_AVX.c.o : %_AVX.c | $(OBJDIR)
-	@echo $(notdir $<)
+	@echo [x86] $(notdir $<)
 	@mkdir -p $(dir $@)
 	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -mavx
 
 $(OBJDIR)/%_SSE_FMA.c.o : %_SSE_FMA.c | $(OBJDIR)
-	@echo $(notdir $<)
+	@echo [x86] $(notdir $<)
 	@mkdir -p $(dir $@)
 	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -msse -mfma
 
 $(OBJDIR)/%_SSE.c.o : %_SSE.c | $(OBJDIR)
-	@echo $(notdir $<)
+	@echo [x86] $(notdir $<)
 	@mkdir -p $(dir $@)
 	@$(CC) $(CCFLAGS) -c -MD -MP -MF $(OBJDIR)/$<.d -o $@ $< -msse
 endif
@@ -160,6 +170,8 @@ $(OBJDIR)/%.c.o : %.c | $(OBJDIR)
 # make clean
 #----------------------------#
 
-clean :; rm -rf $(OBJDIR) $(RELDIR)
+clean :
+	@rm -rf $(OBJDIR) $(RELDIR)
+	@$(MAKE) -C libfourier clean
 
 #----------------------------#
