@@ -103,50 +103,33 @@ static int WriteQuantizerZone(
 	const int    *CoefIdx,
 	int           NextCodedIdx,
 	int           nOutCoef,
-	float        *LossSumPtr,
 	BitStream_t **DstBuffer,
 	int          *Size
 ) {
-	//! Write the coefficients
-	//! The re-shaping basically accounts for how much energy we
-	//! lose when coding zeros, and adjusts the coefficients we
-	//! code accordingly. This isn't too important for larger
-	//! [sub-]block sizes, but greatly improves quality when used
-	//! on smaller sizes (eg. BlockSize = 512).
-	float LossSum = *LossSumPtr;
-	do {
+	for(;;) {
 		//! Seek the next viable coefficient
-		int Qn;
-		do if(CoefIdx[CurIdx] < nOutCoef) {
-			//! We can only code +/-2..+/-7, so we
-			//! check that Qn is inside this range
-			Qn = ULCi_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
-			if(ABS(Qn) > 1) break;
-		} while(++CurIdx < EndIdx);
+		while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef) CurIdx++;
 		if(CurIdx >= EndIdx) break;
 
-		//! Code the zero runs, and update coefficient energy loss
-		int n, v, zR = CurIdx - NextCodedIdx;
+		//! Calculate the quantized coefficient.
+		//! If the coefficient collapses to become uncodeable, skip it
+		int Qn = ULCi_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
+		if(ABS(Qn) <= 1) { CurIdx++; continue; }
+
+		//! We now know the coefficient can be coded, so write out the zeros/noise run(s).
+		int n, v;
+		int zR = CurIdx - NextCodedIdx;
 		while(zR) {
 			//! If we plan to skip two or less coefficients, try to encode
 			//! them instead, as this is cheaper+better than filling with zero
-			if(zR == 1) {
-				int Qn1 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx]*Quant, 0x7);
-				if(ABS(Qn1) > 1) {
-					//! -7h..-2h, +2h..+7h: Normal coefficient
-					WriteNybble(Qn1, DstBuffer, Size);
-					NextCodedIdx += 1;
-					break;
-				}
-			}
-			if(zR == 2) {
-				int Qn1 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx+0]*Quant, 0x7);
-				int Qn2 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx+1]*Quant, 0x7);
-				if(ABS(Qn1) > 1 && ABS(Qn2) > 1) {
-					//! -7h..-2h, +2h..+7h: Normal coefficient
-					WriteNybble(Qn1, DstBuffer, Size);
-					WriteNybble(Qn2, DstBuffer, Size);
-					NextCodedIdx += 2;
+			if(zR <= 2) {
+				int Qn1, Qn2;
+				if(1)       Qn1 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx+0]*Quant, 0x7);
+				if(zR >= 2) Qn2 = ULCi_CompandedQuantizeCoefficient(Coef[NextCodedIdx+1]*Quant, 0x7);
+				if(ABS(Qn1) > 1 && (zR < 2 || ABS(Qn2) > 1)) {
+					if(1)       WriteNybble(Qn1, DstBuffer, Size);
+					if(zR >= 2) WriteNybble(Qn2, DstBuffer, Size);
+					NextCodedIdx += zR;
 					break;
 				}
 			}
@@ -199,13 +182,6 @@ static int WriteQuantizerZone(
 					WriteNybble(v>>4, DstBuffer, Size);
 					WriteNybble(v>>0, DstBuffer, Size);
 				}
-
-				//! Finally, accumulate this run's energy loss
-				int k;
-				for(k=0;k<n;k++) {
-					float v = Coef[NextCodedIdx+k];
-					LossSum  += SQR(v);
-				}
 #if ULC_USE_NOISE_CODING
 			}
 #endif
@@ -215,23 +191,10 @@ static int WriteQuantizerZone(
 		}
 
 		//! -7h..-2h, +2h..+7h: Normal coefficient
-		if(LossSum) {
-			//! If we had any energy loss, account for it now.
-			//! Because we can only ever /increase/ the energy, then
-			//! the new coefficient will always be valid if the old
-			//! one was valid, too.
-			float Value = Coef[CurIdx];
-			Value += sqrtf(LossSum) * ((Value < 0.0f) ? (-0.5f) : (+0.5f));
-			Qn = ULCi_CompandedQuantizeCoefficient(Value*Quant, 0x7);
-			LossSum  = 0.0f;
-		}
 		WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
-
-		//! Move to the next coefficient
-		do CurIdx++; while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef);
-	} while(CurIdx < EndIdx);
-	*LossSumPtr  = LossSum;
+		CurIdx++;
+	}
 	return NextCodedIdx;
 }
 
@@ -253,7 +216,6 @@ static void WriteSubBlock(
 	int NextCodedIdx  = Idx;
 	int PrevQuant     = -1;
 	int QuantStartIdx = -1;
-	float LossSum = 0.0f;
 	float QuantMin = 1000.0f, QuantMax = -1000.0f;
 	do {
 		//! Seek the next coefficient
@@ -274,7 +236,7 @@ static void WriteSubBlock(
 		}
 
 		//! Level out of range in this quantizer zone?
-		const float MaxRange = 7.0f;
+		const float MaxRange = 4.0f;
 		if(NewMax > NewMin*MaxRange) {
 			//! Write/update the quantizer
 			int qi = BuildQuantizer(QuantMax);
@@ -296,7 +258,6 @@ static void WriteSubBlock(
 				CoefIdx,
 				NextCodedIdx,
 				nOutCoef,
-				&LossSum,
 				DstBuffer,
 				Size
 			);
