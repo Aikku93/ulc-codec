@@ -31,7 +31,7 @@ ifeq ($(strip $(ARCHFLAGS)),)
 endif
 
 CCFLAGS := $(ARCHFLAGS) -O2 -Wall -Wextra $(foreach dir, $(INCDIR), -I$(dir))
-LDFLAGS := -static -s $(foreach dir, $(LIBDIR), -L$(dir)) -lfourier
+LDFLAGS := -static -s $(foreach dir, $(LIBDIR), -L$(dir)) -lfourier -lm
 
 #----------------------------#
 # Tools
