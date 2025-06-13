@@ -1,12 +1,13 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2025, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #pragma once
 /**************************************/
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 /**************************************/
 #include "ulcEncoder.h"
 /**************************************/
@@ -116,6 +117,22 @@ float ULCi_FreqToBark(float fHz) {
 ULC_FORCED_INLINE
 float ULCi_BarkToFreq(float Bark) {
 	return 600.0f * sinhf(Bark * (1.0f/6.0f));
+}
+
+/**************************************/
+
+//! Fast log(x) approximation
+//! Borrowed from: https://quadst.rip/ln-approx
+//! Modified to use memcpy() instead of type-aliasing.
+ULC_FORCED_INLINE
+float FastLog(float x) {
+	uint32_t bx; memcpy(&bx, &x, sizeof(float));
+	uint32_t ex = bx >> 23;
+	 int32_t t = (int32_t)ex - 127;
+	bx = (127 << 23) | (bx & ((1<<23)-1));
+	memcpy(&x, &bx, sizeof(uint32_t));
+	//return -1.49278f + (2.11263f + (-0.729104f + 0.10969f*x)*x)*x + 0.6931471806f*t;
+	return -1.7417939 + (2.8212026 + (-1.4699568 + (0.44717955 - 0.056570851*x)*x)*x)*x + 0.6931471806f*t;
 }
 
 /**************************************/

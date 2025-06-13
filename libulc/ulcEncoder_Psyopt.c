@@ -71,7 +71,7 @@ void ULCi_CalculatePsychoacoustics(
 	{
 		int Line;
 		for(Line=0;Line<BlockSize;Line++) {
-			MaskingNp[Line] = logf(0x1.0p-127f + BufferAmp2[Line]);
+			MaskingNp[Line] = FastLog(0x1.0p-126f + BufferAmp2[Line]);
 		}
 	}
 
@@ -168,7 +168,7 @@ void ULCi_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) 
 	float *LogData = (float*)Temp; {
 		int Line;
 		for(Line=0;Line<N;Line++) {
-			LogData[Line] = logf(0x1.0p-127f + Data[Line]);
+			LogData[Line] = FastLog(0x1.0p-126f + Data[Line]);
 		}
 	}
 

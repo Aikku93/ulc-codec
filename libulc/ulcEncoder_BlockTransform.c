@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2025, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -262,7 +262,7 @@ int ULCi_TransformBlock(struct ULC_EncoderState_t *State, const float *Data) {
 						BufferIndex[n] = -INFINITY;
 					} else {
 						float Level = Re2;
-						BufferIndex[n] = logf(Level);
+						BufferIndex[n] = FastLog(Level);
 						nNzCoef++;
 					}
 #if ULC_USE_NOISE_CODING
