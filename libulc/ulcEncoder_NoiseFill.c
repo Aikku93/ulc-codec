@@ -1,6 +1,6 @@
 /**************************************/
 //! ulc-codec: Ultra-Low-Complexity Audio Codec
-//! Copyright (C) 2024, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
+//! Copyright (C) 2025, Ruben Nunez (Aikku; aik AT aol DOT com DOT au)
 //! Refer to the project README file for license terms.
 /**************************************/
 #include <math.h>
@@ -9,91 +9,6 @@
 #include "ulcHelper.h"
 /**************************************/
 #if ULC_USE_NOISE_CODING
-/**************************************/
-
-//! Compute noise spectrum (logarithmic output)
-//! The code here is very similar to the one used in
-//! psychoacoustics (see ulcEncoder_Psycho.h for details).
-//! The main difference is that we're extracting the noise
-//! level after masking with the tone level, rather than
-//! the other way around.
-void ULCi_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) {
-	const int ULC_N_BARK_BANDS = 25;
-	float NyquistHz = (float)RateHz * 0.5f;
-
-	//! DCT+DST -> Pseudo-DFT
-	N /= 2;
-
-	//! Compute logarithm for all lines to speed up calculations
-	float *LogData = (float*)Temp; {
-		int Line;
-		for(Line=0;Line<N;Line++) {
-			LogData[Line] = logf(0x1.0p-127f + Data[Line]);
-		}
-	}
-
-	//! Iterate over all Bark bands
-	int BarkBand;
-	float *BarkMask = LogData + N;
-	for(BarkBand=0;BarkBand<ULC_N_BARK_BANDS;BarkBand++) {
-		//! Get the lines corresponding to this Bark band
-		float FreqBeg = ULCi_BarkToFreq(BarkBand+0);
-		float FreqEnd = ULCi_BarkToFreq(BarkBand+1);
-		int   LineBeg = (int)floorf(ULCi_FreqToLine(FreqBeg, NyquistHz, N));
-		int   LineEnd = (int)ceilf (ULCi_FreqToLine(FreqEnd, NyquistHz, N));
-		if(LineBeg < 0) LineBeg = 0;
-		if(LineEnd < 0) LineEnd = 0;
-		if(LineBeg > N-1) LineBeg = N-1;
-		if(LineEnd > N)   LineEnd = N;
-
-		//! Sum levels for this band
-		double SumFloor = 0.0;
-		double SumPeak  = 0.0;
-		double SumPeakW = 0.0;
-		int nLines = LineEnd - LineBeg;
-		if(nLines > 0) {
-			int Line;
-			const float *Src    = Data    + LineBeg;
-			const float *SrcLog = LogData + LineBeg;
-			for(Line=0;Line<nLines;Line++) {
-				double v    = (double)Src   [Line];
-				double vLog = (double)SrcLog[Line];
-				SumFloor += vLog;
-				SumPeak  += vLog * v;
-				SumPeakW += v;
-			}
-		}
-
-		//! Get the final noise ratio for this band
-		float MaskRatio = 0.0f;
-		if(SumPeakW != 0.0) {
-			SumPeak   = SumPeak  / SumPeakW;
-			SumFloor  = SumFloor / (double)nLines;
-			MaskRatio = (float)(SumFloor - SumPeak);
-		}
-		BarkMask[BarkBand] = MaskRatio;
-	}
-
-	//! Now generate noise level for each frequency line
-	//! NOTE: If the tone-to-noise ratio is too high, we assume
-	//! that this line must NOT be noise-coded. The higher weight
-	//! given to these lines ensures that the large negative log
-	//! value we feed it will collapse any noise fill that tries
-	//! to use it.
-	int Line;
-	for(Line=0;Line<N;Line++) {
-		float BarkBand = ULCi_FreqToBark(ULCi_LineToFreq(Line, NyquistHz, N));
-		int   BandIdx  = (int)BarkBand;
-		      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
-		      BandIdx  = (BandIdx < ULC_N_BARK_BANDS) ? BandIdx : (ULC_N_BARK_BANDS-1);
-		float w     = expf(BarkMask[BandIdx]);
-		float Noise = LogData[Line] + BarkMask[BandIdx];
-		Data[Line*2+0] = w;
-		Data[Line*2+1] = w * (Noise*0.5f + 0x1.62E430p-1f); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale]));
-	}
-
-}
-
 /**************************************/
 
 //! Get the quantized noise amplitude for encoding
