@@ -10,7 +10,7 @@
 #include "ulcHelper.h"
 #include "ulcEncoder_Internals.h"
 /**************************************/
-#if ULC_USE_PSYCHOACOUSTICS
+#if (ULC_USE_PSYCHOACOUSTICS || ULC_USE_NOISE_CODING)
 /**************************************/
 
 struct LineSum_t {
@@ -50,6 +50,10 @@ static void UpdateLineSum(
 	LineSum->PeakW   = SumPeakW;
 }
 
+/**************************************/
+#endif
+/**************************************/
+#if ULC_USE_PSYCHOACOUSTICS
 /**************************************/
 
 //! Calculate masking levels for each frequency line
