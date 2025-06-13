@@ -15,24 +15,21 @@
 //! The target memory is always aligned to 64 bytes, so just
 //! use whatever is most performant on the target architecture
 typedef uint8_t BitStream_t; //! <- MUST BE UNSIGNED
-#define BISTREAM_NBITS (8u*sizeof(BitStream_t))
+#define BITSTREAM_NBITS (8u*sizeof(BitStream_t))
 
 /**************************************/
 
 //! Write nybble to output
-static void WriteNybble(BitStream_t x, BitStream_t **Dst, int *Size) {
+static void WriteNybble(BitStream_t x, BitStream_t *Dst, int *Size) {
 	//! Push nybble
-	BitStream_t *p = *Dst;
+	BitStream_t *p = &Dst[*Size / BITSTREAM_NBITS];
 	*p >>= 4;
-	*p  |= x << (BISTREAM_NBITS - 4);
+	*p  |= x << (BITSTREAM_NBITS - 4);
 	*Size += 4;
-
-	//! Next byte?
-	if((*Size)%BISTREAM_NBITS == 0) (*Dst)++;
 }
 
 //! Write quantizer to output
-static void WriteQuantizer(int qi, BitStream_t **DstBuffer, int *Size, int Lead) {
+static void WriteQuantizer(int qi, BitStream_t *DstBuffer, int *Size, int Lead) {
 	int s = qi - 5;
 	if(Lead) {
 		WriteNybble(0xF, DstBuffer, Size);
@@ -103,7 +100,7 @@ static int WriteQuantizerZone(
 	const int    *CoefIdx,
 	int           NextCodedIdx,
 	int           nOutCoef,
-	BitStream_t **DstBuffer,
+	BitStream_t  *DstBuffer,
 	int          *Size
 ) {
 	for(;;) {
@@ -111,10 +108,10 @@ static int WriteQuantizerZone(
 		while(CurIdx < EndIdx && CoefIdx[CurIdx] >= nOutCoef) CurIdx++;
 		if(CurIdx >= EndIdx) break;
 
-		//! Calculate the quantized coefficient.
 		//! If the coefficient collapses to become uncodeable, skip it
-		int Qn = ULCi_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
-		if(ABS(Qn) <= 1) { CurIdx++; continue; }
+		//! Note that the expression we test here is the exact expansion
+		//! of ULCi_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant) < 2.
+		if(ABS(Coef[CurIdx]*Quant) < 2.5f) { CurIdx++; continue; }
 
 		//! We now know the coefficient can be coded, so write out the zeros/noise run(s).
 		int n, v;
@@ -191,6 +188,7 @@ static int WriteQuantizerZone(
 		}
 
 		//! -7h..-2h, +2h..+7h: Normal coefficient
+		int Qn = ULCi_CompandedQuantizeCoefficient(Coef[CurIdx]*Quant, 0x7);
 		WriteNybble(Qn, DstBuffer, Size);
 		NextCodedIdx++;
 		CurIdx++;
@@ -208,7 +206,7 @@ static void WriteSubBlock(
 #endif
 	const int    *CoefIdx,
 	int           nOutCoef,
-	BitStream_t **DstBuffer,
+	BitStream_t  *DstBuffer,
 	int          *Size
 ) {
 	//! Encode direct coefficients
@@ -332,8 +330,8 @@ int ULCi_EncodePass(const struct ULC_EncoderState_t *State, void *_DstBuffer, in
 	int Idx  = 0;
 	int Size = 0; //! Block size (in bits)
 	int WindowCtrl = State->WindowCtrl; {
-		WriteNybble(WindowCtrl, &DstBuffer, &Size);
-		if(WindowCtrl & 0x8) WriteNybble(WindowCtrl >> 4, &DstBuffer, &Size);
+		WriteNybble(WindowCtrl, DstBuffer, &Size);
+		if(WindowCtrl & 0x8) WriteNybble(WindowCtrl >> 4, DstBuffer, &Size);
 	}
 	for(Chan=0;Chan<nChan;Chan++) {
 		ULC_SubBlockDecimationPattern_t DecimationPattern = ULCi_SubBlockDecimationPattern(WindowCtrl);
@@ -348,7 +346,7 @@ int ULCi_EncodePass(const struct ULC_EncoderState_t *State, void *_DstBuffer, in
 #endif
 				CoefIdx,
 				nOutCoef,
-				&DstBuffer,
+				DstBuffer,
 				&Size
 			);
 			Idx += SubBlockSize;
@@ -356,7 +354,7 @@ int ULCi_EncodePass(const struct ULC_EncoderState_t *State, void *_DstBuffer, in
 	}
 
 	//! Align the output stream and pad size to bytes
-	*DstBuffer >>= (-Size) % BISTREAM_NBITS;
+	DstBuffer[Size/BITSTREAM_NBITS] >>= (-Size) % BITSTREAM_NBITS;
 	Size = (Size+7) &~ 7;
 	return Size;
 }
