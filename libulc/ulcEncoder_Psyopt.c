@@ -95,6 +95,7 @@ void ULCi_CalculatePsychoacoustics(
 		//! region, and subtract low from high to get the sum.
 		int BarkBand;
 		float MaskRatio = 0.0f;
+		float WeightDenom = -1.0f / sqrtf((float)(SubBlockSize / 4));
 		float *BarkMask = (float*)BufferTemp;
 		struct LineSum_t LineSumLo, LineSumHi;
 		InitLineSum(&LineSumLo);
@@ -117,6 +118,17 @@ void ULCi_CalculatePsychoacoustics(
 			double SumPeak  = LineSumHi.Peak  - LineSumLo.Peak;
 			double SumPeakW = LineSumHi.PeakW - LineSumLo.PeakW;
 
+			//! Calculate weighting function.
+			//! The log-normal shape was inspired by the A-weight
+			//! curve, but the values were derived experimentally.
+			//! The point of this weighting function is to avoid
+			//! noise-related "sparseness" in the spectrum, which
+			//! results in very obvious birdie artifacts as the
+			//! block size decreases. This does result in some
+			//! lowpass behaviour, but should sound "tighter".
+			float LogWf = FastLog(FreqEnd) - 6.9f; //! 6.9 ~= Log[1000]
+			      LogWf = SQR(LogWf) * WeightDenom;
+
 			//! Get the final masking ratio for this band
 			//! This basically amounts to how much CANNOT be
 			//! masked by this band, and then applies a
@@ -127,13 +139,17 @@ void ULCi_CalculatePsychoacoustics(
 				SumFloor  = SumFloor / (double)(LineEnd - LineBeg);
 				MaskRatio = (float)(SumFloor - SumPeak - log(SumPeakW));
 			}
-			BarkMask[BarkBand] = MaskRatio;
+			BarkMask[BarkBand] = MaskRatio + LogWf;
 		}
 
 		//! Now generate masking level for each frequency line
+		//! Note that the Bark band is offset by -0.5; this is
+		//! mostly to account for the large forwards spread of
+		//! each Bark band, but it also compensates for some
+		//! major issues with very quiet bands.
 		int Line;
 		for(Line=0;Line<SubBlockSize;Line++) {
-			float BarkBand = ULCi_FreqToBark(ULCi_LineToFreq(Line, NyquistHz, SubBlockSize));
+			float BarkBand = ULCi_FreqToBark(ULCi_LineToFreq(Line, NyquistHz, SubBlockSize)) - 0.5f;
 			int   BandIdx  = (int)BarkBand;
 			float BarkFrac = BarkBand - (float)BandIdx;
 			      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
@@ -156,8 +172,7 @@ void ULCi_CalculatePsychoacoustics(
 /**************************************/
 
 //! Compute noise spectrum (logarithmic output)
-//! The code here is very similar to the one used in
-//! psychoacoustics (see ulcEncoder_Psyopt.c for details).
+//! The code here is very similar to above.
 //! The main difference is that we're extracting the noise
 //! level after masking with the tone level, rather than
 //! the other way around.
@@ -178,6 +193,7 @@ void ULCi_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) 
 
 	//! Iterate over all Bark bands
 	int BarkBand;
+	float NoiseLevel = -100.0f;
 	float *BarkMask = LogData + N;
 	struct LineSum_t LineSumLo, LineSumHi;
 	InitLineSum(&LineSumLo);
@@ -200,32 +216,31 @@ void ULCi_CalculateNoiseLogSpectrum(float *Data, void *Temp, int N, int RateHz) 
 		double SumPeak  = LineSumHi.Peak  - LineSumLo.Peak;
 		double SumPeakW = LineSumHi.PeakW - LineSumLo.PeakW;
 
-		//! Get the final noise ratio for this band
-		float MaskRatio = 0.0f;
+		//! Get the final noise level for this band
 		if(SumPeakW > 0.0) {
 			SumPeak   = SumPeak  / SumPeakW;
 			SumFloor  = SumFloor / (double)(LineEnd - LineBeg);
-			MaskRatio = (float)(SumFloor - SumPeak);
+			NoiseLevel = (float)(SumFloor - 0.5f*SumPeak); //! 0.5 * (2*Floor - Peak)
 		}
-		BarkMask[BarkBand] = MaskRatio;
+		BarkMask[BarkBand] = NoiseLevel;
 	}
 
 	//! Now generate noise level for each frequency line
-	//! NOTE: If the tone-to-noise ratio is too high, we assume
-	//! that this line must NOT be noise-coded. The higher weight
-	//! given to these lines ensures that the large negative log
-	//! value we feed it will collapse any noise fill that tries
-	//! to use it.
+	//! Note that the weight is equal to the amplitude,
+	//! and NOT the power!
 	int Line;
 	for(Line=0;Line<N;Line++) {
 		float BarkBand = ULCi_FreqToBark(ULCi_LineToFreq(Line, NyquistHz, N));
 		int   BandIdx  = (int)BarkBand;
+		float BarkFrac = BarkBand - (float)BandIdx;
 		      BandIdx  = (BandIdx >=               0) ? BandIdx : 0;
 		      BandIdx  = (BandIdx < ULC_N_BARK_BANDS) ? BandIdx : (ULC_N_BARK_BANDS-1);
-		float w     = expf(BarkMask[BandIdx]);
-		float Noise = LogData[Line] + BarkMask[BandIdx];
+		float BarkL = BarkMask[BandIdx];
+		float BarkR = (BandIdx+1 < ULC_N_BARK_BANDS) ? BarkMask[BandIdx+1] : BarkL;
+		float Noise = BarkL*(1.0f-BarkFrac) + BarkR*BarkFrac;
+		float w     = expf(Noise);
 		Data[Line*2+0] = w;
-		Data[Line*2+1] = w * (Noise*0.5f + 0x1.62E430p-1f); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale]));
+		Data[Line*2+1] = w * (Noise + 0x1.62E430p-1f); //! Pre-scale by Scale=4.0/2 for noise quantizer (by adding Log[Scale]));
 	}
 
 }
