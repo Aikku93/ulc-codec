@@ -28,6 +28,16 @@
 //!  -TmpBuffer[] must be BlockSize*2 elements in size.
 //! NOTE: All rates were determined experimentally, based on what
 //! resulted in the best sensitivity without excessive glitching.
+static void UpdateFilters(float *Dst, const float *Src, float *Taps, uint32_t N) {
+	uint32_t n;
+	for(n=0;n<N;n++) {
+		Taps[0] = Taps[1];
+		Taps[1] = Taps[2];
+		Taps[2] = Src[n];
+		Dst[2*n+0] += SQR(-Taps[0] + 2*Taps[1] - Taps[2]);
+		Dst[2*n+1] += SQR(-Taps[0] + Taps[2]);
+	}
+}
 static void TransientFiltering(
 	const float *BlockData,
 	struct ULC_TransientData_t *TransientBuffer,
@@ -39,41 +49,31 @@ static void TransientFiltering(
 ) {
 	int n, Chan;
 
-	//! Extract the energy of a highpass and bandpass filter,
-	//! as changes in the low frequencies aren't important
-	//! for transients (they happen too slowly to be audible).
+	//! Extract energy of the highs and mids
 	//! Transfer functions:
-	//!  H(z) = -z^-1 + 2 - z^1 (Highpass; Gain = 4.0)
-	//!  H(z) = z^1 - z^-1      (Bandpass; Gain = 2.0)
-	//! This section outputs interleaved {Highpass,Bandpass}
-	//! into BufEnergy[].
-	float *BufEnergy = TmpBuffer; {
-		for(n=0;n<BlockSize*2;n++) BufEnergy[n] = 0.0f;
-		for(Chan=0;Chan<nChan;Chan++) {
-#define DOFILTER(XzM1,Xz0,Xz1) *Dst++ += SQR(-XzM1+2*Xz0-Xz1), *Dst++ += SQR(Xz1-XzM1)
-			      int    Lag    = BlockSize/2; //! MDCT alignment
-			      float *Dst    = BufEnergy;
-			const float *SrcOld = BlockData + Chan*BlockSize + BlockSize-Lag;
-			const float *SrcNew = BlockData + Chan*BlockSize + nChan*BlockSize;
-			n = Lag-1; do {
-				DOFILTER(SrcOld[-1], SrcOld[0], SrcOld[+1]), SrcOld++;
-			} while(--n);
-			{
-				DOFILTER(SrcOld[-1], SrcOld[0], SrcNew[ 0]), SrcOld++;
-				DOFILTER(SrcOld[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
-			}
-			n = BlockSize - (Lag-1) - 2; do {
-				DOFILTER(SrcNew[-1], SrcNew[0], SrcNew[+1]), SrcNew++;
-			} while(--n);
-#undef DOFILTER
-		}
+	//!   H(z) = -z^-1 + 2 - z^1
+	//!   H(z) = -z^-1 + z^1
+	float *BufEnergy = TmpBuffer;
+	for(n=0;n<BlockSize*2;n++) BufEnergy[n] = 0.0f;
+	for(Chan=0;Chan<nChan;Chan++) {
+		      int    Lag    = BlockSize/2; //! MDCT alignment
+		const float *SrcOld = BlockData + Chan*BlockSize + BlockSize-Lag;
+		const float *SrcNew = BlockData + Chan*BlockSize + nChan*BlockSize;
+
+		float Taps[3];
+		Taps[1] = SrcOld[-1];
+		Taps[2] = SrcOld[ 0];
+		uint32_t nOld = BlockSize-Lag-1; //! -1 because we read 1 sample ahead
+		uint32_t nNew = Lag+1;           //! =BlockSize - nOld
+		UpdateFilters(BufEnergy,          SrcOld+1, Taps, nOld);
+		UpdateFilters(BufEnergy + nOld*2, SrcNew,   Taps, nNew);
 	}
 
 	//! Smear the energy forwards in time to account for post-masking
 	float EnvPostMaskHP = TransientFilter[0];
 	float EnvPostMaskBP = TransientFilter[1];
 	float EnvPostMaskHP_Rate = expf(-0x1.CC845Cp6f / RateHz); //! -1.0dB/ms (1000 * Log[10^(-1.0/20)])
-	float EnvPostMaskBP_Rate = expf(-0x1.596344p9f / RateHz); //! -6.0dB/ms (1000 * Log[10^(-6.0/20)])
+	float EnvPostMaskBP_Rate = expf(-0x1.596344p8f / RateHz); //! -3.0dB/ms (1000 * Log[10^(-3.0/20)])
 	for(n=0;n<BlockSize;n++) {
 		//! NOTE: This calculation must be done in the amplitude
 		//! domain, as the power domain behaves too erratically.
